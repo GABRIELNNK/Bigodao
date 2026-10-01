@@ -33,6 +33,15 @@ cmake_install.cmake
 ninja.build
 compile_commands.json
 
+# Evita que a compilação local do submódulo gbrecomp suba para o seu GitHub
+gbrecomp/build/
+gbrecomp/CMakeCache.txt
+gbrecomp/CMakeFiles/
+gbrecomp/Makefile
+gbrecomp/cmake_install.cmake
+gbrecomp/ninja.build
+gbrecomp/compile_commands.json
+
 # Arquivos executáveis binários finais gerados pela compilação
 wario_land_port
 wario_land_port.exe

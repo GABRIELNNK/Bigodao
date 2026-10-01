@@ -1,5 +1,18 @@
-1. extrair rom pelo gbrecomp
+rom hash: ac1682f1abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56
+rom name: base_WL-SM3.gb
+
+1. extrair rom pelo gb_recompiled
+    1a. buildar o gb_recompiled - a partir da pasta raiz deste projeto
+        cmake -G Ninja -S gb-recompiled -B gb-recompiled/build
+        ninja -C gb-recompiled/build
+        
+
+    1b. buildar o executavel do recompiled - a partir da pasta raiz deste projeto
+        gb-recompiled/build/bin/gbrecomp base_WL-SM3.gb -o compiler_src/game_code
+        #cmake -G Ninja -S compiler_src/game_code -B compiler_src/game_code/build
+        #ninja -C compiler_src/game_code/build
+        #./output/game/build/game
 
 2. aplicar patch
-python3 compiler_src/widescreen_patches/apply_widescreen_WL-sm3.py rom.gb compiler_src/game_code/
+    python3 compiler_src/widescreen_patches/apply_widescreen_WL-sm3.py rom.gb compiler_src/game_code/
 
