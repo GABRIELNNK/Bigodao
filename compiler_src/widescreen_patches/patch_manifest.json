@@ -1,0 +1,48 @@
+{
+  "schema": "warioland.widescreen-patch",
+  "version": 1,
+  "rom": {
+    "sha256": "ac1682f1abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56",
+    "size": 1048576
+  },
+  "patches": [
+    {
+      "rom_offset": "0x00321C",
+      "generated_address": "0x321C",
+      "original": "if (!ctx->f_c) {\n        gbrt_timed_ret_cc(ctx);\n        return;\n    } /* NC */",
+      "replacement": ";"
+    },
+    {
+      "rom_offset": "0x008477",
+      "generated_bank": "02",
+      "generated_address": "0x4476",
+      "original": "gb_sub8(ctx, 0x07);",
+      "replacement": "gb_sub8(ctx, 0x08);",
+      "expected_matches": 2
+    },
+    {
+      "rom_offset": "0x008486",
+      "generated_bank": "02",
+      "generated_address": "0x4485",
+      "original": "ctx->e = 0x0e;",
+      "replacement": "ctx->e = 0x10;",
+      "expected_matches": 1
+    },
+    {
+      "rom_offset": "0x0084A0",
+      "generated_bank": "02",
+      "generated_address": "0x449f",
+      "original": "gb_add8(ctx, 0x06);",
+      "replacement": "gb_add8(ctx, 0x08);",
+      "expected_matches": 2
+    },
+    {
+      "rom_offset": "0x0084C0",
+      "generated_bank": "02",
+      "generated_address": "0x44bf",
+      "original": "gb_sub8(ctx, 0x07);",
+      "replacement": "gb_sub8(ctx, 0x08);",
+      "expected_matches": 2
+    }
+  ]
+}

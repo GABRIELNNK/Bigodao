@@ -1,0 +1,53 @@
+# ==============================================================================
+# 🏴‍☠️ Bloqueio de Propriedade Intelectual (Proteção contra DMCA/Copyright)
+# ==============================================================================
+
+# Bloqueia arquivos originais ou dumps de ROMs de Game Boy
+*.gb
+*.gbc
+*.gba
+*.sav
+*.rtc
+
+# Bloqueia a pasta onde o gbrecomp extrai as funções em C do jogo
+compiler_src/game_code/
+
+# Bloqueia o arquivo empacotado de assets gerado pelo assistente
+wario.o2r
+
+# Bloqueia traces e mapeamentos gerados pelo PyBoy/gbrecomp
+*.trace
+ground_truth.trace
+
+# ==============================================================================
+# 🛠️ Bloqueios de Ambiente de Desenvolvimento e Compilação
+# ==============================================================================
+
+# Pastas de build locais geradas pelo CMake e Ninja
+build/
+.cmake/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+ninja.build
+compile_commands.json
+
+# Arquivos executáveis binários finais gerados pela compilação
+wario_land_port
+wario_land_port.exe
+*.exe
+*.elf
+*.so
+*.dylib
+*.dll
+
+# Arquivos temporários e de log do sistema ou editores de código
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.vs/
+.idea/
+*.suo
+*.user

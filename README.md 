@@ -1,0 +1,5 @@
+1. extrair rom pelo gbrecomp
+
+2. aplicar patch
+python3 compiler_src/widescreen_patches/apply_widescreen_WL-sm3.py rom.gb compiler_src/game_code/
+
