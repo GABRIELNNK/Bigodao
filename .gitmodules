@@ -1,3 +1,6 @@
 [submodule "gb-recompiled"]
 	path = gb-recompiled
 	url = https://github.com/arcanite24/gb-recompiled
+[submodule "tools/disassembly"]
+	path = tools/disassembly
+	url = https://github.com/Kak2X/wl
