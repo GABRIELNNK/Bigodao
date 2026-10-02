@@ -2343,7 +2343,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
         }
     } else {
         /* Palette remap path - per-pixel mapping */
-        uint32_t original_palette[4] = { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 };
+        uint32_t source_palette[4];
+        for (int shade = 0; shade < 4; ++shade) {
+            source_palette[shade] = ppu_get_dmg_shade_rgb((uint8_t)shade);
+        }
         for (int y = 0; y < texture_height; y++) {
             dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
             for (int x = 0; x < texture_width; x++) {
@@ -2364,10 +2367,14 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 }
 
                 int color_idx = -1;
-                if (src_pixel == original_palette[0]) color_idx = 0;
-                else if (src_pixel == original_palette[1]) color_idx = 1;
-                else if (src_pixel == original_palette[2]) color_idx = 2;
-                else if (src_pixel == original_palette[3]) color_idx = 3;
+                for (int shade = 0; shade < 4; ++shade) {
+                    // Completed frames use the PPU's RGB555-expanded colors;
+                    // startup and LCD-off frames can still use the legacy colors.
+                    if (src_pixel == source_palette[shade] || src_pixel == g_palettes[0][shade]) {
+                        color_idx = shade;
+                        break;
+                    }
+                }
 
                 if (color_idx >= 0) {
                     dst_row_ptr[x] = g_palettes[g_palette_idx][color_idx];

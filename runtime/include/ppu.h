@@ -250,6 +250,12 @@ void ppu_clear_frame_ready(GBPPU* ppu);
 const uint32_t* ppu_get_framebuffer(GBPPU* ppu);
 
 /**
+ * @brief Get the exact RGBA color the PPU uses for a DMG shade (0-3), so
+ *        palette-swap UIs can match pixels regardless of RGB555 rounding.
+ */
+uint32_t ppu_get_dmg_shade_rgb(uint8_t shade);
+
+/**
  * @brief Enable/disable widescreen (16:9) background extension.
  *        Off by default. Purely a display option.
  */
