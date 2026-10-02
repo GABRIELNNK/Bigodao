@@ -8,9 +8,11 @@
 *.gba
 *.sav
 *.rtc
+*.ips
 
 # Bloqueia a pasta onde o gbrecomp extrai as funções em C do jogo
 compiler_src/game_code/
+compiler_src/game_code_hack/
 
 # Bloqueia o arquivo empacotado de assets gerado pelo assistente
 wario.o2r

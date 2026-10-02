@@ -19,3 +19,11 @@ rom name: base_WL-SM3.gb
 3. flickering
 python3 tools/inject_text.py --map tools/patch_flickering.json --dir compiler_src/game_code --regex --apply
 python3 tools/inject_text.py --map tools/widescreen_fov_patch.json --dir compiler_src/game_code --ext .c --apply
+
+4. executar a ROM hack DX 1.2 no aplicativo
+    cmake -G Ninja -S . -B build
+    cmake --build build
+    ./build/wario_land_port /caminho/para/base_WL-SM3.gb
+
+O aplicativo valida a ROM original pelo SHA-256 e aplica em memoria o IPS
+descrito em `tools/wl_sm3_dx_v12_patch.json`; a ROM original nao e modificada.

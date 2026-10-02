@@ -102,7 +102,7 @@ private:
     }
 
 public:
-    bool check_and_prepare_assets() {
+    bool check_and_prepare_assets(const fs::path& rom_path) {
         fs::path o2r_path = "wario.o2r";
         
         if (fs::exists(o2r_path)) {
@@ -112,9 +112,8 @@ public:
 
         std::cout << "[VFS] Criando container de mods wario.o2r estilo PaperBoat...\n";
         
-        fs::path rom_path = "rom.gb";
         if (!fs::exists(rom_path)) {
-            std::cerr << "❌ Erro: Coloque o arquivo 'rom.gb' de 524KB na raiz do projeto.\n";
+            std::cerr << "ROM nao encontrada: " << rom_path << '\n';
             return false;
         }
 

@@ -1,0 +1,28 @@
+{
+  "schema": "wl-sm3.ips-rom-patch",
+  "version": 1,
+  "patch_id": "korxo.wario-land-sm3-dx.v1.2",
+  "input_size": 524288,
+  "input_sha256": "ac1682f17abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56",
+  "patch_format": "IPS",
+  "patch_file": "../Wario Land - Super Mario Land 3 DX (World).ips",
+  "patch_sha256": "599d9f59090df3e1e77c1678e069290a2cd9ce59c71cf58d66c4dc3db8b7facd",
+  "patch_record_count": 1281,
+  "output_size": 1048576,
+  "output_sha256": "3b49325fb7dfb18dff87e3b619afcceb45e8451ad10ccbbf303194e36c97b68a",
+  "cartridge": {
+    "mapper_before": "MBC1+RAM+BATTERY",
+    "mapper_before_type": "0x03",
+    "rom_banks_before": 32,
+    "mapper_after": "MBC5+RAM+BATTERY",
+    "mapper_after_type": "0x1b",
+    "rom_banks_after": 64,
+    "cgb_flag_after": "0xc0",
+    "rom_size_code_after": "0x05"
+  },
+  "generated_code": {
+    "source_directory": "compiler_src/game_code_hack",
+    "entry_prefix": "hack1_2_WL_SM3",
+    "rom_load_api": "gb_context_load_rom"
+  }
+}

@@ -1321,11 +1321,73 @@ typedef struct {
     uint8_t oam_index;
 } WidescreenObjectPixel;
 
+typedef struct {
+    uint8_t attributes[0x80][4];
+    uint8_t valid[0x80][4];
+} WidescreenBlockAttributeCache;
+
+static int ppu_unwrap_widescreen_map_coordinate(int map_tile, int reference) {
+    int coordinate = (reference & ~0xFF) + map_tile * 8;
+    if (coordinate - reference > 128) {
+        coordinate -= 256;
+    } else if (reference - coordinate > 128) {
+        coordinate += 256;
+    }
+    return coordinate;
+}
+
+static void ppu_build_widescreen_block_attribute_cache(
+    const GBPPU* ppu,
+    const GBContext* ctx,
+    WidescreenBlockAttributeCache* cache) {
+    memset(cache, 0, sizeof(*cache));
+    if (!ppu_is_cgb_mode(ctx) || !ctx->wram || !ctx->eram) {
+        return;
+    }
+
+    const int reference_x = ppu->frame_widescreen_scroll_x;
+    const int reference_y = ppu->frame_widescreen_scroll_y;
+    const uint16_t tilemap_addr = get_bg_tilemap_addr(ppu->latched_lcdc);
+    for (int map_y = 0; map_y < 32; ++map_y) {
+        const int world_y = ppu_unwrap_widescreen_map_coordinate(map_y, reference_y);
+        if (world_y < 0 || world_y >= 0x0200) {
+            continue;
+        }
+        for (int map_x = 0; map_x < 32; ++map_x) {
+            const int world_x = ppu_unwrap_widescreen_map_coordinate(map_x, reference_x);
+            if (world_x < 0 || world_x >= 0x1000) {
+                continue;
+            }
+
+            const size_t layout_offset =
+                (size_t)(world_y >> 4) * 0x100u + (size_t)(world_x >> 4);
+            const uint8_t block_id = ctx->wram[layout_offset] & 0x7Fu;
+            const size_t block_offset = 0x0D00u + (size_t)block_id * 4u;
+            if (block_offset + 3u >= ctx->eram_size) {
+                continue;
+            }
+
+            const size_t tile_in_block =
+                (size_t)((world_y >> 3) & 1) * 2u + (size_t)((world_x >> 3) & 1);
+            const uint16_t map_entry = (uint16_t)(tilemap_addr + map_y * 32 + map_x);
+            if (vram_read_bank(ctx, 0, map_entry) != ctx->eram[block_offset + tile_in_block]) {
+                continue;
+            }
+
+            if (!cache->valid[block_id][tile_in_block]) {
+                cache->attributes[block_id][tile_in_block] = vram_read_bank(ctx, 1, map_entry);
+                cache->valid[block_id][tile_in_block] = 1;
+            }
+        }
+    }
+}
+
 static bool ppu_fetch_warioland_world_pixel(
     const GBPPU* ppu,
     const GBContext* ctx,
     int world_x,
     int world_y,
+    const WidescreenBlockAttributeCache* attribute_cache,
     WidescreenBackgroundPixel* pixel) {
     if (world_x < 0 || world_y < 0 || world_x >= 0x1000 || world_y >= 0x0200) {
         return false;
@@ -1343,27 +1405,47 @@ static bool ppu_fetch_warioland_world_pixel(
     const int tile_x = (world_x >> 3) & 1;
     const int tile_y = (world_y >> 3) & 1;
     const uint8_t tile_idx = ctx->eram[block_offset + (size_t)tile_y * 2u + tile_x];
-    const int pixel_x = world_x & 7;
-    const int pixel_y = world_y & 7;
+    int pixel_x = world_x & 7;
+    int pixel_y = world_y & 7;
+    const bool cgb_mode = ppu_is_cgb_mode(ctx);
+    const uint16_t tilemap_addr = get_bg_tilemap_addr(ppu->latched_lcdc);
+    const uint16_t map_entry = (uint16_t)(tilemap_addr +
+        (((uint32_t)world_y >> 3) & 31u) * 32u +
+        (((uint32_t)world_x >> 3) & 31u));
+    uint8_t attr = cgb_mode ? vram_read_bank(ctx, 1, map_entry) : 0;
+    bool has_current_map_attribute =
+        !cgb_mode || vram_read_bank(ctx, 0, map_entry) == tile_idx;
+    if (cgb_mode && !has_current_map_attribute &&
+        attribute_cache && attribute_cache->valid[block_id][(size_t)tile_y * 2u + tile_x]) {
+        attr = attribute_cache->attributes[block_id][(size_t)tile_y * 2u + tile_x];
+    }
+    const uint8_t tile_bank = (attr & OAM_CGB_BANK) ? 1u : 0u;
+    pixel->palette = attr & OAM_CGB_PALETTE;
+    pixel->priority = has_current_map_attribute && (attr & OAM_PRIORITY) != 0;
+    if (attr & OAM_FLIP_X) {
+        pixel_x = 7 - pixel_x;
+    }
+    if (attr & OAM_FLIP_Y) {
+        pixel_y = 7 - pixel_y;
+    }
     const uint16_t tile_addr = get_tile_data_addr(
         ppu->latched_lcdc,
         tile_idx,
         false);
-    const uint8_t lo = vram_read_bank(ctx, 0, (uint16_t)(tile_addr + pixel_y * 2));
-    const uint8_t hi = vram_read_bank(ctx, 0, (uint16_t)(tile_addr + pixel_y * 2 + 1));
+    const uint8_t lo = vram_read_bank(ctx, tile_bank, (uint16_t)(tile_addr + pixel_y * 2));
+    const uint8_t hi = vram_read_bank(ctx, tile_bank, (uint16_t)(tile_addr + pixel_y * 2 + 1));
     const int bit = 7 - pixel_x;
     pixel->raw_color = (uint8_t)(((lo >> bit) & 1u) | (((hi >> bit) & 1u) << 1u));
-    pixel->palette = 0;
-    pixel->priority = false;
     pixel->rgba = rgb555_to_rgba(
-        resolve_bg_color(ppu, ctx, 0, pixel->raw_color, ppu->latched_bgp));
+        resolve_bg_color(ppu, ctx, pixel->palette, pixel->raw_color, ppu->latched_bgp));
     return true;
 }
 
 static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     const GBPPU* ppu,
     const GBContext* ctx,
-    int extended_x) {
+    int extended_x,
+    const WidescreenBlockAttributeCache* attribute_cache) {
     WidescreenBackgroundPixel pixel = {0, 0, false, 0};
     const uint8_t lcdc = ppu->latched_lcdc;
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
@@ -1418,7 +1500,8 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
         const int world_y = (int)scroll_y - 0x48 + ppu->ly;
         */
         
-        if (ppu_fetch_warioland_world_pixel(ppu, ctx, world_x, world_y, &pixel)) {
+        if (ppu_fetch_warioland_world_pixel(
+            ppu, ctx, world_x, world_y, attribute_cache, &pixel)) {
             return pixel;
         }
         
@@ -1676,6 +1759,8 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     }
 
     const size_t row_base = (size_t)scanline * GB_WIDESCREEN_WIDTH;
+    WidescreenBlockAttributeCache attribute_cache;
+    ppu_build_widescreen_block_attribute_cache(ppu, ctx, &attribute_cache);
     /*const size_t src_row_base = (size_t)scanline * GB_SCREEN_WIDTH;   */
 
     /* Center: the real, cycle-accurate 160-pixel scanline, unchanged. 
@@ -1730,7 +1815,11 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     for (int extended_x = -GB_WIDESCREEN_MARGIN; extended_x < GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN; extended_x++) {
         const int dest_x = extended_x + GB_WIDESCREEN_MARGIN;
 
-        WidescreenBackgroundPixel bg = ppu_fetch_widescreen_background_pixel(ppu, ctx, extended_x);
+        WidescreenBackgroundPixel bg = ppu_fetch_widescreen_background_pixel(
+            ppu, ctx, extended_x, &attribute_cache);
+        if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
+            bg.priority = false;
+        }
         const WidescreenObjectPixel obj = ppu_fetch_widescreen_object_pixel(ppu, ctx, extended_x);
 
         /* Aplica o fade gradual apenas nas margens externas */
