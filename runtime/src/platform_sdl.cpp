@@ -180,10 +180,41 @@ static GBContext* g_registered_ctx = NULL;
 static bool g_widescreen_mode = false;
 static bool g_widescreen_fade_enabled = true;
 static int g_widescreen_fade_percent = 65; /* mirrors GBPPU's default of 0.65f */
+static bool g_widescreen_auto_active = false; /* current effective state, gated by sGameMode */
 
 static GBPPU* active_ppu(void) {
     return g_registered_ctx ? (GBPPU*)g_registered_ctx->ppu : NULL;
 }
+
+/* sGameMode ($A8C3, wl disassembly bank01.asm CheckMode) - only the actual
+ * side-scrolling level states should get the widescreen margins; the title,
+ * world map, bonus games, and other static-screen modes stream backgrounds
+ * for a fixed 160px view and show garbage tiles in the extra margin. */
+static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
+    switch (game_mode) {
+        case 2:  /* Mode_LevelInit */
+        case 3:  /* Mode_Level */
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool gb_platform_want_widescreen(const GBContext* ctx) {
+    if (!g_widescreen_mode || !ctx || !ctx->eram || ctx->eram_size <= 0x08C3) {
+        return false;
+    }
+    return gb_mode_is_side_scrolling(ctx->eram[0x08C3]);
+}
+
+static bool gb_platform_should_black_fill_non_side_scrolling(const GBContext* ctx) {
+    if (!g_widescreen_mode || !ctx || !ctx->eram || ctx->eram_size <= 0x08C3) {
+        return false;
+    }
+    const uint8_t game_mode = ctx->eram[0x08C3];
+    return !gb_mode_is_side_scrolling(game_mode) && game_mode != 1;
+}
+
 static GBPortFrame g_port_frame = {};
 static bool g_port_frame_valid = false;
 static GBInputBinding g_keyboard_bindings[GB_INPUT_ACTION_COUNT][2] = {};
@@ -1787,7 +1818,7 @@ static void update_game_viewport(void) {
     if (window_h <= 0) window_h = GB_SCREEN_HEIGHT;
 
     const int source_w = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
-    
+
     // Mantém o aspecto proporcional (Aspect Fit) dentro da resolução real da janela
     double scale_x = (double)window_w / (double)source_w;
     double scale_y = (double)window_h / (double)GB_SCREEN_HEIGHT;
@@ -2163,6 +2194,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                   g_texture == NULL, g_renderer == NULL, framebuffer == NULL);
         return;
     }
+
     g_present_count++;
     if (count_guest_frame) {
         g_frame_count++;
@@ -2312,29 +2344,52 @@ static void render_frame_internal(const uint32_t* framebuffer,
     uint32_t* dst_row_ptr = NULL;
     const int texture_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
     const int texture_height = GB_SCREEN_HEIGHT;
+    const bool black_fill_non_side_scrolling = g_widescreen_mode && gb_platform_should_black_fill_non_side_scrolling(g_registered_ctx);
 
     if (g_palette_idx == 0) {
         /* Fast path: copy rows, handling widescreen margins when necessary. */
         for (int y = 0; y < texture_height; y++) {
             dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
             if (texture_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
-                /* Source is normal framebuffer; place it centered with replicated edges. */
+                /* Source is normal framebuffer; place it centered with replicated edges,
+                 * unless this is not a side-scrolling region, in which case the extra
+                 * margins must stay black instead of showing garbage/unused tiles. */
                 const uint32_t* src_row = src + y * GB_SCREEN_WIDTH;
-                /* left margin */
-                for (int x = 0; x < GB_WIDESCREEN_MARGIN; x++) {
-                    dst_row_ptr[x] = src_row[0];
-                }
-                /* center */
-                memcpy(&dst_row_ptr[GB_WIDESCREEN_MARGIN], src_row, GB_SCREEN_WIDTH * sizeof(uint32_t));
-                /* right margin */
-                uint32_t last = src_row[GB_SCREEN_WIDTH - 1];
-                for (int x = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH; x < texture_width; x++) {
-                    dst_row_ptr[x] = last;
+                if (black_fill_non_side_scrolling) {
+                    for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
+                        if (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
+                            dst_row_ptr[x] = 0xFF000000;
+                        } else {
+                            dst_row_ptr[x] = src_row[x - GB_WIDESCREEN_MARGIN];
+                        }
+                    }
+                } else {
+                    /* left margin */
+                    for (int x = 0; x < GB_WIDESCREEN_MARGIN; x++) {
+                        dst_row_ptr[x] = src_row[0];
+                    }
+                    /* center */
+                    memcpy(&dst_row_ptr[GB_WIDESCREEN_MARGIN], src_row, GB_SCREEN_WIDTH * sizeof(uint32_t));
+                    /* right margin */
+                    uint32_t last = src_row[GB_SCREEN_WIDTH - 1];
+                    for (int x = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH; x < texture_width; x++) {
+                        dst_row_ptr[x] = last;
+                    }
                 }
             } else if (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE) {
                 /* Source is widescreen framebuffer - copy full row */
                 const uint32_t* src_row = src + y * texture_width;
-                memcpy(dst_row_ptr, src_row, texture_width * sizeof(uint32_t));
+                if (black_fill_non_side_scrolling) {
+                    for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
+                        if (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
+                            dst_row_ptr[x] = 0xFF000000;
+                        } else {
+                            dst_row_ptr[x] = src_row[x];
+                        }
+                    }
+                } else {
+                    memcpy(dst_row_ptr, src_row, (size_t)texture_width * sizeof(uint32_t));
+                }
             } else {
                 /* Source matches texture width (normal fullscreen) */
                 const uint32_t* src_row = src + y * texture_width;
@@ -2361,7 +2416,11 @@ static void render_frame_internal(const uint32_t* framebuffer,
                         src_pixel = src[y * GB_SCREEN_WIDTH + (x - GB_WIDESCREEN_MARGIN)];
                     }
                 } else if (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE) {
-                    src_pixel = src[y * texture_width + x];
+                    if (black_fill_non_side_scrolling && (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH)) {
+                        src_pixel = 0xFF000000;
+                    } else {
+                        src_pixel = src[y * texture_width + x];
+                    }
                 } else {
                     src_pixel = src[y * texture_width + x];
                 }
