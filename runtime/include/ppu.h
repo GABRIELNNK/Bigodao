@@ -150,12 +150,17 @@ typedef struct GBPPU {
     uint8_t draw_startup;     /* Initial FIFO fill and SCX discard dots */
     uint8_t draw_stall;       /* Window/OBJ fetch dots remaining */
     uint8_t visible_sprite_count;
-    uint8_t visible_sprite_indices[10]; /*10*/
-    uint8_t visible_sprite_x[10]; /*10*/
-    uint8_t visible_sprite_y[10]; /*10*/
+    uint8_t visible_sprite_indices[40];
+    uint8_t visible_sprite_x[40];
+    uint8_t visible_sprite_y[40];
     uint8_t line_sprite_height;
-    uint16_t fetched_sprite_mask;
+    uint64_t fetched_sprite_mask;
     uint64_t considered_bg_tiles;
+    /* Anti-flicker: holds the last visible OAM bytes per object so engine-side
+     * sprite rotation (more actors than hardware OAM slots) doesn't blink. */
+    uint8_t anti_flicker_oam[160];
+    uint8_t anti_flicker_age[40];
+    bool anti_flicker_initialized;
     uint8_t window_line;      /* Current window internal line counter */
     bool window_triggered;    /* Window was triggered this frame */
     bool window_y_triggered;  /* WY matched LY this frame */

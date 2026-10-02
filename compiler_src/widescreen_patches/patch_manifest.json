@@ -3,7 +3,7 @@
   "version": 1,
   "rom": {
     "sha256": "ac1682f1abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56",
-    "size": 1048576
+    "size": 524288
   },
   "patches": [
     {

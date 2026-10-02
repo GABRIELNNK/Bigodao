@@ -5,10 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
-# Encontra o SDL2 no computador do usuário
+# Busca a biblioteca gráfica SDL2 instalada no Linux
 find_package(SDL2 REQUIRED)
 
-# Inclui os diretórios de cabeçalhos
+# 🌟 CRUCIAL: Ativa as diretivas gráficas de janela e som do ecossistema gb-recompiled
+add_compile_definitions(GB_HAS_SDL2)
+
 include_directories(
     .
     runtime/include
@@ -16,7 +18,6 @@ include_directories(
     ${SDL2_INCLUDE_DIRS}
 )
 
-# Coleta todos os arquivos de código da engine runtime e do ImGui
 file(GLOB RUNTIME_SOURCES
     "runtime/src/*.c"
     "runtime/src/*.cpp"
@@ -25,17 +26,19 @@ file(GLOB RUNTIME_SOURCES
     "runtime/vendor/imgui/backends/imgui_impl_sdlrenderer2.cpp"
 )
 
-# NOVO CAMINHO PROTEGIDO: Busca a lógica gerada localmente pelo usuário
+# Coleta os arquivos de funções e dados do jogo, mantendo o base_WL_SM3_main.c de fora
 file(GLOB GAME_SOURCES
-    "compiler_src/game_code/*.c"
+    "compiler_src/game_code/*_funcs_*.c"
+    "compiler_src/game_code/*_dispatch_*.c"
+    "compiler_src/game_code/base_WL_SM3.c"
+    "compiler_src/game_code/*_rom.c"
 )
 
-# Cria o executável unificando a engine com o código do jogo patcheado
 add_executable(wario_land_port 
     main.cpp 
     ${RUNTIME_SOURCES} 
     ${GAME_SOURCES}
 )
 
-# Linka as dependências de biblioteca
+# Vincula o executável final com os drivers binários do SDL2 do sistema operacional
 target_link_libraries(wario_land_port PRIVATE ${SDL2_LIBRARIES})

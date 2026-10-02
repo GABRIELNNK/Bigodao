@@ -1,0 +1,3 @@
+{
+    "gb_write8\\(ctx, GB_IO_DMA, ctx->a\\);\\s+gb_tick\\(ctx, 1\\);\\s+ctx->pc = 0x1256;[\\s\\S]+?loc_1256:\\s+\\/\\* LD A,\\$28 \\*\\/[\\s\\S]+?gbrt_timed_ret\\(ctx\\);": "gb_write8(ctx, GB_IO_DMA, ctx->a);\n    gb_tick(ctx, 1);\n    // PASSO COPIADOR ATÔMICO EM C PURO\n    if (ctx && ctx->oam) {\n        uint16_t source_page = (uint16_t)ctx->a << 8;\n        uint8_t* ram_source = (source_page >= 0xA000 && source_page <= 0xBFFF) ? (ctx->eram + (source_page - 0xA000)) : (ctx->wram + (source_page - 0xC000));\n        memcpy(ctx->oam, ram_source, 160);\n    }\n    gbrt_timed_ret(ctx);\n\n    // Mantém as labels vivas na memória para não quebrar o switch-case do topo da função\n    loc_1253: loc_1255: loc_1256: loc_1258: pc_1259: loc_125b: ;"
+}
