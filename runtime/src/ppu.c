@@ -1321,9 +1321,19 @@ typedef struct {
     uint8_t oam_index;
 } WidescreenObjectPixel;
 
+#define WIDESCREEN_ATTRIBUTE_CACHE_CAPACITY (32u * 32u)
+
 typedef struct {
-    uint8_t attributes[0x80][4];
-    uint8_t valid[0x80][4];
+    uint16_t world_x;
+    uint16_t world_y;
+    uint16_t next;
+    uint8_t attributes;
+} WidescreenBlockAttributeCandidate;
+
+typedef struct {
+    uint16_t heads[0x80][4];
+    WidescreenBlockAttributeCandidate candidates[WIDESCREEN_ATTRIBUTE_CACHE_CAPACITY];
+    uint16_t count;
 } WidescreenBlockAttributeCache;
 
 static int ppu_unwrap_widescreen_map_coordinate(int map_tile, int reference) {
@@ -1341,12 +1351,17 @@ static void ppu_build_widescreen_block_attribute_cache(
     const GBContext* ctx,
     WidescreenBlockAttributeCache* cache) {
     memset(cache, 0, sizeof(*cache));
+    for (size_t block_id = 0; block_id < 0x80u; ++block_id) {
+        for (size_t tile_in_block = 0; tile_in_block < 4u; ++tile_in_block) {
+            cache->heads[block_id][tile_in_block] = UINT16_MAX;
+        }
+    }
     if (!ppu_is_cgb_mode(ctx) || !ctx->wram || !ctx->eram) {
         return;
     }
 
-    const int reference_x = ppu->frame_widescreen_scroll_x;
-    const int reference_y = ppu->frame_widescreen_scroll_y;
+    const int reference_x = (int)ppu->frame_widescreen_scroll_x - 0x50;
+    const int reference_y = (int)ppu->frame_widescreen_scroll_y - 0x48;
     const uint16_t tilemap_addr = get_bg_tilemap_addr(ppu->latched_lcdc);
     for (int map_y = 0; map_y < 32; ++map_y) {
         const int world_y = ppu_unwrap_widescreen_map_coordinate(map_y, reference_y);
@@ -1374,12 +1389,43 @@ static void ppu_build_widescreen_block_attribute_cache(
                 continue;
             }
 
-            if (!cache->valid[block_id][tile_in_block]) {
-                cache->attributes[block_id][tile_in_block] = vram_read_bank(ctx, 1, map_entry);
-                cache->valid[block_id][tile_in_block] = 1;
+            if (cache->count < WIDESCREEN_ATTRIBUTE_CACHE_CAPACITY) {
+                const uint16_t candidate_index = cache->count++;
+                WidescreenBlockAttributeCandidate* candidate =
+                    &cache->candidates[candidate_index];
+                candidate->world_x = (uint16_t)(world_x & ~7);
+                candidate->world_y = (uint16_t)(world_y & ~7);
+                candidate->attributes = vram_read_bank(ctx, 1, map_entry);
+                candidate->next = cache->heads[block_id][tile_in_block];
+                cache->heads[block_id][tile_in_block] = candidate_index;
             }
         }
     }
+}
+
+static bool ppu_find_widescreen_block_attributes(
+    const WidescreenBlockAttributeCache* cache,
+    uint8_t block_id,
+    size_t tile_in_block,
+    int world_x,
+    int world_y,
+    uint8_t* attributes) {
+    uint16_t candidate_index = cache->heads[block_id][tile_in_block];
+    int best_distance = 0x7FFFFFFF;
+    bool found = false;
+    while (candidate_index != UINT16_MAX) {
+        const WidescreenBlockAttributeCandidate* candidate =
+            &cache->candidates[candidate_index];
+        const int distance = abs((int)candidate->world_x - world_x) +
+            abs((int)candidate->world_y - world_y);
+        if (distance < best_distance) {
+            best_distance = distance;
+            *attributes = candidate->attributes;
+            found = true;
+        }
+        candidate_index = candidate->next;
+    }
+    return found;
 }
 
 static bool ppu_fetch_warioland_world_pixel(
@@ -1415,9 +1461,15 @@ static bool ppu_fetch_warioland_world_pixel(
     uint8_t attr = cgb_mode ? vram_read_bank(ctx, 1, map_entry) : 0;
     bool has_current_map_attribute =
         !cgb_mode || vram_read_bank(ctx, 0, map_entry) == tile_idx;
-    if (cgb_mode && !has_current_map_attribute &&
-        attribute_cache && attribute_cache->valid[block_id][(size_t)tile_y * 2u + tile_x]) {
-        attr = attribute_cache->attributes[block_id][(size_t)tile_y * 2u + tile_x];
+    const size_t tile_in_block = (size_t)tile_y * 2u + tile_x;
+    if (cgb_mode && !has_current_map_attribute && attribute_cache) {
+        ppu_find_widescreen_block_attributes(
+            attribute_cache,
+            block_id,
+            tile_in_block,
+            world_x,
+            world_y,
+            &attr);
     }
     const uint8_t tile_bank = (attr & OAM_CGB_BANK) ? 1u : 0u;
     pixel->palette = attr & OAM_CGB_PALETTE;
@@ -1820,7 +1872,10 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
         if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
             bg.priority = false;
         }
-        const WidescreenObjectPixel obj = ppu_fetch_widescreen_object_pixel(ppu, ctx, extended_x);
+        WidescreenObjectPixel obj = ppu_fetch_widescreen_object_pixel(ppu, ctx, extended_x);
+        if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
+            obj.behind_bg = false;
+        }
 
         /* Aplica o fade gradual apenas nas margens externas */
         if (extended_x < 0) {
