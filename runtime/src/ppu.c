@@ -325,9 +325,6 @@ void ppu_reset(GBPPU* ppu, const GBContext* ctx) {
     ppu->line_sprite_height = 8;
     ppu->fetched_sprite_mask = 0;
     ppu->considered_bg_tiles = 0;
-    memset(ppu->anti_flicker_oam, 0, sizeof(ppu->anti_flicker_oam));
-    memset(ppu->anti_flicker_age, 0xFF, sizeof(ppu->anti_flicker_age));
-    ppu->anti_flicker_initialized = false;
     ppu->window_line = 0;
     ppu->window_triggered = false;
     ppu->window_y_triggered = false;
@@ -693,31 +690,6 @@ static void render_dmg_sprites_scanline_fast(GBPPU* ppu,
     }
 }
 
-/* Game-side sprite rotation (more enemies than free OAM slots) hides an
- * object by parking it at Y=0/Y>=160 for a frame or two. Holding the last
- * visible bytes for a short grace period merges the rotated sets so the
- * sprite reads as solid instead of blinking. */
-#define ANTI_FLICKER_HOLD_FRAMES 1
-
-static void ppu_update_anti_flicker_oam(GBPPU* ppu, const GBContext* ctx) {
-    for (int i = 0; i < 40; i++) {
-        const size_t offset = (size_t)i * 4u;
-        const uint8_t* live = ctx->oam + offset;
-        const uint8_t y = live[0];
-        const bool visible = y != 0 && y < 160;
-
-        if (visible || !ppu->anti_flicker_initialized) {
-            memcpy(ppu->anti_flicker_oam + offset, live, 4);
-            ppu->anti_flicker_age[i] = 0;
-        } else if (ppu->anti_flicker_age[i] < ANTI_FLICKER_HOLD_FRAMES) {
-            ppu->anti_flicker_age[i]++;
-        } else {
-            memcpy(ppu->anti_flicker_oam + offset, live, 4);
-        }
-    }
-    ppu->anti_flicker_initialized = true;
-}
-
 static void render_sprites_scanline(GBPPU* ppu,
                                     GBContext* ctx,
                                     const uint8_t* bg_raw,
@@ -729,10 +701,6 @@ static void render_sprites_scanline(GBPPU* ppu,
     int sprite_count = 0;
     ScanlineSprite sprites[40];
 
-    if (ppu->ly == 0) {
-        ppu_update_anti_flicker_oam(ppu, ctx);
-    }
-
     if (!(ppu->latched_lcdc & LCDC_OBJ_ENABLE)) {
         return;
     }
@@ -740,7 +708,7 @@ static void render_sprites_scanline(GBPPU* ppu,
     sprite_height = (ppu->latched_lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
 
     for (int i = 0; i < 40 && sprite_count < 40; i++) {
-        const OAMEntry* sprite = (const OAMEntry*)(ppu->anti_flicker_oam + i * 4);
+        const OAMEntry* sprite = (const OAMEntry*)(ctx->oam + i * 4);
         int sprite_y = (int)sprite->y - 16;
 
         if (ppu->ly < sprite_y || ppu->ly >= sprite_y + sprite_height) {
@@ -950,8 +918,8 @@ static DotObjectPixel ppu_fetch_object_dot(const GBPPU* ppu,
         }
 
         const size_t oam_offset = (size_t)oam_index * 4u;
-        const uint8_t tile_byte = ppu->anti_flicker_oam[oam_offset + 2u];
-        const uint8_t flags = ppu->anti_flicker_oam[oam_offset + 3u];
+        const uint8_t tile_byte = ctx->oam[oam_offset + 2u];
+        const uint8_t flags = ctx->oam[oam_offset + 3u];
         int line = (int)ppu->ly - ((int)ppu->visible_sprite_y[slot] - 16);
         uint8_t tile = tile_byte;
         uint8_t bank = 0;
@@ -1115,16 +1083,13 @@ static void ppu_render_background_span(GBPPU* ppu,
 }
 
 static void ppu_select_line_sprites(GBPPU* ppu, const GBContext* ctx) {
-    if (ppu->ly == 0) {
-        ppu_update_anti_flicker_oam(ppu, ctx);
-    }
     ppu->visible_sprite_count = 0;
     ppu->line_sprite_height = (ppu->lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
     for (uint8_t index = 0;
          index < 40;
          ++index) {
         const size_t offset = (size_t)index * 4u;
-        const uint8_t y = ppu->anti_flicker_oam[offset];
+        const uint8_t y = ctx->oam[offset];
         const int screen_y = (int)y - 16;
         if ((int)ppu->ly < screen_y ||
             (int)ppu->ly >= screen_y + ppu->line_sprite_height) {
@@ -1133,7 +1098,7 @@ static void ppu_select_line_sprites(GBPPU* ppu, const GBContext* ctx) {
         if (ppu->visible_sprite_count < 40) {
             const uint8_t slot = ppu->visible_sprite_count++;
             ppu->visible_sprite_indices[slot] = index;
-            ppu->visible_sprite_x[slot] = ppu->anti_flicker_oam[offset + 1u];
+            ppu->visible_sprite_x[slot] = ctx->oam[offset + 1u];
             ppu->visible_sprite_y[slot] = y;
         }
     }
@@ -1537,43 +1502,39 @@ static WidescreenObjectPixel ppu_fetch_widescreen_object_pixel(
 
     for (uint8_t oam_index = 0; oam_index < 40; ++oam_index) {
         const size_t oam_offset = (size_t)oam_index * 4u;
-        /* Reads the per-frame anti-flicker snapshot (see
-         * ppu_update_anti_flicker_oam) instead of raw OAM, so engine-side
-         * sprite rotation doesn't blink here either. */
-        const uint8_t current_y = ppu->anti_flicker_oam[oam_offset];
-        const uint8_t current_x = ppu->anti_flicker_oam[oam_offset + 1u];
-        const uint8_t current_tile = ppu->anti_flicker_oam[oam_offset + 2u];
-        const uint8_t current_flags = ppu->anti_flicker_oam[oam_offset + 3u];
+        const uint8_t current_y = ctx->oam[oam_offset];
+        const uint8_t current_x = ctx->oam[oam_offset + 1u];
+        const uint8_t current_tile = ctx->oam[oam_offset + 2u];
+        const uint8_t current_flags = ctx->oam[oam_offset + 3u];
 
         if (current_y == 0 || current_x == 0 || current_y >= 160) {
             continue;
         }
 
         const int screen_y = (int)current_y - 16;
-        // Posição crua do hardware do Game Boy
-        int screen_x = (int)current_x - 8;;  //int screen_x = (int)x - 8;//
-        /*
-        // SINCRONIA ABSOLUTA DE SPRITE: 
-        // Em vez de usar cálculos fixos, nós descobrimos onde o sprite está pisando
-        // em relação ao registrador de hardware real (latched_scx) que governa a tela central.
-        int relative_x = (sprite_hardware_x - (int)ppu->latched_scx) & 0xFF;
-        if (relative_x > 128) relative_x -= 256;
-
-        // Projeta a posição real do sprite na janela estendida do PC de forma imutável
-        int screen_x = sprite_hardware_x; //int screen_x = extended_x - (extended_x - (ppu->latched_scx + relative_x));
-        //screen_x = sprite_hardware_x;
-
-        // Se o sprite está na margem esquerda (embrulho circular do buffer de hardware)
-        if (x >= 216) {
-            screen_x = sprite_hardware_x - 256;
+        int screen_x = (int)current_x - 8;
+        /* OAM X is an 8-bit hardware coordinate that wraps mod 256. A fixed
+         * cutoff can't tell the two unwraps apart for individual OBJ tiles of
+         * a multi-tile sprite (they sit at an offset from the actor anchor,
+         * so they can cross the cutoff independently of it and ghost onto the
+         * opposite edge). Picking whichever of the three possible
+         * representations (as-is, -256, +256) lands closest to screen center
+         * is correct regardless of where the real edge/margin boundary is,
+         * since the wrong one is always ~256px further away. */
+        {
+            const int center = GB_SCREEN_WIDTH / 2;
+            int best = screen_x;
+            const int alt_low = screen_x - 256;
+            const int alt_high = screen_x + 256;
+            if (abs(alt_low - center) < abs(best - center)) {
+                best = alt_low;
+            }
+            if (abs(alt_high - center) < abs(best - center)) {
+                best = alt_high;
+            }
+            screen_x = best;
         }
-        */
-        
-        if (current_x >= 256 - GB_WIDESCREEN_MARGIN + 8) {
-            screen_x -= 256;
-        }
-        
-        
+
         if (ppu->ly < screen_y || ppu->ly >= screen_y + ppu->line_sprite_height) {
             continue;
         }
@@ -1712,10 +1673,6 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     if (ctx && ctx->eram && ctx->eram_size >= 0x0904) {
         ppu->frame_widescreen_scroll_x = (uint16_t)ctx->eram[0x0902u] << 8u | ctx->eram[0x0903u];
         ppu->frame_widescreen_scroll_y = (uint16_t)ctx->eram[0x0900u] << 8u | ctx->eram[0x0901u];
-    }
-
-    if (scanline == 0) {
-        ppu_update_anti_flicker_oam(ppu, ctx);
     }
 
     const size_t row_base = (size_t)scanline * GB_WIDESCREEN_WIDTH;
