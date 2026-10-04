@@ -1086,7 +1086,10 @@ static void load_runtime_preferences(void) {
                     }
                     continue;
                 }
-
+                if (strcmp(key, "display.fullscreen") == 0) {
+                    g_fullscreen = (strcmp(value, "0") != 0);
+                    continue;
+                }
                 if (strcmp(key, "display.widescreen") == 0) {
                     g_widescreen_mode = (strcmp(value, "0") != 0);
                     continue;
@@ -1241,6 +1244,7 @@ static void save_runtime_preferences(void) {
             g_audio_volume_percent.load(std::memory_order_relaxed));
     fprintf(file, "audio.device_name=%s\n", g_audio_target_device_name.c_str());
     fprintf(file, "savestate.slot=%d\n", g_savestate_slot);
+    fprintf(file, "display.fullscreen=%d\n", g_fullscreen ? 1 : 0);
     fprintf(file, "display.widescreen=%d\n", g_widescreen_mode ? 1 : 0);
     fprintf(file, "display.widescreen_fade_enabled=%d\n", g_widescreen_fade_enabled ? 1 : 0);
     fprintf(file, "display.widescreen_fade_percent=%d\n", g_widescreen_fade_percent);
@@ -1931,6 +1935,7 @@ static void set_fullscreen_enabled(bool enabled) {
     // Garante que o renderer e a textura sejam marcados para reinicialização no próximo frame
     g_renderer_reset_pending = true;
     update_game_viewport();
+    save_runtime_preferences();
 }
 
 static bool recreate_streaming_texture(void) {
@@ -3735,7 +3740,11 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
                         gbrt_port_input(ctx, &port_event);
                     }
                     return true;
-
+                case SDL_SCANCODE_F11:
+                    if (pressed && event->key.repeat == 0) {
+                        set_fullscreen_enabled(!g_fullscreen);
+                    }
+                    return true;
                 case SDL_SCANCODE_ESCAPE:
                 case SDL_SCANCODE_AC_BACK:
                     if (pressed && event->key.repeat == 0) {

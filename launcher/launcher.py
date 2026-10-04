@@ -167,7 +167,7 @@ html_code = """
         margin-bottom: 24px;
     }
     .gui-title {
-        font-size: 32px;
+        font-size: 50px;
         font-weight: 900;
         background: linear-gradient(45deg, #ffcc00, #ff6600);
         -webkit-background-clip: text;
