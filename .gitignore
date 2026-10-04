@@ -30,6 +30,7 @@ ground_truth.trace
 
 # Pastas de build locais geradas pelo CMake e Ninja
 build/
+build*
 .cmake/
 CMakeCache.txt
 CMakeFiles/

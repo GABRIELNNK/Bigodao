@@ -41,6 +41,12 @@ add_executable(wario_land_port
     ${GAME_SOURCES}
 )
 
+# Aplica as flags estáticas APENAS quando estiver compilando para o Windows (via MinGW)
+if(WIN32)
+    target_link_options(wario_land_port PRIVATE "-static-libgcc" "-static-libstdc++" "-static")
+    target_link_libraries(wario_land_port PRIVATE comdlg32)
+endif()
+
 add_custom_target(apply_widescreen_hack_fov_patch
     COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/inject_text.py"

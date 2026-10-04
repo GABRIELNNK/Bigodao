@@ -1,3 +1,8 @@
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#endif
+
 #include "asset_extractor.hpp"
 #include "platform_sdl.h"
 #include "wl_sm3_patch.hpp"
@@ -7,6 +12,7 @@
 #include "runtime/vendor/imgui/imgui.h"
 #include "runtime/vendor/imgui/backends/imgui_impl_sdl2.h"
 #include "runtime/vendor/imgui/backends/imgui_impl_sdlrenderer2.h"
+
 
 #include <filesystem>
 #include <iostream>
@@ -181,8 +187,32 @@ static std::filesystem::path find_patch_manifest(const char* executable_path) {
     throw std::runtime_error("Manifest tools/wl_sm3_dx_v12_patch.json not found.");
 }
 
-// Native file chooser via Zenity/KDialog
 static std::string open_file_dialog(const char* title, const char* filter) {
+#ifdef _WIN32
+    // Versão Nativa para Windows
+    OPENFILENAMEA ofn;
+    char szFile[260] = {0};
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile);
+    
+    // Converte o filtro simples para o formato do Windows (separado por \0)
+    ofn.lpstrFilter = "Todos os Arquivos\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFileTitle = NULL;
+    ofn.nMaxFileTitle = 0;
+    ofn.lpstrInitialDir = NULL;
+    ofn.lpstrTitle = title;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameA(&ofn) == TRUE) {
+        return std::string(ofn.lpstrFile);
+    }
+    return "";
+#else
+    // Mantém a versão original caso compile no Linux Nativo
     std::string command = "";
     if (system("which zenity > /dev/null 2>&1") == 0) {
         command = std::string("zenity --file-selection --title=\"") + title + "\" " + filter + " 2>/dev/null";
@@ -204,6 +234,7 @@ static std::string open_file_dialog(const char* title, const char* filter) {
         }
     }
     return "";
+#endif
 }
 
 // Execute Launcher GUI via ImGui + SDL2
