@@ -123,9 +123,12 @@ inline std::vector<uint8_t> apply_ips(
     return image;
 }
 
-inline std::vector<uint8_t> load_and_patch_rom(
+// Nova função que permite um caminho IPS customizado
+inline std::vector<uint8_t> load_and_patch_rom_with_override(
     const std::filesystem::path& rom_path,
-    const std::filesystem::path& manifest_path) {
+    const std::filesystem::path& manifest_path,
+    const std::filesystem::path& custom_ips_path = "") {
+    
     const std::string manifest = read_text_file(manifest_path);
     if (json_string(manifest, "schema") != "wl-sm3.ips-rom-patch" ||
         json_size(manifest, "version") != 1 ||
@@ -141,25 +144,49 @@ inline std::vector<uint8_t> load_and_patch_rom(
         throw std::runtime_error("A ROM selecionada nao corresponde a ROM original esperada");
     }
 
-    const std::filesystem::path ips_path =
-        manifest_path.parent_path() / json_string(manifest, "patch_file");
+    // Determina o caminho do IPS: usa a sobreposição se fornecida, senão busca no manifesto
+    std::filesystem::path ips_path;
+    bool is_custom_patch = !custom_ips_path.empty();
+
+    if (is_custom_patch) {
+        ips_path = custom_ips_path;
+    } else {
+        ips_path = manifest_path.parent_path() / json_string(manifest, "patch_file");
+    }
+
     const std::vector<uint8_t> ips = read_binary_file(ips_path);
-    const std::string patch_sha256 = json_string(manifest, "patch_sha256");
-    if (!gbrt_sha256_matches_hex(ips.data(), ips.size(), patch_sha256.c_str())) {
-        throw std::runtime_error("O arquivo IPS nao corresponde ao manifesto");
+
+    // Valida o checksum SHA256 apenas se estiver usando o patch IPS padrão do manifesto
+    if (!is_custom_patch) {
+        const std::string patch_sha256 = json_string(manifest, "patch_sha256");
+        if (!gbrt_sha256_matches_hex(ips.data(), ips.size(), patch_sha256.c_str())) {
+            throw std::runtime_error("O arquivo IPS nao corresponde ao manifesto");
+        }
     }
 
     std::vector<uint8_t> patched = apply_ips(
         original,
         ips,
         json_size(manifest, "patch_record_count"));
-    const size_t output_size = json_size(manifest, "output_size");
-    const std::string output_sha256 = json_string(manifest, "output_sha256");
-    if (patched.size() != output_size ||
-        !gbrt_sha256_matches_hex(patched.data(), patched.size(), output_sha256.c_str())) {
-        throw std::runtime_error("O resultado do IPS nao corresponde a ROM hack 1.2 esperada");
+
+    // Se estiver usando o patch original, valida também o tamanho e SHA256 final da ROM
+    if (!is_custom_patch) {
+        const size_t output_size = json_size(manifest, "output_size");
+        const std::string output_sha256 = json_string(manifest, "output_sha256");
+        if (patched.size() != output_size ||
+            !gbrt_sha256_matches_hex(patched.data(), patched.size(), output_sha256.c_str())) {
+            throw std::runtime_error("O resultado do IPS nao corresponde a ROM hack 1.2 esperada");
+        }
     }
+
     return patched;
 }
 
+// Mantida para compatibilidade
+inline std::vector<uint8_t> load_and_patch_rom(
+    const std::filesystem::path& rom_path,
+    const std::filesystem::path& manifest_path) {
+    return load_and_patch_rom_with_override(rom_path, manifest_path, "");
 }
+
+} // namespace wl_sm3_patch
