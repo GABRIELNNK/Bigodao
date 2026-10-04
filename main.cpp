@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
 
     AssetExtractor extractor;
     
-    // 1. Roda o assistente do wario.o2r lícito aberto (Estilo ZIP do PaperBoat)
+    // 1. Roda o assistente do wario.o2r lícito aberto (Estilo ZIP)
     if (!extractor.check_and_prepare_assets(rom_path)) {
         return 1;
     }

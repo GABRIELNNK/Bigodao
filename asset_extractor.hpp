@@ -110,7 +110,7 @@ public:
             return true;
         }
 
-        std::cout << "[VFS] Criando container de mods wario.o2r estilo PaperBoat...\n";
+        std::cout << "[VFS] Criando container de mods wario.o2r...\n";
         
         if (!fs::exists(rom_path)) {
             std::cerr << "ROM nao encontrada: " << rom_path << '\n';

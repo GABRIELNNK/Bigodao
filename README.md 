@@ -8,22 +8,31 @@ rom name: base_WL-SM3.gb
         
 
     1b. buildar o executavel do recompiled - a partir da pasta raiz deste projeto
-        gb-recompiled/build/bin/gbrecomp base_WL-SM3.gb -o compiler_src/game_code
+        #gb-recompiled/build/bin/gbrecomp base_WL-SM3.gb -o compiler_src/game_code
+        gb-recompiled/build/bin/gbrecomp hack1.2_WL-SM3.gb -o compiler_src/game_code/game_code_hack
         #cmake -G Ninja -S compiler_src/game_code -B compiler_src/game_code/build
         #ninja -C compiler_src/game_code/build
         #./output/game/build/game
 
-2. aplicar patch
-    python3 compiler_src/widescreen_patches/apply_widescreen_WL-sm3.py rom.gb compiler_src/game_code/
+#2. aplicar patch
+    #python3 compiler_src/widescreen_patches/apply_widescreen_WL-sm3.py rom.gb compiler_src/game_code/
 
-3. flickering
-python3 tools/inject_text.py --map tools/patch_flickering.json --dir compiler_src/game_code --regex --apply
-python3 tools/inject_text.py --map tools/widescreen_fov_patch.json --dir compiler_src/game_code --ext .c --apply
+#3. flickering
+#python3 tools/inject_text.py --map tools/patch_flickering.json --dir compiler_src/game_code --regex --apply
+#python3 tools/inject_text.py --map tools/widescreen_fov_patch.json --dir compiler_src/game_code --ext .c --apply
+#python3 tools/inject_text.py --map tools/widescreen_hack_fov_30_patch.json --dir compiler_src/game_code_hack --ext .c --apply
 
 4. executar a ROM hack DX 1.2 no aplicativo
     cmake -G Ninja -S . -B build
-    cmake --build build
-    ./build/wario_land_port /caminho/para/base_WL-SM3.gb
+    ninja -C build
 
-O aplicativo valida a ROM original pelo SHA-256 e aplica em memoria o IPS
+*** CMakeLists já aplica: widescreen_hack_fov_30_patch.json <<<< este patch 
+aparentemente não regula posiçao de surgir inimigo a direita, só regula até 
+onde vai para a esquerda
+
+***TODO: achar posição de surgimento de inimigo a direita
+
+
+*** O aplicativo valida a ROM original pelo SHA-256 e aplica em memoria o IPS
 descrito em `tools/wl_sm3_dx_v12_patch.json`; a ROM original nao e modificada.
+No compilado, colocar o executável e o IPS juntos e tools/wl_sm3_dx_v12_patch.json

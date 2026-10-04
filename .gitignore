@@ -13,6 +13,8 @@
 # Bloqueia a pasta onde o gbrecomp extrai as funções em C do jogo
 compiler_src/game_code/
 compiler_src/game_code_hack/
+compiler_src/game_code_*
+teste/
 
 # Bloqueia o arquivo empacotado de assets gerado pelo assistente
 wario.o2r
