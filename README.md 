@@ -1,5 +1,9 @@
-rom hash: ac1682f17abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56
+rom hash (sha256sum): ac1682f17abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56
 rom name: base_WL-SM3.gb
+ips hash (sha256sum): 599d9f59090df3e1e77c1678e069290a2cd9ce59c71cf58d66c4dc3db8b7facd
+ips version: 1.2
+ips autor: korxo
+
 
 1. extrair rom pelo gb_recompiled
     1a. buildar o gb_recompiled - a partir da pasta raiz deste projeto
@@ -22,8 +26,10 @@ rom name: base_WL-SM3.gb
 #python3 tools/inject_text.py --map tools/widescreen_fov_patch.json --dir compiler_src/game_code --ext .c --apply
 #python3 tools/inject_text.py --map tools/widescreen_hack_fov_30_patch.json --dir compiler_src/game_code_hack --ext .c --apply
 
+
+Linux Compilacao
 4. executar a ROM hack DX 1.2 no aplicativo
-    cmake -G Ninja -S . -B build
+    cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release
     ninja -C build
 
 *** CMakeLists já aplica: widescreen_hack_fov_30_patch.json <<<< este patch 
@@ -39,19 +45,19 @@ No compilado, colocar o executável e o IPS juntos e tools/wl_sm3_dx_v12_patch.j
 
 
 
-#Compilar em Windows
+Compilar em Windows
 cd compiler_src
  wget https://github.com/libsdl-org/SDL/releases/download/release-2.30.0/SDL2-devel-2.30.0-mingw.tar.gz
  tar -xvf SDL2-devel-2.30.0-mingw.tar.gz
 
-# 1. Cria e entra na pasta de build
+ 1. Cria e entra na pasta de build
 mkdir build_win
 cd build_win
 
-# 2. Configura o CMake apontando para o arquivo de toolchain
+ 2. Configura o CMake apontando para o arquivo de toolchain
 cmake -DCMAKE_TOOLCHAIN_FILE=../mingw-toolchain.cmake ..
 
-# 3. Compila o projeto
+ 3. Compila o projeto
 cmake --build .
 
 find /usr/usr/bin/ /usr/lib/gcc/ -name "libgcc_s_seh-1.dll" 2>/dev/null
@@ -64,3 +70,14 @@ find /usr/usr/bin/ /usr/lib/gcc/ -name "libstdc++-6.dll" 2>/dev/null
 /usr/lib/gcc/x86_64-w64-mingw32/13-posix/libstdc++-6.dll
 /usr/lib/gcc/x86_64-w64-mingw32/13-win32/libstdc++-6.dll
 cp /usr/lib/gcc/x86_64-w64-mingw32/13-win32/libstdc++-6.dll ../compiler_src/SDL2-2.30.0
+
+
+
+
+
+***** arquivos estudo:
+compiler_src/widescreen_patches - tentativa fracassada
+tools/patch_flickering.json - tentativa fracassada de manter os sprites nao piscando na rom original
+tools/widescreen_fov_patch.json - ok para rom original
+tools/widescreen_hack_fov_30_patch.json - ok, é aplicado no CMakeLists
+tools/wl_sm3_dx_v12_patch.json - ok, tem que ser incluido na distribuição para aplicar patch do rom DX

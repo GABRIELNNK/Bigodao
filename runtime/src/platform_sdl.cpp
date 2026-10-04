@@ -191,8 +191,10 @@ static GBPPU* active_ppu(void) {
  * world map, bonus games, and other static-screen modes stream backgrounds
  * for a fixed 160px view and show garbage tiles in the extra margin. */
 static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
-    switch (game_mode) {
-        case 2:  /* Mode_LevelInit */
+    switch (game_mode) {    /*mode 1 = mapa
+                              mode 2/3 = gameplay
+                              resto = preta nas laterais*/
+        case 2:  /* Mode_LevelInit */    
         case 3:  /* Mode_Level */
             return true;
         default:
@@ -212,7 +214,7 @@ static bool gb_platform_should_black_fill_non_side_scrolling(const GBContext* ct
         return false;
     }
     const uint8_t game_mode = ctx->eram[0x08C3];
-    return !gb_mode_is_side_scrolling(game_mode) && game_mode != 1;
+    return !gb_mode_is_side_scrolling(game_mode) /*&& game_mode != 1*/;
 }
 
 static GBPortFrame g_port_frame = {};
