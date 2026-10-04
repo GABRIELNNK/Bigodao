@@ -14,6 +14,7 @@
 compiler_src/game_code/
 compiler_src/game_code_hack/
 compiler_src/game_code_*
+compiler_src/SDL*
 teste/
 
 # Bloqueia o arquivo empacotado de assets gerado pelo assistente

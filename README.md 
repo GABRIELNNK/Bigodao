@@ -36,3 +36,16 @@ onde vai para a esquerda
 *** O aplicativo valida a ROM original pelo SHA-256 e aplica em memoria o IPS
 descrito em `tools/wl_sm3_dx_v12_patch.json`; a ROM original nao e modificada.
 No compilado, colocar o executável e o IPS juntos e tools/wl_sm3_dx_v12_patch.json
+
+
+
+#Compilar em Windows
+cd compiler_src
+ wget https://github.com/libsdl-org/SDL/releases/download/release-2.30.0/SDL2-devel-2.30.0-mingw.tar.gz
+ tar -xvf SDL2-devel-2.30.0-mingw.tar.gz
+cd ..
+
+ x86_64-w64-mingw32-g++ -O2 main.cpp -o build/wario_land_port.exe \
+  -I.compiler_src/SDL2-2.30.0/x86_64-w64-mingw32/include \
+  -L.compiler_src/SDL2-2.30.0/x86_64-w64-mingw32/lib \
+  -lSDL2main -lSDL2
