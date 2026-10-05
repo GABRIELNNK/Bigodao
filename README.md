@@ -9,7 +9,7 @@
 
 ## 📌 About the Project
 
-**Bigodão: WL SM3** is a personal research project focused on **static decompilation and recompilation** techniques applied to classic Game Boy hardware binaries. 
+**Bigodão: WL SM3** is a personal study project focused on **static decompilation and recompilation** techniques applied to classic Game Boy hardware binaries. 
 
 By extracting and recompiling game code into modern C/C++, this project enables *Wario Land: Super Mario Land 3* to run natively on Linux and Windows with enhanced performance and **native widescreen rendering** without standard emulator stretched distortion.
 
