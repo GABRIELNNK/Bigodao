@@ -23,8 +23,8 @@ To build and run this port, you must provide your own legally acquired Game Boy 
 
 | Component | File Name | Version | SHA-256 Hash |
 | :--- | :--- | :--- | :--- |
-| **Base ROM** | `base_WL-SM3.gb` | Original | `ac1682f17abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56` |
-| **IPS Patch** | `hack1.2_WL-SM3.gb` | v1.2 (by **korxo**) | `599d9f59090df3e1e77c1678e069290a2cd9ce59c71cf58d66c4dc3db8b7facd` |
+| **Base ROM** | `Wario Land - Super Mario Land 3 (World)` | Original | `ac1682f17abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56` |
+| **IPS Patch** | `Wario Land - Super Mario Land 3 DX (World).ips` | v1.2 (by **korxo**) | `599d9f59090df3e1e77c1678e069290a2cd9ce59c71cf58d66c4dc3db8b7facd` |
 
 > ℹ️ **How memory patching works:**  
 > The executable validates the base ROM via its SHA-256 hash and applies the IPS patch (defined in `tools/wl_sm3_dx_v12_patch.json`) directly **in memory**. Your original ROM on disk remains untouched.  
