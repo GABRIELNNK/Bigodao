@@ -3638,7 +3638,7 @@ void gb_ret(GBContext* ctx) {
 void gbrt_timed_call(GBContext* ctx,
                      uint16_t target,
                      uint16_t return_address) {
-    if (target == 0x449cu || target == 0x44bcu) {
+    /*if (target == 0x449cu || target == 0x44bcu) {
         fprintf(
             stderr,
             "[WL-ACTOR-SPAWN] frame=%llu caller=%u:%04X target=%04X dir=%02X offset=%02X:%02X last=%02X:%02X scrollX=%02X:%02X\n",
@@ -3653,7 +3653,7 @@ void gbrt_timed_call(GBContext* ctx,
             ctx->eram ? ctx->eram[0x03b0u] : 0xffu,
             ctx->eram ? ctx->eram[0x0902u] : 0xffu,
             ctx->eram ? ctx->eram[0x0903u] : 0xffu);
-    }
+    } debug forçado*/
     /* Opcode + two immediate reads + internal stack cycle, then two writes. */
     gbrt_timed_stack_write16(ctx, return_address, 16, true, target);
 }

@@ -36,7 +36,7 @@ Linux Compilacao
 aparentemente não regula posiçao de surgir inimigo a direita, só regula até 
 onde vai para a esquerda
 
-***TODO: achar posição de surgimento de inimigo a direita
+***TODO: achar posição de surgimento de inimigo a direita. func3.c parece ter indicios nos valores 0xA0 (160px)  - gb_cp8(ctx, 0xe0); - pc_374e e pc_33d7
 
 
 *** O aplicativo valida a ROM original pelo SHA-256 e aplica em memoria o IPS
@@ -81,3 +81,16 @@ tools/patch_flickering.json - tentativa fracassada de manter os sprites nao pisc
 tools/widescreen_fov_patch.json - ok para rom original
 tools/widescreen_hack_fov_30_patch.json - ok, é aplicado no CMakeLists
 tools/wl_sm3_dx_v12_patch.json - ok, tem que ser incluido na distribuição para aplicar patch do rom DX
+
+
+
+
+
+
+
+
+
+
+
+
+
