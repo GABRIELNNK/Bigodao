@@ -1877,7 +1877,9 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
 
     // Se NÃO for a gameplay de side-scrolling (game_mode != 3), força o corte preto em AMBAS as margens Widescreen
     const bool is_sidescrolling_gameplay = (game_mode == 3 || game_mode == 2 );
+    //____gamemode
 
+    
     // 2. Lê a largura limite do mapa/câmara da fase atual na ERAM ($A585 / $A586 no Wario Land 1)
     // Se não for possível ler a ERAM, utiliza o limite máximo de scroll detectado
     uint16_t max_scroll_x = 0x0F80; 
@@ -1887,7 +1889,29 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
             max_scroll_x = eram_max;
         }
     }
-    //____gamemode
+    
+
+    //_____________________tentativa limitar a borda de interfase
+    // 3. Detecção de Sala Fechada / Trava de Porta
+    // No Wario Land, quando entramos numa porta, o byte em $A58D ou $A58E guarda
+    // o estado de travamento da câmara da sub-sala. Se a largura da câmara for menor que 160px
+    // ou se o scroll_x estiver congelado no início da porta, a sub-sala é limitada.
+    bool left_wall_locked = false;
+    bool right_wall_locked = false;
+
+    if (ctx && ctx->eram && ctx->eram_size >= 0x058F) {
+        // Se a posição da câmara for igual ao limite esquerdo da sala atual
+        uint16_t min_room_scroll = ((uint16_t)ctx->eram[0x058B] << 8) | ctx->eram[0x058C];
+        uint16_t max_room_scroll = ((uint16_t)ctx->eram[0x058D] << 8) | ctx->eram[0x058E];
+
+        if (min_room_scroll > 0 && scroll_x <= min_room_scroll) {
+            left_wall_locked = true;
+        }
+        if (max_room_scroll > 0 && scroll_x >= max_room_scroll) {
+            right_wall_locked = true;
+        }
+    }
+    //_____________________tentativa limitar a borda de interfase
 
     
      for (int extended_x = -GB_WIDESCREEN_MARGIN; extended_x < GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN; extended_x++) {
@@ -1912,11 +1936,6 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
                 continue;
             }
         }
-        /*
-        if (world_x < 0) {
-            ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u; // Força preto
-            continue;
-        }*/
 
         // C) MÁSCARA DA DIREITA (Fim do nível):
         // Verifica se a câmara bateu no limite direito de scroll da fase E o pixel ultrapassou o limite do mapa

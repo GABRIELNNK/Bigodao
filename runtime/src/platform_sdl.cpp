@@ -194,7 +194,7 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
     switch (game_mode) {    /*mode 1 = mapa
                               mode 2/3 = gameplay
                               resto = preta nas laterais*/
-        case 2:  /* Mode_LevelInit */    
+        //case 2:  /* Mode_LevelInit */    
         case 3:  /* Mode_Level */
             return true;
         default:
