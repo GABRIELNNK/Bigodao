@@ -1864,8 +1864,68 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
 
     /* Renderiza toda a largura (margem esquerda, centro de 160px e margem direita)
      * utilizando a mesma rotina de amostragem de pixels para garantir alinhamento perfeito. */
-    for (int extended_x = -GB_WIDESCREEN_MARGIN; extended_x < GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN; extended_x++) {
+    
+    // Obtém a posição X do scroll da câmara no mundo do jogo
+    const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
+    
+    //____gamemode
+    // 1. Identifica o game_mode diretamente da ERAM ($A8C3 -> eram[0x08C3])
+    uint8_t game_mode = 0;
+    if (ctx && ctx->eram && ctx->eram_size > 0x08C3) {
+        game_mode = ctx->eram[0x08C3];
+    }
+
+    // Se NÃO for a gameplay de side-scrolling (game_mode != 3), força o corte preto em AMBAS as margens Widescreen
+    const bool is_sidescrolling_gameplay = (game_mode == 3 || game_mode == 2 );
+
+    // 2. Lê a largura limite do mapa/câmara da fase atual na ERAM ($A585 / $A586 no Wario Land 1)
+    // Se não for possível ler a ERAM, utiliza o limite máximo de scroll detectado
+    uint16_t max_scroll_x = 0x0F80; 
+    if (ctx && ctx->eram && ctx->eram_size >= 0x0586) {
+        uint16_t eram_max = ((uint16_t)ctx->eram[0x0585] << 8) | ctx->eram[0x0586];
+        if (eram_max > 0) {
+            max_scroll_x = eram_max;
+        }
+    }
+    //____gamemode
+
+    
+     for (int extended_x = -GB_WIDESCREEN_MARGIN; extended_x < GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN; extended_x++) {
         const int dest_x = extended_x + GB_WIDESCREEN_MARGIN;
+
+        //___________________ exclui o começo das fases
+        // Calcula a coordenada real de mundo do pixel atual
+        const int world_x = (int)scroll_x - 0x50 + extended_x;
+
+        // A) Se não estiver em game_mode == 3, pinta as margens externas de preto
+        /*if (!is_sidescrolling_gameplay) {
+            if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
+                ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u; // Pixel preto
+                continue;
+            }
+        }*/
+
+        // 1. LIMITE DA ESQUERDA: Se o pixel cai antes do início do mapa (world_x < 0)
+        if (is_sidescrolling_gameplay) {
+            if (world_x < 0) {
+                ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u; // Força preto
+                continue;
+            }
+        }
+        /*
+        if (world_x < 0) {
+            ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u; // Força preto
+            continue;
+        }*/
+
+        // C) MÁSCARA DA DIREITA (Fim do nível):
+        // Verifica se a câmara bateu no limite direito de scroll da fase E o pixel ultrapassou o limite do mapa
+        if (scroll_x >= max_scroll_x && extended_x >= GB_SCREEN_WIDTH) {
+            ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u;
+            continue;
+        }
+
+        //___________________
 
         WidescreenBackgroundPixel bg = ppu_fetch_widescreen_background_pixel(
             ppu, ctx, extended_x, &attribute_cache);

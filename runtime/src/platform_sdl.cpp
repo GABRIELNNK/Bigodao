@@ -2389,7 +2389,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 if (black_fill_non_side_scrolling) {
                     for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
                         if (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
-                            dst_row_ptr[x] = 0xFF000000;
+                            dst_row_ptr[x] = 0xFF000000; //fundo widescreen
                         } else {
                             dst_row_ptr[x] = src_row[x];
                         }
