@@ -1508,50 +1508,31 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
         return pixel;
     }
 
-    /*if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
-        const uint16_t scroll_x = (uint16_t)ctx->eram[0x0902u] << 8u |
-            ctx->eram[0x0903u];
-        const uint16_t scroll_y = (uint16_t)ctx->eram[0x0900u] << 8u |
-            ctx->eram[0x0901u];
-        const int world_x = (int)scroll_x - 0x50 + extended_x;
-        const int world_y = (int)scroll_y - 0x48 + ppu->ly;
-        if (ppu_fetch_warioland_world_pixel(
-                ppu,
-                ctx,
-                world_x,
-                world_y,
-                &pixel)) {
-            return pixel;
-    }*/
 
     if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
-        // Coordenadas brutas da ERAM (Câmera lógica)
-        const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
-        const uint16_t scroll_y = ppu->frame_widescreen_scroll_y;
+        // 1. Posições de scroll lógicas da câmara lidas da ERAM
+        const uint16_t base_scroll_x = ppu->frame_widescreen_scroll_x;
+        const uint16_t base_scroll_y = ppu->frame_widescreen_scroll_y;
 
-        // FUSÃO ABSOLUTA: Descobre em qual bloco (página) de 256px o mapa infinito está
-        // e usa o registrador de hardware real (latched_scx) para a posição milimétrica interna.
-        // Isso blinda as margens contra as piscadas e freadas de ciclos dos sprites!
-        int world_base_x = ((int)scroll_x - 0x50) & ~0xFF;
-        int hardware_x = (world_base_x + ppu->latched_scx + extended_x) & 0x0FFF;
+        // 2. Calcula o deslocamento de vibração/shake do hardware
+        // O registador SCX (latched_scx) contem a posição X real enviada para a PPU na scanline.
+        // A diferença entre o scroll esperado da câmara e o registador é o "tremor".
+        int shake_offset_x = (int)(ppu->latched_scx & 0x07) - ((int)(base_scroll_x - 0x50) & 0x07);
+        int shake_offset_y = (int)(ppu->latched_scy & 0x07) - ((int)(base_scroll_y - 0x48) & 0x07);
 
-        // Se o ajuste fino de hardware causar uma quebra de página fantasma nas bordas,
-        // usamos o scroll_x estável como guia de quadrante
-        if (abs(hardware_x - ((int)scroll_x - 0x50 + extended_x)) > 128) {
-            hardware_x = (int)scroll_x - 0x50 + extended_x;
-        }
+        // Se o shake for maior em píxeis inteiros (ex: SCY oscila entre valores maiores)
+        int scy_delta = (int)ppu->latched_scy - ((int)(base_scroll_y - 0x48) & 0xFF);
+        if (scy_delta > 128) scy_delta -= 256;
+        if (scy_delta < -128) scy_delta += 256;
 
-        const int world_x = hardware_x;
-        const int world_y = (int)scroll_y - 0x48 + ppu->ly;
+        int scx_delta = (int)ppu->latched_scx - ((int)(base_scroll_x - 0x50) & 0xFF);
+        if (scx_delta > 128) scx_delta -= 256;
+        if (scx_delta < -128) scx_delta += 256;
 
-        /*// Usa as coordenadas do scroll travadas na scanline/frame em vez de ler ERAM ao vivo
-        const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
-        const uint16_t scroll_y = ppu->frame_widescreen_scroll_y;
-
-        const int world_x = (int)scroll_x - 0x50 + extended_x;
-        const int world_y = (int)scroll_y - 0x48 + ppu->ly;
-        */
-        
+        // 3. Aplica o desvio do tremor às coordenadas globais do mundo
+        const int world_x = (int)base_scroll_x - 0x50 + extended_x + scx_delta;
+        const int world_y = (int)base_scroll_y - 0x48 + ppu->ly + scy_delta;
+       
         if (ppu_fetch_warioland_world_pixel(
             ppu, ctx, world_x, world_y, attribute_cache, &pixel)) {
             return pixel;
