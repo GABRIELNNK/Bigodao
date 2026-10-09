@@ -77,7 +77,7 @@ static bool g_fullscreen = false;
 static bool g_app_suspended = false;
 static bool g_renderer_reset_pending = false;
 static GBPlatformExitAction g_exit_action = GB_PLATFORM_EXIT_QUIT;
-static const char* g_palette_names[] = { "Original (Green)", "Black & White (Pocket)", "Amber (Plasma)" };
+//static const char* g_palette_names[] = { "Original (Green)", "Black & White (Pocket)", "Amber (Plasma)" };
 static const char* g_scale_names[] = { "1x (160x144)", "2x (320x288)", "3x (480x432)", "4x (640x576)", "5x (800x720)", "6x (960x864)", "7x (1120x1008)", "8x (1280x1152)",
     "12x (1920x1728)", "16x (2560x2304)", "20x (3200x2880)"  };
 typedef enum GBRenderScalingMode {
@@ -191,10 +191,14 @@ static GBPPU* active_ppu(void) {
  * world map, bonus games, and other static-screen modes stream backgrounds
  * for a fixed 160px view and show garbage tiles in the extra margin. */
 static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
-    switch (game_mode) {    /*mode 1 = mapa
-                              mode 2/3 = gameplay
+    switch (game_mode) {    /* game_mode:
+                              mode 0 = intro + choose slot
+                              mode 1 = mapa
+                              mode 2 = level initit
+                              mode 3 = gameplay
+                              mode 4 = Level win - choose bonus and final coind and medals
                               resto = preta nas laterais*/
-        //case 2:  /* Mode_LevelInit */    
+        case 2:  /* Mode_LevelInit */    
         case 3:  /* Mode_Level */
             return true;
         default:
@@ -1989,7 +1993,7 @@ static void set_app_suspended(bool suspended) {
 static void reset_runtime_display_defaults(void) {
     g_scale = 5;
     g_speed_percent = 100;
-    g_palette_idx = 0;
+    //g_palette_idx = 0;
     g_smooth_lcd_transitions = true;
     g_vsync = false;
     g_show_overlay = false;
@@ -2630,7 +2634,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
         } else if (g_max_speed_mode) {
             ImGui::TextDisabled("Max speed shortcut is active.");
         }
-        ImGui::Combo("Palette", &g_palette_idx, g_palette_names, IM_ARRAYSIZE(g_palette_names));
+        //ImGui::Combo("Palette", &g_palette_idx, g_palette_names, IM_ARRAYSIZE(g_palette_names));
 
         ImGui::Separator();
         ImGui::TextDisabled("Audio");

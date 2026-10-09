@@ -84,7 +84,21 @@ tools/wl_sm3_dx_v12_patch.json - ok, tem que ser incluido na distribuição para
 
 
 
-
+static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
+    switch (game_mode) {    /* game_mode:
+                              mode 0 = intro + choose slot
+                              mode 1 = mapa
+                              mode 2 = level initit
+                              mode 3 = gameplay
+                              mode 4 = Level win - choose bonus and final coind and medals
+                              resto = preta nas laterais*/
+        case 2:  /* Mode_LevelInit */    
+        case 3:  /* Mode_Level */
+            return true;
+        default:
+            return false;
+    }
+}
 
 
 
