@@ -62,6 +62,15 @@ static double g_timing_vsync_total = 0.0;
 static uint32_t g_timing_frame_count = 0;
 static GBPlatformTimingInfo g_last_timing = {};
 
+// Supersampling
+static int g_internal_res_scale = 1; // 1x (Nativo), 2x, 3x, 4x
+static const char* g_internal_res_names[] = {
+    "1x (Nativo GB - 160x144)",
+    "2x Internal (320x288)",
+    "3x Internal (480x432)",
+    "4x Internal (640x576 - Retina/4K)"
+};
+
 /* Menu State */
 static bool g_show_menu = false;
 static bool g_show_overlay = false;
@@ -1959,14 +1968,18 @@ static bool recreate_streaming_texture(void) {
         g_texture = NULL;
     }
 
-    const int texture_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    //const int texture_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    const int base_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    const int base_height = GB_SCREEN_HEIGHT;
+    const int texture_width = base_width * g_internal_res_scale;
+    const int texture_height = base_height * g_internal_res_scale;
 
     g_texture = SDL_CreateTexture(
         g_renderer,
         SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING,
         texture_width,
-        GB_SCREEN_HEIGHT
+        texture_height //GB_SCREEN_HEIGHT
     );
     if (!g_texture) {
         fprintf(stderr, "[SDL] Failed to recreate texture: %s\n", SDL_GetError());
@@ -2353,98 +2366,106 @@ static void render_frame_internal(const uint32_t* framebuffer,
         }
     }
 
-    /* Widescreen UI is shown in the runtime menu after ImGui::NewFrame().
-     * Avoid calling ImGui functions here (before NewFrame) to prevent
-     * dereferencing ImGui internals when no window is active. */
+    // --- DIMENSÕES BASE E COM SUPERSAMPLING ---
+    const int base_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    const int base_height = GB_SCREEN_HEIGHT;
 
-    uint32_t* dst_row_ptr = NULL;
-    const int texture_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
-    const int texture_height = GB_SCREEN_HEIGHT;
+    const int texture_width = base_width * g_internal_res_scale;
+    const int texture_height = base_height * g_internal_res_scale;
     const bool black_fill_non_side_scrolling = g_widescreen_mode && gb_platform_should_black_fill_non_side_scrolling(g_registered_ctx);
 
     if (g_palette_idx == 0) {
-        /* Fast path: copy rows, handling widescreen margins when necessary. */
-        for (int y = 0; y < texture_height; y++) {
-            dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
-            if (texture_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
-                /* Source is normal framebuffer; place it centered with replicated edges,
-                 * unless this is not a side-scrolling region, in which case the extra
-                 * margins must stay black instead of showing garbage/unused tiles. */
-                const uint32_t* src_row = src + y * GB_SCREEN_WIDTH;
-                if (black_fill_non_side_scrolling) {
-                    for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
-                        if (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
-                            dst_row_ptr[x] = 0xFF000000;
-                        } else {
-                            dst_row_ptr[x] = src_row[x - GB_WIDESCREEN_MARGIN];
-                        }
-                    }
-                } else {
-                    /* left margin */
-                    for (int x = 0; x < GB_WIDESCREEN_MARGIN; x++) {
-                        dst_row_ptr[x] = src_row[0];
-                    }
-                    /* center */
-                    memcpy(&dst_row_ptr[GB_WIDESCREEN_MARGIN], src_row, GB_SCREEN_WIDTH * sizeof(uint32_t));
-                    /* right margin */
-                    uint32_t last = src_row[GB_SCREEN_WIDTH - 1];
-                    for (int x = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH; x < texture_width; x++) {
-                        dst_row_ptr[x] = last;
+        if (g_internal_res_scale > 1) {
+            /* Caminho com Supersampling Ativo (>1x) */
+            for (int y = 0; y < texture_height; y++) {
+                uint32_t* dst_row = (uint32_t*)((uint8_t*)pixels + y * pitch);
+                int src_y = y / g_internal_res_scale;
+
+                for (int x = 0; x < texture_width; x++) {
+                    int src_x = x / g_internal_res_scale;
+
+                    if (black_fill_non_side_scrolling && (src_x < GB_WIDESCREEN_MARGIN || src_x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH)) {
+                        dst_row[x] = 0xFF000000;
+                    } else if (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE) {
+                        dst_row[x] = src[src_y * base_width + src_x];
+                    } else {
+                        dst_row[x] = src[src_y * GB_SCREEN_WIDTH + src_x];
                     }
                 }
-            } else if (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE) {
-                /* Source is widescreen framebuffer - copy full row */
-                const uint32_t* src_row = src + y * texture_width;
-                if (black_fill_non_side_scrolling) {
-                    for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
-                        if (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
-                            dst_row_ptr[x] = 0xFF000000; //fundo widescreen
-                        } else {
-                            dst_row_ptr[x] = src_row[x];
+            }
+        } else {
+            /* Caminho nativo 1x */
+            for (int y = 0; y < texture_height; y++) {
+                uint32_t* dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
+                if (texture_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
+                    const uint32_t* src_row = src + y * GB_SCREEN_WIDTH;
+                    if (black_fill_non_side_scrolling) {
+                        for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
+                            if (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
+                                dst_row_ptr[x] = 0xFF000000;
+                            } else {
+                                dst_row_ptr[x] = src_row[x - GB_WIDESCREEN_MARGIN];
+                            }
                         }
+                    } else {
+                        for (int x = 0; x < GB_WIDESCREEN_MARGIN; x++) dst_row_ptr[x] = src_row[0];
+                        memcpy(&dst_row_ptr[GB_WIDESCREEN_MARGIN], src_row, GB_SCREEN_WIDTH * sizeof(uint32_t));
+                        uint32_t last = src_row[GB_SCREEN_WIDTH - 1];
+                        for (int x = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH; x < texture_width; x++) dst_row_ptr[x] = last;
+                    }
+                } else if (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE) {
+                    const uint32_t* src_row = src + y * texture_width;
+                    if (black_fill_non_side_scrolling) {
+                        for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
+                            if (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
+                                dst_row_ptr[x] = 0xFF000000;
+                            } else {
+                                dst_row_ptr[x] = src_row[x];
+                            }
+                        }
+                    } else {
+                        memcpy(dst_row_ptr, src_row, (size_t)texture_width * sizeof(uint32_t));
                     }
                 } else {
-                    memcpy(dst_row_ptr, src_row, (size_t)texture_width * sizeof(uint32_t));
+                    const uint32_t* src_row = src + y * texture_width;
+                    memcpy(dst_row_ptr, src_row, texture_width * sizeof(uint32_t));
                 }
-            } else {
-                /* Source matches texture width (normal fullscreen) */
-                const uint32_t* src_row = src + y * texture_width;
-                memcpy(dst_row_ptr, src_row, texture_width * sizeof(uint32_t));
             }
         }
     } else {
-        /* Palette remap path - per-pixel mapping */
+        /* Palette remap path */
         uint32_t source_palette[4];
         for (int shade = 0; shade < 4; ++shade) {
             source_palette[shade] = ppu_get_dmg_shade_rgb((uint8_t)shade);
         }
         for (int y = 0; y < texture_height; y++) {
-            dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
+            uint32_t* dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
+            int src_y = y / g_internal_res_scale;
+
             for (int x = 0; x < texture_width; x++) {
+                int src_x = x / g_internal_res_scale;
                 uint32_t src_pixel = 0;
-                if (texture_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
-                    /* replicate edges for margins */
-                    if (x < GB_WIDESCREEN_MARGIN) {
-                        src_pixel = src[y * GB_SCREEN_WIDTH + 0];
-                    } else if (x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
-                        src_pixel = src[y * GB_SCREEN_WIDTH + (GB_SCREEN_WIDTH - 1)];
+
+                if (base_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
+                    if (src_x < GB_WIDESCREEN_MARGIN) {
+                        src_pixel = src[src_y * GB_SCREEN_WIDTH + 0];
+                    } else if (src_x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
+                        src_pixel = src[src_y * GB_SCREEN_WIDTH + (GB_SCREEN_WIDTH - 1)];
                     } else {
-                        src_pixel = src[y * GB_SCREEN_WIDTH + (x - GB_WIDESCREEN_MARGIN)];
+                        src_pixel = src[src_y * GB_SCREEN_WIDTH + (src_x - GB_WIDESCREEN_MARGIN)];
                     }
                 } else if (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE) {
-                    if (black_fill_non_side_scrolling && (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH)) {
+                    if (black_fill_non_side_scrolling && (src_x < GB_WIDESCREEN_MARGIN || src_x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH)) {
                         src_pixel = 0xFF000000;
                     } else {
-                        src_pixel = src[y * texture_width + x];
+                        src_pixel = src[src_y * base_width + src_x];
                     }
                 } else {
-                    src_pixel = src[y * texture_width + x];
+                    src_pixel = src[src_y * base_width + src_x];
                 }
 
                 int color_idx = -1;
                 for (int shade = 0; shade < 4; ++shade) {
-                    // Completed frames use the PPU's RGB555-expanded colors;
-                    // startup and LCD-off frames can still use the legacy colors.
                     if (src_pixel == source_palette[shade] || src_pixel == g_palettes[0][shade]) {
                         color_idx = shade;
                         break;
@@ -2459,32 +2480,24 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
     }
-    
-    
-    // Aplica o filtro de pós-processamento ativo diretamente no buffer pixels
-    post_processing_apply(g_post_filter_mode, (uint32_t*)pixels, texture_width, texture_height, pitch);
 
+    // Aplica o filtro de pós-processamento ativo diretamente no buffer escalado
+    post_processing_apply(g_post_filter_mode, (uint32_t*)pixels, texture_width, texture_height, pitch);
 
     SDL_UnlockTexture(g_texture);
     g_last_timing.upload_ms = sdl_now_ms() - upload_start_ms;
 
     /* Clear and render */
     double compose_start_ms = sdl_now_ms();
-    /*
-    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(g_renderer);
-    SDL_RenderCopy(g_renderer, g_texture, NULL, &g_game_viewport);
-    */
-    
+
     // Força o reset do viewport nativo do SDL antes do Clear
     SDL_RenderSetViewport(g_renderer, NULL);
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_renderer);
 
-// 2. Desenha a textura do jogo no viewport proporcional correto
+    // Desenha a textura do jogo no viewport proporcional correto
     SDL_RenderCopy(g_renderer, g_texture, NULL, &g_game_viewport);
-    
-    
+
     ImGui_ImplSDLRenderer2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
@@ -2534,12 +2547,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
         SDL_GetWindowSize(g_window, &window_w, &window_h);
 
         ImGui::Separator();
-        ImGui::TextDisabled("Graphics");
+        ImGui::TextDisabled("Graphics & Supersampling");
         ImGui::Text("Window: %d x %d", window_w, window_h);
         ImGui::Text("Viewport: %d x %d (%.2fx)",
                     g_game_viewport.w,
                     g_game_viewport.h,
                     (double)g_game_viewport.w / (double)GB_SCREEN_WIDTH);
+
+        int current_internal_scale = g_internal_res_scale - 1;
+        if (ImGui::Combo("Internal Resolution (Supersampling)", &current_internal_scale, g_internal_res_names, IM_ARRAYSIZE(g_internal_res_names))) {
+            g_internal_res_scale = current_internal_scale + 1;
+            g_renderer_reset_pending = true;
+            save_runtime_preferences();
+        }
 
         bool fullscreen = g_fullscreen;
         if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
@@ -2554,27 +2574,24 @@ static void render_frame_internal(const uint32_t* framebuffer,
             g_render_scaling_mode = (GBRenderScalingMode)scaling_mode;
             update_game_viewport();
         }
-        
+
         bool widescreen = g_widescreen_mode;
         if (ImGui::Checkbox("Widescreen (16:9)", &widescreen)) {
             GBPPU* ppu = active_ppu();
             if (widescreen && !ppu) {
-                /* No active session yet - nothing to extend the view from. */
                 widescreen = false;
             }
             g_widescreen_mode = widescreen;
             if (ppu) {
                 ppu_set_widescreen_enabled(ppu, g_widescreen_mode);
             }
-            g_renderer_reset_pending = true; /* texture must be resized */
+            g_renderer_reset_pending = true;
             update_game_viewport();
             save_runtime_preferences();
         }
         if (g_widescreen_mode) {
             ImGui::TextDisabled("Extends the background at the sides; may reveal unused tiles.");
 
-            /* Edge fade controls for widescreen. Placed here so ImGui
-             * functions are only called after ImGui::NewFrame(). */
             bool fade_enabled = g_widescreen_fade_enabled;
             if (ImGui::Checkbox("Widescreen Edge Fade", &fade_enabled)) {
                 g_widescreen_fade_enabled = fade_enabled;
@@ -2612,9 +2629,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
         int current_post_filter = (int)g_post_filter_mode;
         if (ImGui::Combo("Post-Processing Filter", &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
             g_post_filter_mode = (GBPostFilterMode)current_post_filter;
-            save_runtime_preferences(); // Opcional, se quiser salvar a preferência no INI
+            save_runtime_preferences();
         }
-        
+
         if (!g_fullscreen) {
             int scale_idx = g_scale - 1;
             if (ImGui::Combo("Window Size",
@@ -2650,7 +2667,6 @@ static void render_frame_internal(const uint32_t* framebuffer,
         } else if (g_max_speed_mode) {
             ImGui::TextDisabled("Max speed shortcut is active.");
         }
-        //ImGui::Combo("Palette", &g_palette_idx, g_palette_names, IM_ARRAYSIZE(g_palette_names));
 
         ImGui::Separator();
         ImGui::TextDisabled("Audio");
@@ -2958,13 +2974,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
     double present_start_ms = sdl_now_ms();
     SDL_RenderPresent(g_renderer);
-    
+
     g_last_timing.present_ms = sdl_now_ms() - present_start_ms;
     g_last_timing.total_render_ms = sdl_now_ms() - total_render_start_ms;
     g_timing_render_total += g_last_timing.total_render_ms;
-
-
 }
+////////////////
 
 /* ============================================================================
  * Platform Functions
