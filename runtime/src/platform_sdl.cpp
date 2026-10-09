@@ -9,6 +9,7 @@
 #include "ppu.h"
 #include "audio_stats.h"
 #include "gbrt_debug.h"
+#include "post_processing.h"
 
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
@@ -33,6 +34,7 @@
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_sdlrenderer2.h"
+
 
 namespace fs = std::filesystem;
 
@@ -181,6 +183,9 @@ static bool g_widescreen_mode = false;
 static bool g_widescreen_fade_enabled = true;
 static int g_widescreen_fade_percent = 65; /* mirrors GBPPU's default of 0.65f */
 static bool g_widescreen_auto_active = false; /* current effective state, gated by sGameMode */
+
+// Variável para guardar o estado do filtro selecionado
+static GBPostFilterMode g_post_filter_mode = GB_POST_FILTER_NONE;
 
 static GBPPU* active_ppu(void) {
     return g_registered_ctx ? (GBPPU*)g_registered_ctx->ppu : NULL;
@@ -2454,6 +2459,11 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
     }
+    
+    
+    // Aplica o filtro de pós-processamento ativo diretamente no buffer pixels
+    post_processing_apply(g_post_filter_mode, (uint32_t*)pixels, texture_width, texture_height, pitch);
+
 
     SDL_UnlockTexture(g_texture);
     g_last_timing.upload_ms = sdl_now_ms() - upload_start_ms;
@@ -2599,6 +2609,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
             update_render_filter();
         }
 
+        int current_post_filter = (int)g_post_filter_mode;
+        if (ImGui::Combo("Post-Processing Filter", &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
+            g_post_filter_mode = (GBPostFilterMode)current_post_filter;
+            save_runtime_preferences(); // Opcional, se quiser salvar a preferência no INI
+        }
+        
         if (!g_fullscreen) {
             int scale_idx = g_scale - 1;
             if (ImGui::Combo("Window Size",
