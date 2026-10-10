@@ -1,0 +1,49 @@
+ninja: Entering directory `build'
+[1/4] cd /home/ubuntu/github/bigodao_wl-sm3 && /usr/bin/python3 /home/ubuntu/github/bigodao_wl-sm3/tools/inject_text.py --map /home/ubuntu/github/bigodao_wl-sm3/tools/widescreen_hack_fov_30_patch.json --dir /home/ubuntu/github/bigodao_wl-sm3/compiler_src/game_code_hack --apply --no-backup
+
+Alteracoes aplicadas: 0 arquivo(s) afetado(s), 0 ocorrencia(s) no total.
+[2/4] Building CXX object CMakeFiles/wario_land_port.dir/runtime/src/platform_sdl.cpp.o
+FAILED: CMakeFiles/wario_land_port.dir/runtime/src/platform_sdl.cpp.o 
+/usr/bin/c++ -DGB_HAS_SDL2 -I/home/ubuntu/github/bigodao_wl-sm3/. -I/home/ubuntu/github/bigodao_wl-sm3/runtime/include -I/home/ubuntu/github/bigodao_wl-sm3/runtime/vendor/imgui -isystem /usr/include/SDL2 -O3 -DNDEBUG -std=gnu++17 -MD -MT CMakeFiles/wario_land_port.dir/runtime/src/platform_sdl.cpp.o -MF CMakeFiles/wario_land_port.dir/runtime/src/platform_sdl.cpp.o.d -o CMakeFiles/wario_land_port.dir/runtime/src/platform_sdl.cpp.o -c /home/ubuntu/github/bigodao_wl-sm3/runtime/src/platform_sdl.cpp
+In file included from /home/ubuntu/github/bigodao_wl-sm3/runtime/src/platform_sdl.cpp:9:
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:6: error: variable or field ‘ppu_decode_tile’ declared void
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |      ^~~~~~~~~~~~~~~
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:22: error: ‘GBPPU’ was not declared in this scope; did you mean ‘GB_PPU_H’?
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                      ^~~~~
+      |                      GB_PPU_H
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:29: error: ‘ppu’ was not declared in this scope
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                             ^~~
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:43: error: expected primary-expression before ‘tile_idx’
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                                           ^~~~~~~~
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:61: error: expected primary-expression before ‘bank’
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                                                             ^~~~
+[3/4] Building CXX object CMakeFiles/wario_land_port.dir/main.cpp.o
+FAILED: CMakeFiles/wario_land_port.dir/main.cpp.o 
+/usr/bin/c++ -DGB_HAS_SDL2 -I/home/ubuntu/github/bigodao_wl-sm3/. -I/home/ubuntu/github/bigodao_wl-sm3/runtime/include -I/home/ubuntu/github/bigodao_wl-sm3/runtime/vendor/imgui -isystem /usr/include/SDL2 -O3 -DNDEBUG -std=gnu++17 -MD -MT CMakeFiles/wario_land_port.dir/main.cpp.o -MF CMakeFiles/wario_land_port.dir/main.cpp.o.d -o CMakeFiles/wario_land_port.dir/main.cpp.o -c /home/ubuntu/github/bigodao_wl-sm3/main.cpp
+In file included from /home/ubuntu/github/bigodao_wl-sm3/main.cpp:8:
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:6: error: variable or field ‘ppu_decode_tile’ declared void
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |      ^~~~~~~~~~~~~~~
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:22: error: ‘GBPPU’ was not declared in this scope; did you mean ‘GB_PPU_H’?
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                      ^~~~~
+      |                      GB_PPU_H
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:29: error: ‘ppu’ was not declared in this scope
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                             ^~~
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:43: error: expected primary-expression before ‘tile_idx’
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                                           ^~~~~~~~
+/home/ubuntu/github/bigodao_wl-sm3/runtime/include/ppu.h:16:61: error: expected primary-expression before ‘bank’
+   16 | void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
+      |                                                             ^~~~
+/home/ubuntu/github/bigodao_wl-sm3/main.cpp: In function ‘int main(int, char**)’:
+/home/ubuntu/github/bigodao_wl-sm3/main.cpp:568:25: error: ‘ppu_decode_tile’ was not declared in this scope
+  568 |                         ppu_decode_tile(ppu, i % 384, i / 384);
+      |                         ^~~~~~~~~~~~~~~
+ninja: build stopped: subcommand failed.

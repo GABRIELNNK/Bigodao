@@ -143,6 +143,9 @@ static uint32_t rgb555_to_rgba(uint16_t color) {
     return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
 }
 
+
+
+
 static uint8_t apply_palette(uint8_t color, uint8_t palette) {
     return (uint8_t)((palette >> (color * 2)) & 0x03);
 }
@@ -2342,7 +2345,11 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
                     ppu->vblank_oam_irq_source =
                         !ppu_is_cgb_hardware(ctx);
                     if (!ppu->frame_ready) {
-                        convert_to_rgb(ppu);
+                        //convert_to_rgb(ppu);
+                        
+                        // Desenha o frame completo diretamente no buffer usando a renderização acelerada por tile/frame
+                        ppu_render_frame_native(ppu, ctx);
+
                         ppu->frame_ready = true;
                         ctx->frame_done = 1;
                     }
@@ -2669,6 +2676,12 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
 /* ============================================================================
  * Frame Handling
  * ========================================================================== */
+// Sempre que houver uma atualização de VRAM pelo código recompilado:
+void ppu_on_vram_write(GBPPU* ppu, uint16_t addr, uint8_t value) {
+    uint16_t tile_idx = (addr & 0x1FFF) / 16;
+    uint8_t bank = (addr >= 0x2000) ? 1 : 0; // Para CGB
+    ppu_decode_tile(ppu, tile_idx, bank);
+}
 
 bool ppu_frame_ready(GBPPU* ppu) {
     return ppu->frame_ready;
@@ -2732,4 +2745,85 @@ void ppu_set_widescreen_fade_amount(GBPPU* ppu, float amount) {
 
 float ppu_get_widescreen_fade_amount(const GBPPU* ppu) {
     return ppu ? ppu->widescreen_fade_amount : 0.0f;
+}
+
+void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank) {
+    if (!ppu || tile_idx >= 384) return;
+
+    int cache_idx = (bank * 384) + tile_idx;
+    NativeTileCache* tile = &ppu->tile_cache[cache_idx];
+    
+    uint16_t tile_address = tile_idx * 16;
+    uint16_t vram_offset = (bank * 0x2000) + tile_address;
+
+    for (int y = 0; y < 8; y++) {
+        // Lê os pares de bytes diretamente da VRAM mapeada na PPU
+        uint8_t low_byte  = ppu->vram[vram_offset + (y * 2)];
+        uint8_t high_byte = ppu->vram[vram_offset + (y * 2) + 1];
+
+        for (int x = 0; x < 8; x++) {
+            int bit = 7 - x;
+            uint8_t color_num = (((high_byte >> bit) & 1) << 1) | ((low_byte >> bit) & 1);
+
+            // Aplica a paleta DMG BGP
+            uint8_t shade = (ppu->bgp >> (color_num * 2)) & 0x03;
+            tile->pixels[y * 8 + x] = ppu_get_dmg_shade_rgb(shade);
+        }
+    }
+    tile->dirty = false;
+}
+
+void ppu_render_frame_native(GBPPU* ppu, GBContext* ctx) {
+    if (!ppu || !ppu->widescreen_framebuffer) return;
+
+    int total_width = ppu->widescreen_enabled ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    int total_height = GB_SCREEN_HEIGHT;
+    int margin_x = ppu->widescreen_enabled ? GB_WIDESCREEN_MARGIN : 0;
+
+    // 1. Limpa a tela com a cor 0 do BGP
+    uint8_t bg_shade0 = ppu->bgp & 0x03;
+    uint32_t clear_color = ppu_get_dmg_shade_rgb(bg_shade0);
+    for (int i = 0; i < total_width * total_height; i++) {
+        ppu->widescreen_framebuffer[i] = clear_color;
+    }
+
+    // 2. Verifica se a PPU/LCD está ligada
+    if (!(ppu->lcdc & 0x80)) return;
+
+    uint16_t tilemap_base = (ppu->lcdc & LCDC_BG_TILEMAP) ? 0x9C00 : 0x9800;
+    bool unsigned_indexing = (ppu->lcdc & LCDC_TILE_DATA) != 0;
+
+    // 3. Garante atualização do cache dos tiles dirty
+    for (int t = 0; t < 384; t++) {
+        if (ppu->tile_cache[t].dirty) {
+            ppu_decode_tile(ppu, t, 0);
+        }
+    }
+
+    // 4. Desenha a camada de background pixel por pixel
+    for (int screen_y = 0; screen_y < total_height; screen_y++) {
+        int world_y = (ppu->scy + screen_y) & 0xFF;
+        int tile_y = world_y / 8;
+        int pixel_y = world_y % 8;
+
+        for (int screen_x = 0; screen_x < total_width; screen_x++) {
+            int world_x = (ppu->scx + screen_x - margin_x) & 0xFF;
+            int tile_x = world_x / 8;
+            int pixel_x = world_x % 8;
+
+            uint16_t map_offset = (tilemap_base - 0x8000) + (tile_y * 32) + tile_x;
+            uint8_t tile_num = ctx->vram[map_offset];
+
+            uint16_t tile_idx;
+            if (unsigned_indexing) {
+                tile_idx = tile_num;
+            } else {
+                int8_t signed_num = (int8_t)tile_num;
+                tile_idx = (uint16_t)(128 + signed_num);
+            }
+
+            uint32_t pixel_color = ppu->tile_cache[tile_idx].pixels[pixel_y * 8 + pixel_x];
+            ppu->widescreen_framebuffer[screen_y * total_width + screen_x] = pixel_color;
+        }
+    }
 }

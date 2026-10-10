@@ -2909,6 +2909,20 @@ static void gbrt_write8_impl(GBContext* ctx,
         }
 
         ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (addr - 0x8000)] = value;
+
+        // 2. [ETAPA 2] Marca a tile correspondente no cache como DIRTY
+        if (ctx->ppu) {
+            GBPPU* ppu = (GBPPU*)ctx->ppu;
+            uint16_t vram_offset = addr - 0x8000;
+            uint16_t tile_idx = vram_offset / 16;
+            uint8_t bank = ctx->vram_bank;
+            uint16_t cache_idx = (bank * 384) + tile_idx;
+
+            if (cache_idx < 384 * 2) {
+                ppu->tile_cache[cache_idx].dirty = true;
+            }
+        }
+
         gbrt_log_vram_write(ctx, addr, value, 1, "cpu");
         return;
     }

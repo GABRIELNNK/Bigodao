@@ -5,6 +5,7 @@
 
 #include "asset_extractor.hpp"
 #include "platform_sdl.h"
+#include "ppu.h"
 #include "wl_sm3_patch.hpp"
 #include "gbrt.h"
 
@@ -551,7 +552,40 @@ int main(int argc, char* argv[]) {
                 break;
             }
         }
-        
+
+
+        if (!running) break;
+
+        // Quando o frame termina (Gatilho de VBlank / Fim dos ciclos):
+        if (ctx->frame_done) {
+            if (ctx->ppu) {
+                GBPPU* ppu = (GBPPU*)ctx->ppu;
+            
+                // 1. Atualizar o cache de tiles apenas para os tiles marcados como dirty
+                // (Evita redecodificar a VRAM inteira se nada mudou)
+                for (uint16_t i = 0; i < 384 * 2; i++) {
+                    if (ppu->tile_cache[i].dirty) {
+                        ppu_decode_tile(ppu, i % 384, i / 384);
+                    }
+                }
+
+                // 2. Renderiza a cena inteira nativamente
+                ppu_render_frame_native(ppu, ctx);
+            }
+
+            // 3. Obter e enviar o framebuffer correto (Widescreen ou Standard)
+            GBPPU* ppu = (GBPPU*)ctx->ppu;
+            const uint32_t* fb = ppu_get_widescreen_enabled(ppu) 
+                           ? ppu_get_widescreen_framebuffer(ppu) 
+                           : ppu_get_framebuffer(ppu);
+
+            if (fb) {
+                gb_platform_render_frame(fb);
+            }
+            gb_platform_vsync(ctx->frame_cycles);
+    }
+        /*
+
         if (!running) break;
 
         if (ctx->frame_done) {
@@ -560,7 +594,7 @@ int main(int argc, char* argv[]) {
                 gb_platform_render_frame(fb);
             }
             gb_platform_vsync(ctx->frame_cycles);
-        }
+        }*/
     }
 
     // ---------------------------------------------------------------------

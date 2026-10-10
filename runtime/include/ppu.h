@@ -13,6 +13,7 @@
 extern "C" {
 #endif
 
+
 /* ============================================================================
  * Constants
  * ========================================================================== */
@@ -107,6 +108,14 @@ typedef struct {
 
 typedef struct GBContext GBContext;
 
+
+// Estrutura para manter os tiles já decodificados em formato RGBA (384 tiles no total)
+typedef struct {
+    uint32_t pixels[8 * 8]; // 64 pixels por tile em RGBA 32-bit
+    bool dirty;             // Indica se o tile mudou na VRAM
+} NativeTileCache;
+
+
 typedef struct GBPPU {
     /* LCD Registers (cached from I/O memory) */
     uint8_t lcdc;       /* 0xFF40 - LCD Control */
@@ -191,6 +200,13 @@ typedef struct GBPPU {
      * widescreen is ever used. */
     uint32_t* widescreen_framebuffer;
     
+    //renderizador nativo
+    uint8_t vram[VRAM_SIZE * 2]; // VRAM (Bancos 0 e 1 no CGB)
+    
+    NativeTileCache tile_cache[384 * 2]; // Cache de tiles decodificados
+    
+    // Novo buffer nativo do frame completo
+    uint32_t* native_framebuffer; 
     
 } GBPPU;
 
@@ -292,6 +308,20 @@ float ppu_get_widescreen_fade_amount(const GBPPU* ppu);
  * @brief Render a scanline
  */
 void ppu_render_scanline(GBPPU* ppu, GBContext* ctx);
+
+
+
+// Na struct GBPPU, podemos adicionar o cache e a flag de renderização direta:
+
+/**
+ * @brief Renderiza o frame completo de uma só vez (chamado no VBlank)
+ */
+void ppu_render_frame_native(GBPPU* ppu, GBContext* ctx);
+
+/**
+ * @brief Decodifica um tile específico da VRAM
+ */
+void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank);
 
 #ifdef __cplusplus
 }

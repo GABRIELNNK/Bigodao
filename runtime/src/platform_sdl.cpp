@@ -1976,7 +1976,7 @@ static bool recreate_streaming_texture(void) {
 
     g_texture = SDL_CreateTexture(
         g_renderer,
-        SDL_PIXELFORMAT_ARGB8888,
+        SDL_PIXELFORMAT_ARGB8888,  // SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING,
         texture_width,
         texture_height //GB_SCREEN_HEIGHT
@@ -3926,7 +3926,14 @@ void gb_platform_submit_port_frame(void* user, const GBPortFrame* frame) {
 
 
 void gb_platform_render_frame(const uint32_t* framebuffer) {
-    render_frame_internal(framebuffer, true, false);
+    //render_frame_internal(framebuffer, true, false);
+    // Utilize o framebuffer gerado nativamente no VBlank
+    GBPPU* ppu = active_ppu();
+    const uint32_t* native_fb = (ppu && ppu_get_widescreen_enabled(ppu)) 
+                                ? ppu_get_widescreen_framebuffer(ppu) 
+                                : framebuffer;
+
+    render_frame_internal(native_fb, true, ppu_get_widescreen_enabled(ppu));
 }
 
 void gb_platform_present_framebuffer(const uint32_t* framebuffer) {
