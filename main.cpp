@@ -558,20 +558,7 @@ int main(int argc, char* argv[]) {
 
         // Quando o frame termina (Gatilho de VBlank / Fim dos ciclos):
         if (ctx->frame_done) {
-            if (ctx->ppu) {
-                GBPPU* ppu = (GBPPU*)ctx->ppu;
-            
-                // 1. Atualizar o cache de tiles apenas para os tiles marcados como dirty
-                // (Evita redecodificar a VRAM inteira se nada mudou)
-                for (uint16_t i = 0; i < 384 * 2; i++) {
-                    if (ppu->tile_cache[i].dirty) {
-                        ppu_decode_tile(ppu, i % 384, i / 384);
-                    }
-                }
 
-                // 2. Renderiza a cena inteira nativamente
-                ppu_render_frame_native(ppu, ctx);
-            }
 
             // 3. Obter e enviar o framebuffer correto (Widescreen ou Standard)
             GBPPU* ppu = (GBPPU*)ctx->ppu;

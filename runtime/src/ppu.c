@@ -276,6 +276,7 @@ static void latch_scanline_registers(GBPPU* ppu) {
 
 void ppu_init(GBPPU* ppu) {
     memset(ppu, 0, sizeof(*ppu));
+    ppu->native_render_enabled = true; //renderizador nativo habilitado por padrão
     ppu->widescreen_fade_enabled = true;
     ppu->widescreen_fade_amount = 0.65f;
     ppu_reset(ppu, NULL);
@@ -288,6 +289,7 @@ void ppu_reset(GBPPU* ppu, const GBContext* ctx) {
     uint16_t default_color = cgb_mode ? 0x7FFF : dmg_palette_rgb555[0];
 
     memset(ppu->framebuffer, 0, sizeof(ppu->framebuffer));
+    memset(ppu->native_line, 0, sizeof(ppu->native_line)); //renderizador nativo
     for (size_t i = 0; i < GB_FRAMEBUFFER_SIZE; i++) {
         ppu->color_framebuffer[i] = default_color;
         ppu->rgb_framebuffer[i] = cgb_mode ? rgb555_to_rgba(default_color) : dmg_palette_rgba[0];
@@ -973,6 +975,7 @@ static DotObjectPixel ppu_fetch_object_dot(const GBPPU* ppu,
 }
 
 static void ppu_render_dot(GBPPU* ppu, GBContext* ctx) {
+    if (ppu->native_render_enabled) return;
     const size_t framebuffer_index =
         (size_t)ppu->ly * GB_SCREEN_WIDTH + ppu->draw_x;
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
@@ -1014,6 +1017,7 @@ static void ppu_render_dot(GBPPU* ppu, GBContext* ctx) {
 static void ppu_render_background_span(GBPPU* ppu,
                                        GBContext* ctx,
                                        uint32_t span) {
+    if (ppu->native_render_enabled) return;
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
     const bool bg_enabled = cgb_mode || (ppu->lcdc & LCDC_BG_ENABLE) != 0;
     const bool in_window = ppu->window_active_line;
@@ -1127,6 +1131,20 @@ static void ppu_begin_dot_transfer(GBPPU* ppu, const GBContext* ctx) {
     ppu->window_pixel_x = 0;
     if (ppu->ly == ppu->wy) {
         ppu->window_y_triggered = true;
+    }
+    if (ppu->ly < GB_SCREEN_HEIGHT) {
+        NativeLineState* s = &ppu->native_line[ppu->ly];
+        s->lcdc = ppu->latched_lcdc;
+        s->scx  = ppu->latched_scx;
+        s->scy  = ppu->latched_scy;
+        s->bgp  = ppu->latched_bgp;
+        s->obp0 = ppu->latched_obp0;
+        s->obp1 = ppu->latched_obp1;
+        s->wx   = ppu->latched_wx;
+        s->wy   = ppu->latched_wy;
+        s->window_line = ppu->window_line;
+        s->window_y_triggered = ppu->window_y_triggered;
+        s->valid = true;
     }
 }
 
@@ -2345,11 +2363,11 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
                     ppu->vblank_oam_irq_source =
                         !ppu_is_cgb_hardware(ctx);
                     if (!ppu->frame_ready) {
-                        //convert_to_rgb(ppu);
-                        
-                        // Desenha o frame completo diretamente no buffer usando a renderização acelerada por tile/frame
-                        ppu_render_frame_native(ppu, ctx);
-
+                        if (ppu->native_render_enabled) {
+                            ppu_render_frame_native(ppu, ctx);
+                        } else {
+                            convert_to_rgb(ppu);
+                        }
                         ppu->frame_ready = true;
                         ctx->frame_done = 1;
                     }
@@ -2547,6 +2565,7 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
             uint8_t old_lcdc = ppu->lcdc;
             ppu->lcdc = value;
             if ((old_lcdc & LCDC_LCD_ENABLE) && !(value & LCDC_LCD_ENABLE)) {
+                memset(ppu->native_line, 0, sizeof(ppu->native_line));
                 ppu->ly = 0;
                 ppu->scanline = 0;
                 ppu->window_line = 0;
@@ -2677,11 +2696,7 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
  * Frame Handling
  * ========================================================================== */
 // Sempre que houver uma atualização de VRAM pelo código recompilado:
-void ppu_on_vram_write(GBPPU* ppu, uint16_t addr, uint8_t value) {
-    uint16_t tile_idx = (addr & 0x1FFF) / 16;
-    uint8_t bank = (addr >= 0x2000) ? 1 : 0; // Para CGB
-    ppu_decode_tile(ppu, tile_idx, bank);
-}
+
 
 bool ppu_frame_ready(GBPPU* ppu) {
     return ppu->frame_ready;
@@ -2747,83 +2762,273 @@ float ppu_get_widescreen_fade_amount(const GBPPU* ppu) {
     return ppu ? ppu->widescreen_fade_amount : 0.0f;
 }
 
-void ppu_decode_tile(GBPPU* ppu, uint16_t tile_idx, uint8_t bank) {
-    if (!ppu || tile_idx >= 384) return;
+/* ============================================================================
+ * Native frame renderer
+ * ========================================================================== */
 
-    int cache_idx = (bank * 384) + tile_idx;
-    NativeTileCache* tile = &ppu->tile_cache[cache_idx];
-    
-    uint16_t tile_address = tile_idx * 16;
-    uint16_t vram_offset = (bank * 0x2000) + tile_address;
+#define NATIVE_MAX_SPRITES_PER_LINE 40
 
+void ppu_on_vram_write(GBPPU* ppu, uint16_t addr, uint8_t value) {
+    (void)value;
+    if (!ppu || addr < 0x8000 || addr > 0x97FF) return;
+    ppu->tile_cache[(addr - 0x8000) / 16].dirty = true;
+}
+
+void ppu_set_native_render_enabled(GBPPU* ppu, bool enabled) {
+    if (ppu) ppu->native_render_enabled = enabled;
+}
+
+bool ppu_get_native_render_enabled(const GBPPU* ppu) {
+    return ppu && ppu->native_render_enabled;
+}
+
+static void native_decode_tile(NativeTileCache* tile, const uint8_t* src) {
     for (int y = 0; y < 8; y++) {
-        // Lê os pares de bytes diretamente da VRAM mapeada na PPU
-        uint8_t low_byte  = ppu->vram[vram_offset + (y * 2)];
-        uint8_t high_byte = ppu->vram[vram_offset + (y * 2) + 1];
-
+        const uint8_t lo = src[y * 2];
+        const uint8_t hi = src[y * 2 + 1];
         for (int x = 0; x < 8; x++) {
-            int bit = 7 - x;
-            uint8_t color_num = (((high_byte >> bit) & 1) << 1) | ((low_byte >> bit) & 1);
-
-            // Aplica a paleta DMG BGP
-            uint8_t shade = (ppu->bgp >> (color_num * 2)) & 0x03;
-            tile->pixels[y * 8 + x] = ppu_get_dmg_shade_rgb(shade);
+            const int bit = 7 - x;
+            tile->pixels[y * 8 + x] =
+                (uint8_t)(((lo >> bit) & 1) | (((hi >> bit) & 1) << 1));
         }
     }
+    memcpy(tile->source, src, 16);
+    tile->valid = true;
     tile->dirty = false;
 }
 
-void ppu_render_frame_native(GBPPU* ppu, GBContext* ctx) {
-    if (!ppu || !ppu->widescreen_framebuffer) return;
-
-    int total_width = ppu->widescreen_enabled ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
-    int total_height = GB_SCREEN_HEIGHT;
-    int margin_x = ppu->widescreen_enabled ? GB_WIDESCREEN_MARGIN : 0;
-
-    // 1. Limpa a tela com a cor 0 do BGP
-    uint8_t bg_shade0 = ppu->bgp & 0x03;
-    uint32_t clear_color = ppu_get_dmg_shade_rgb(bg_shade0);
-    for (int i = 0; i < total_width * total_height; i++) {
-        ppu->widescreen_framebuffer[i] = clear_color;
+static void native_refresh_tiles(GBPPU* ppu, const GBContext* ctx) {
+    const int banks = ppu_is_cgb_mode(ctx) ? 2 : 1;
+    for (int bank = 0; bank < banks; bank++) {
+        for (int t = 0; t < TILES_PER_BANK; t++) {
+            const uint8_t* src = ctx->vram + bank * VRAM_SIZE + t * TILE_SIZE;
+            NativeTileCache* tile = &ppu->tile_cache[bank * TILES_PER_BANK + t];
+            if (!tile->valid || memcmp(tile->source, src, TILE_SIZE) != 0) {
+                native_decode_tile(tile, src);
+            }
+        }
     }
+}
 
-    // 2. Verifica se a PPU/LCD está ligada
-    if (!(ppu->lcdc & 0x80)) return;
+/* Desenha um trecho [x, x_end) de BG ou janela dentro de uma scanline. */
+static void native_render_bg_run(const GBPPU* ppu,
+                                 const GBContext* ctx,
+                                 bool cgb_mode,
+                                 int x, int x_end,
+                                 int source_x, int source_y,
+                                 uint16_t map_offset,
+                                 bool unsigned_tiles,
+                                 const uint32_t lut[8][4],
+                                 uint32_t* out_row,
+                                 uint8_t* bg_raw,
+                                 uint8_t* bg_prio) {
+    const uint8_t* vram = ctx->vram;
+    const int tile_y = (source_y >> 3) & 31;
+    const int row = source_y & 7;
 
-    uint16_t tilemap_base = (ppu->lcdc & LCDC_BG_TILEMAP) ? 0x9C00 : 0x9800;
-    bool unsigned_indexing = (ppu->lcdc & LCDC_TILE_DATA) != 0;
+    while (x < x_end) {
+        const int tile_x = (source_x >> 3) & 31;
+        const int px0 = source_x & 7;
+        int run = 8 - px0;
+        if (run > x_end - x) run = x_end - x;
 
-    // 3. Garante atualização do cache dos tiles dirty
-    for (int t = 0; t < 384; t++) {
-        if (ppu->tile_cache[t].dirty) {
-            ppu_decode_tile(ppu, t, 0);
+        const uint16_t map_entry = (uint16_t)(map_offset + tile_y * 32 + tile_x);
+        const uint8_t tile_num = vram[map_entry];
+        const int tile = unsigned_tiles ? tile_num : 256 + (int8_t)tile_num;
+
+        int bank = 0;
+        uint8_t pal = 0;
+        bool xflip = false, yflip = false, prio = false;
+        if (cgb_mode) {
+            const uint8_t attr = vram[VRAM_SIZE + map_entry];
+            pal = attr & OAM_CGB_PALETTE;
+            bank = (attr & OAM_CGB_BANK) ? 1 : 0;
+            xflip = (attr & OAM_FLIP_X) != 0;
+            yflip = (attr & OAM_FLIP_Y) != 0;
+            prio = (attr & OAM_PRIORITY) != 0;
+        }
+
+        const uint8_t* pix =
+            ppu->tile_cache[bank * TILES_PER_BANK + tile].pixels +
+            (yflip ? 7 - row : row) * 8;
+
+        for (int i = 0; i < run; i++) {
+            const int px = xflip ? 7 - (px0 + i) : (px0 + i);
+            const uint8_t raw = pix[px];
+            out_row[x + i] = lut[pal][raw];
+            bg_raw[x + i] = raw;
+            bg_prio[x + i] = prio ? 1 : 0;
+        }
+        x += run;
+        source_x += run;
+    }
+}
+
+typedef struct {
+    uint8_t oam_index;
+    uint8_t x;
+    uint8_t flags;
+    uint8_t tile;
+    uint8_t line;
+} NativeSprite;
+
+void ppu_render_frame_native(GBPPU* ppu, GBContext* ctx) {
+    /*
+    //teste renderizador
+    static unsigned native_frames = 0;
+    if (++native_frames % 60 == 0) {
+        fprintf(stderr, "[PPU] native renderer: %u frames\n", native_frames);
+    }
+    // fim teste renderizador 
+    */
+
+    if (!ppu || !ctx || !ctx->vram || !ctx->oam) return;
+
+    const bool cgb_mode = ppu_is_cgb_mode(ctx);
+    const bool dmg_priority = !cgb_mode || ppu->opri != 0;
+    const uint32_t blank = cgb_mode ? 0xFFFFFFFFu : dmg_palette_rgba[0]; //teste renderizador
+
+    native_refresh_tiles(ppu, ctx);
+
+    uint32_t bg_lut[8][4];
+    uint32_t obj_lut[8][4];
+    memset(bg_lut, 0, sizeof(bg_lut));
+    memset(obj_lut, 0, sizeof(obj_lut));
+
+    /* Paletas CGB: usa o estado da paleta RAM no fim do frame. */
+    if (cgb_mode) {
+        for (int p = 0; p < 8; p++) {
+            for (int c = 0; c < 4; c++) {
+                bg_lut[p][c]  = rgb555_to_rgba(resolve_bg_color(ppu, ctx, (uint8_t)p, (uint8_t)c, 0));
+                obj_lut[p][c] = rgb555_to_rgba(resolve_obj_color(ppu, ctx, (uint8_t)p, (uint8_t)c, 0));
+            }
         }
     }
 
-    // 4. Desenha a camada de background pixel por pixel
-    for (int screen_y = 0; screen_y < total_height; screen_y++) {
-        int world_y = (ppu->scy + screen_y) & 0xFF;
-        int tile_y = world_y / 8;
-        int pixel_y = world_y % 8;
+    for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
+        const NativeLineState* st = &ppu->native_line[y];
+        uint32_t* out = &ppu->rgb_framebuffer[(size_t)y * GB_SCREEN_WIDTH];
 
-        for (int screen_x = 0; screen_x < total_width; screen_x++) {
-            int world_x = (ppu->scx + screen_x - margin_x) & 0xFF;
-            int tile_x = world_x / 8;
-            int pixel_x = world_x % 8;
+        if (!st->valid || !(st->lcdc & LCDC_LCD_ENABLE)) {
+            for (int x = 0; x < GB_SCREEN_WIDTH; x++) out[x] = blank;
+            continue;
+        }
 
-            uint16_t map_offset = (tilemap_base - 0x8000) + (tile_y * 32) + tile_x;
-            uint8_t tile_num = ctx->vram[map_offset];
-
-            uint16_t tile_idx;
-            if (unsigned_indexing) {
-                tile_idx = tile_num;
-            } else {
-                int8_t signed_num = (int8_t)tile_num;
-                tile_idx = (uint16_t)(128 + signed_num);
+        /* Paletas DMG / compatibilidade CGB: dependem do BGP/OBP da linha. */
+        if (!cgb_mode) {
+            for (int c = 0; c < 4; c++) {
+                bg_lut[0][c]  = rgb555_to_rgba(resolve_bg_color(ppu, ctx, 0, (uint8_t)c, st->bgp));
+                obj_lut[0][c] = rgb555_to_rgba(resolve_obj_color(ppu, ctx, 0, (uint8_t)c, st->obp0));
+                obj_lut[1][c] = rgb555_to_rgba(resolve_obj_color(ppu, ctx, 1, (uint8_t)c, st->obp1));
             }
+        }
 
-            uint32_t pixel_color = ppu->tile_cache[tile_idx].pixels[pixel_y * 8 + pixel_x];
-            ppu->widescreen_framebuffer[screen_y * total_width + screen_x] = pixel_color;
+        uint8_t bg_raw[GB_SCREEN_WIDTH];
+        uint8_t bg_prio[GB_SCREEN_WIDTH];
+        memset(bg_raw, 0, sizeof(bg_raw));
+        memset(bg_prio, 0, sizeof(bg_prio));
+
+        const bool bg_enabled = cgb_mode || (st->lcdc & LCDC_BG_ENABLE);
+        const bool unsigned_tiles = (st->lcdc & LCDC_TILE_DATA) != 0;
+
+        if (!bg_enabled) {
+            for (int x = 0; x < GB_SCREEN_WIDTH; x++) out[x] = bg_lut[0][0];
+        } else {
+            const bool win_on = (st->lcdc & LCDC_WINDOW_ENABLE) &&
+                                st->window_y_triggered && st->wx <= 166;
+            int trigger_x = (int)st->wx - 7;
+            if (trigger_x < 0) trigger_x = 0;
+            const int bg_end = win_on ? trigger_x : GB_SCREEN_WIDTH;
+
+            if (bg_end > 0) {
+                native_render_bg_run(
+                    ppu, ctx, cgb_mode, 0, bg_end,
+                    st->scx, (y + st->scy) & 0xFF,
+                    (st->lcdc & LCDC_BG_TILEMAP) ? 0x1C00 : 0x1800,
+                    unsigned_tiles, bg_lut, out, bg_raw, bg_prio);
+            }
+            if (win_on) {
+                native_render_bg_run(
+                    ppu, ctx, cgb_mode, trigger_x, GB_SCREEN_WIDTH,
+                    st->wx < 7 ? 7 - st->wx : 0, st->window_line,
+                    (st->lcdc & LCDC_WINDOW_TILEMAP) ? 0x1C00 : 0x1800,
+                    unsigned_tiles, bg_lut, out, bg_raw, bg_prio);
+            }
+        }
+
+        /* ---- Sprites ---- */
+        if (!(st->lcdc & LCDC_OBJ_ENABLE)) continue;
+
+        const int height = (st->lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
+        NativeSprite spr[NATIVE_MAX_SPRITES_PER_LINE];
+        int count = 0;
+
+        for (int i = 0; i < 40 && count < NATIVE_MAX_SPRITES_PER_LINE; i++) {
+            const uint8_t* o = ctx->oam + i * 4;
+            const int line = y - ((int)o[0] - 16);
+            if (line < 0 || line >= height) continue;
+            spr[count].oam_index = (uint8_t)i;
+            spr[count].x = o[1];
+            spr[count].tile = o[2];
+            spr[count].flags = o[3];
+            spr[count].line = (uint8_t)line;
+            count++;
+        }
+
+        /* Prioridade: DMG = menor X, depois menor índice OAM; CGB = índice OAM. */
+        if (dmg_priority) {
+            for (int i = 1; i < count; i++) {
+                NativeSprite s = spr[i];
+                int j = i - 1;
+                while (j >= 0 && (s.x < spr[j].x ||
+                                  (s.x == spr[j].x && s.oam_index < spr[j].oam_index))) {
+                    spr[j + 1] = spr[j];
+                    j--;
+                }
+                spr[j + 1] = s;
+            }
+        }
+
+        uint8_t drawn[GB_SCREEN_WIDTH];
+        memset(drawn, 0, sizeof(drawn));
+
+        for (int i = 0; i < count; i++) {
+            const NativeSprite* s = &spr[i];
+            if (s->x == 0 || s->x >= 168) continue;
+
+            int line = s->line;
+            uint8_t tile = s->tile;
+            if (height == 16) tile &= 0xFE;
+            if (s->flags & OAM_FLIP_Y) line = height - 1 - line;
+            tile = (uint8_t)(tile + (line >> 3));
+            const int row = line & 7;
+
+            const int bank = (cgb_mode && (s->flags & OAM_CGB_BANK)) ? 1 : 0;
+            const uint8_t* pix =
+                ppu->tile_cache[bank * TILES_PER_BANK + tile].pixels + row * 8;
+            const uint8_t pal = cgb_mode ? (s->flags & OAM_CGB_PALETTE)
+                                         : ((s->flags & OAM_PALETTE) ? 1 : 0);
+            const bool behind = (s->flags & OAM_PRIORITY) != 0;
+            const int screen_x = (int)s->x - 8;
+
+            for (int sp = 0; sp < 8; sp++) {
+                const int sx = screen_x + sp;
+                if (sx < 0 || sx >= GB_SCREEN_WIDTH || drawn[sx]) continue;
+
+                const int px = (s->flags & OAM_FLIP_X) ? 7 - sp : sp;
+                const uint8_t raw = pix[px];
+                if (raw == 0) continue;
+                drawn[sx] = 1; /* pixel opaco bloqueia sprites de menor prioridade */
+
+                if (bg_raw[sx] != 0) {
+                    if (cgb_mode) {
+                        if ((st->lcdc & LCDC_BG_ENABLE) && (bg_prio[sx] || behind)) continue;
+                    } else if (behind) {
+                        continue;
+                    }
+                }
+                out[sx] = obj_lut[pal][raw];
+            }
         }
     }
 }
