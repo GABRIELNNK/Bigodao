@@ -1589,6 +1589,16 @@ static bool ppu_fetch_warioland_world_pixel(
     return true;
 }
 
+/* O layout de blocos da fase (WRAM/ERAM) só existe nos modos 2 e 3.
+ * No mapa (modo 1) e nas outras telas, as margens vêm do tilemap da VRAM. */
+static bool ppu_widescreen_uses_level_layout(const GBContext* ctx) {
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x08C3u) {
+        return false;
+    }
+    const uint8_t mode = ctx->eram[0x08C3];
+    return mode == 2 || mode == 3;
+}
+
 static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     const GBPPU* ppu,
     const GBContext* ctx,
@@ -1605,7 +1615,8 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     }
 
 
-    if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
+    if ((extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) &&
+        ppu_widescreen_uses_level_layout(ctx)) {
         // 1. Posições de scroll lógicas da câmara lidas da ERAM
         const uint16_t base_scroll_x = ppu->frame_widescreen_scroll_x;
         const uint16_t base_scroll_y = ppu->frame_widescreen_scroll_y;
