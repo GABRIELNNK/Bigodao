@@ -1884,13 +1884,15 @@ static uint32_t ppu_composite_widescreen_pixel(
 
 //inicio codigo subfases - esconder lixo
 
+
+/* piscando2
 typedef struct {
     bool     valid_l, valid_r;
     int      left_edge, right_edge;
     uint16_t last_scroll;
     int      prev_cam;
     uint8_t  acc_flags;
-    uint8_t  hold_l, hold_r;      /* frames seguidos com flag + câmera parada */
+    uint8_t  hold_l, hold_r;      // frames seguidos com flag + câmera parada
     uint8_t  last_mode, last_level, last_room;
 } WsRoomBounds;
 static WsRoomBounds g_ws_bounds;
@@ -1934,7 +1936,7 @@ static void ppu_update_room_bounds(const GBContext* ctx, uint16_t scroll_x, bool
     b->prev_cam = cam_left;
     b->acc_flags = 0;
 }
-
+*/
 /*piscando 0: origem
 typedef struct {
     bool     valid_l, valid_r;
@@ -2028,6 +2030,25 @@ static void ppu_update_room_bounds(const GBContext* ctx, uint16_t scroll_x, bool
 
 fim piscando1 */ 
 
+#define WS_WALL_LEFT_OFFSET   0x10   /* borda esquerda visível = (col<<8)+0x10 */
+#define WS_WALL_RIGHT_OFFSET  0x100  /* borda direita visível  = (col<<8)+0x100 */
+
+static void ppu_room_walls(const GBContext* ctx, uint16_t scroll_x,
+                           bool* has_left, int* left_edge,
+                           bool* has_right, int* right_edge) {
+    *has_left = *has_right = false;
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x0E00) return;
+
+    const uint8_t row  = ctx->eram[0x0900];
+    const uint8_t col  = (uint8_t)(scroll_x >> 8);   /* = eram[0x0902] */
+    const uint8_t idx  = (uint8_t)((uint8_t)((row << 4) | (row >> 4)) + col);
+    const uint8_t cell = ctx->eram[0x0CE0 + idx];
+
+    if (cell & 0x02) { *has_left  = true; *left_edge  = ((int)col << 8) + WS_WALL_LEFT_OFFSET; } // ideal 0x02
+    if (cell & 0x01) { *has_right = true; *right_edge = ((int)col << 8) + WS_WALL_RIGHT_OFFSET; } // ideal 0x01
+}
+
+
 // fim do codigo para subfases
 
 
@@ -2115,7 +2136,9 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     
     // Obtém a posição X do scroll da câmara no mundo do jogo
     const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
-    ppu_update_room_bounds(ctx, scroll_x, ppu->ly == 0); //piscando 0: ppu_update_room_bounds(ctx, scroll_x); - piscando1 : ppu_update_room_bounds(ctx, scroll_x, ppu->ly == 0);
+    bool wall_l, wall_r; int wall_l_x = 0, wall_r_x = 0;
+    ppu_room_walls(ctx, scroll_x, &wall_l, &wall_l_x, &wall_r, &wall_r_x);
+    //ppu_update_room_bounds(ctx, scroll_x, ppu->ly == 0); //piscando 0: ppu_update_room_bounds(ctx, scroll_x); - piscando1e2 : ppu_update_room_bounds(ctx, scroll_x, ppu->ly == 0);
     
     //____gamemode
     // 1. Identifica o game_mode diretamente da ERAM ($A8C3 -> eram[0x08C3])
@@ -2176,12 +2199,19 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
                 continue;
             }
             if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
+                if ((wall_l && world_x <  wall_l_x) ||
+                    (wall_r && world_x >= wall_r_x)) {
+                    ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u;
+                    continue;
+                }
+            }
+            /*if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
                 if ((g_ws_bounds.valid_l && world_x <  g_ws_bounds.left_edge) ||
                     (g_ws_bounds.valid_r && world_x >= g_ws_bounds.right_edge)) {
                     ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u;
                     continue;
                 }
-            }
+            }*/
         }
 
         // 2. LIMITE DA DIREITA:
