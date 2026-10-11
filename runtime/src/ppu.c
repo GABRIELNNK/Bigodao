@@ -1886,8 +1886,60 @@ static uint32_t ppu_composite_widescreen_pixel(
 
 typedef struct {
     bool     valid_l, valid_r;
-    int      left_edge;     /* world_x do primeiro pixel válido da sala */
-    int      right_edge;    /* world_x logo após o último pixel válido */
+    int      left_edge, right_edge;
+    uint16_t last_scroll;
+    int      prev_cam;
+    uint8_t  acc_flags;
+    uint8_t  hold_l, hold_r;      /* frames seguidos com flag + câmera parada */
+    uint8_t  last_mode, last_level, last_room;
+} WsRoomBounds;
+static WsRoomBounds g_ws_bounds;
+
+#define WS_BOUND_HOLD_FRAMES 8
+
+static void ppu_update_room_bounds(const GBContext* ctx, uint16_t scroll_x, bool frame_start) {
+    WsRoomBounds* b = &g_ws_bounds;
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x0938) return;
+
+    const uint8_t mode  = ctx->eram[0x08C3];
+    const uint8_t level = ctx->eram[0x0800];
+    const uint8_t room  = ctx->eram[0x0804];
+    const int jump = abs((int)scroll_x - (int)b->last_scroll);
+
+    if ((mode != 2 && mode != 3) || mode != b->last_mode ||
+        level != b->last_level || room != b->last_room || jump > 64) {
+        b->valid_l = b->valid_r = false;
+        b->hold_l = b->hold_r = 0;
+        b->acc_flags = 0;
+    }
+    b->last_mode = mode; b->last_level = level; b->last_room = room;
+    b->last_scroll = scroll_x;
+    if (mode != 2 && mode != 3) return;
+
+    b->acc_flags |= ctx->eram[0x0938];
+    if (!frame_start) return;
+
+    const int cam_left = (int)scroll_x - 0x50;
+    const bool stationary = (cam_left == b->prev_cam);
+
+    b->hold_r = (stationary && (b->acc_flags & 0x01)) ? (uint8_t)(b->hold_r < 255 ? b->hold_r + 1 : 255) : 0;
+    b->hold_l = (stationary && (b->acc_flags & 0x02)) ? (uint8_t)(b->hold_l < 255 ? b->hold_l + 1 : 255) : 0;
+
+    if (b->hold_r >= WS_BOUND_HOLD_FRAMES) { b->valid_r = true; b->right_edge = cam_left + GB_SCREEN_WIDTH; }
+    if (b->hold_l >= WS_BOUND_HOLD_FRAMES) { b->valid_l = true; b->left_edge  = cam_left; }
+
+    if (b->valid_r && cam_left + GB_SCREEN_WIDTH > b->right_edge) b->valid_r = false;
+    if (b->valid_l && cam_left < b->left_edge)                     b->valid_l = false;
+
+    b->prev_cam = cam_left;
+    b->acc_flags = 0;
+}
+
+/*piscando 0: origem
+typedef struct {
+    bool     valid_l, valid_r;
+    int      left_edge;     // world_x do primeiro pixel válido da sala
+    int      right_edge;    // world_x logo após o último pixel válido
     uint16_t last_scroll;
     uint8_t  last_mode, last_level, last_room;
 } WsRoomBounds;
@@ -1902,7 +1954,7 @@ static void ppu_update_room_bounds(const GBContext* ctx, uint16_t scroll_x) {
     const uint8_t room  = ctx->eram[0x0804];
     const int jump = abs((int)scroll_x - (int)b->last_scroll);
 
-    /* nova sala/fase, fora da gameplay ou teleporte de porta: esquece os limites */
+    // nova sala/fase, fora da gameplay ou teleporte de porta: esquece os limites 
     if ((mode != 2 && mode != 3) || mode != b->last_mode ||
         level != b->last_level || room != b->last_room || jump > 64) {
         b->valid_l = b->valid_r = false;
@@ -1916,10 +1968,66 @@ static void ppu_update_room_bounds(const GBContext* ctx, uint16_t scroll_x) {
     if (flags & 0x01) { b->valid_r = true; b->right_edge = cam_left + GB_SCREEN_WIDTH; }
     if (flags & 0x02) { b->valid_l = true; b->left_edge  = cam_left; }
 
-    /* autocorreção: se a câmera passou do limite guardado, ele estava errado */
+    // autocorreção: se a câmera passou do limite guardado, ele estava errado
     if (b->valid_r && cam_left + GB_SCREEN_WIDTH > b->right_edge) b->valid_r = false;
     if (b->valid_l && cam_left < b->left_edge)                     b->valid_l = false;
 }
+fim piscando0*/
+
+
+/* piscando1: a cada frame, o jogo atualiza o scroll da câmara na ERAM, mas só
+ * atualiza os flags de limite no início da scanline 0. Se a câmera se mover
+ * durante a renderização da tela, o limite pode não ser atualizado até o
+ * próximo frame. Para evitar que a margem do widescreen fique piscando,
+ * acumulamos os flags de limite durante o frame e só aplicamos no início
+ * da próxima scanline 0. 
+typedef struct {
+    bool     valid_l, valid_r;
+    int      left_edge, right_edge;
+    uint16_t last_scroll;
+    int      prev_cam;
+    uint8_t  acc_flags;
+    uint8_t  last_mode, last_level, last_room;
+} WsRoomBounds;
+static WsRoomBounds g_ws_bounds;
+
+static void ppu_update_room_bounds(const GBContext* ctx, uint16_t scroll_x, bool frame_start) {
+    WsRoomBounds* b = &g_ws_bounds;
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x0938) return;
+
+    const uint8_t mode  = ctx->eram[0x08C3];
+    const uint8_t level = ctx->eram[0x0800];
+    const uint8_t room  = ctx->eram[0x0804];
+    const int jump = abs((int)scroll_x - (int)b->last_scroll);
+
+    if ((mode != 2 && mode != 3) || mode != b->last_mode ||
+        level != b->last_level || room != b->last_room || jump > 64) {
+        b->valid_l = b->valid_r = false;
+        b->acc_flags = 0;
+    }
+    b->last_mode = mode; b->last_level = level; b->last_room = room;
+    b->last_scroll = scroll_x;
+    if (mode != 2 && mode != 3) return;
+
+    b->acc_flags |= ctx->eram[0x0938];
+    if (!frame_start) return;
+
+    const int cam_left = (int)scroll_x - 0x50;
+    const bool stationary = (cam_left == b->prev_cam);
+
+    if (stationary) {
+        if (b->acc_flags & 0x01) { b->valid_r = true; b->right_edge = cam_left + GB_SCREEN_WIDTH; }
+        if (b->acc_flags & 0x02) { b->valid_l = true; b->left_edge  = cam_left; }
+    }
+    if (b->valid_r && cam_left + GB_SCREEN_WIDTH > b->right_edge) b->valid_r = false;
+    if (b->valid_l && cam_left < b->left_edge)                     b->valid_l = false;
+
+    b->prev_cam = cam_left;
+    b->acc_flags = 0;
+}
+
+fim piscando1 */ 
+
 // fim do codigo para subfases
 
 
@@ -2007,7 +2115,7 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     
     // Obtém a posição X do scroll da câmara no mundo do jogo
     const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
-    ppu_update_room_bounds(ctx, scroll_x);
+    ppu_update_room_bounds(ctx, scroll_x, ppu->ly == 0); //piscando 0: ppu_update_room_bounds(ctx, scroll_x); - piscando1 : ppu_update_room_bounds(ctx, scroll_x, ppu->ly == 0);
     
     //____gamemode
     // 1. Identifica o game_mode diretamente da ERAM ($A8C3 -> eram[0x08C3])
