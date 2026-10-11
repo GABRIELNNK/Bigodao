@@ -1882,6 +1882,47 @@ static uint32_t ppu_composite_widescreen_pixel(
     return bg->rgba;
 }
 
+//inicio codigo subfases - esconder lixo
+
+typedef struct {
+    bool     valid_l, valid_r;
+    int      left_edge;     /* world_x do primeiro pixel válido da sala */
+    int      right_edge;    /* world_x logo após o último pixel válido */
+    uint16_t last_scroll;
+    uint8_t  last_mode, last_level, last_room;
+} WsRoomBounds;
+static WsRoomBounds g_ws_bounds;
+
+static void ppu_update_room_bounds(const GBContext* ctx, uint16_t scroll_x) {
+    WsRoomBounds* b = &g_ws_bounds;
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x0938) return;
+
+    const uint8_t mode  = ctx->eram[0x08C3];
+    const uint8_t level = ctx->eram[0x0800];
+    const uint8_t room  = ctx->eram[0x0804];
+    const int jump = abs((int)scroll_x - (int)b->last_scroll);
+
+    /* nova sala/fase, fora da gameplay ou teleporte de porta: esquece os limites */
+    if ((mode != 2 && mode != 3) || mode != b->last_mode ||
+        level != b->last_level || room != b->last_room || jump > 64) {
+        b->valid_l = b->valid_r = false;
+    }
+    b->last_mode = mode; b->last_level = level; b->last_room = room;
+    b->last_scroll = scroll_x;
+    if (mode != 2 && mode != 3) return;
+
+    const int cam_left = (int)scroll_x - 0x50;
+    const uint8_t flags = ctx->eram[0x0938];
+    if (flags & 0x01) { b->valid_r = true; b->right_edge = cam_left + GB_SCREEN_WIDTH; }
+    if (flags & 0x02) { b->valid_l = true; b->left_edge  = cam_left; }
+
+    /* autocorreção: se a câmera passou do limite guardado, ele estava errado */
+    if (b->valid_r && cam_left + GB_SCREEN_WIDTH > b->right_edge) b->valid_r = false;
+    if (b->valid_l && cam_left < b->left_edge)                     b->valid_l = false;
+}
+// fim do codigo para subfases
+
+
 static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     if (!ppu->widescreen_enabled || !ppu->widescreen_framebuffer) {
         return;
@@ -1966,6 +2007,7 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     
     // Obtém a posição X do scroll da câmara no mundo do jogo
     const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
+    ppu_update_room_bounds(ctx, scroll_x);
     
     //____gamemode
     // 1. Identifica o game_mode diretamente da ERAM ($A8C3 -> eram[0x08C3])
@@ -1981,69 +2023,68 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     
     // 2. Lê a largura limite do mapa/câmara da fase atual na ERAM ($A585 / $A586 no Wario Land 1)
     // Se não for possível ler a ERAM, utiliza o limite máximo de scroll detectado
+    /*
     uint16_t max_scroll_x = 0x0F80; 
     if (ctx && ctx->eram && ctx->eram_size >= 0x0586) {
         uint16_t eram_max = ((uint16_t)ctx->eram[0x0585] << 8) | ctx->eram[0x0586];
         if (eram_max > 0) {
             max_scroll_x = eram_max;
         }
-    }
+    }*/
     
 
-    //_____________________tentativa limitar a borda de interfase
-    // 3. Detecção de Sala Fechada / Trava de Porta
-    // No Wario Land, quando entramos numa porta, o byte em $A58D ou $A58E guarda
-    // o estado de travamento da câmara da sub-sala. Se a largura da câmara for menor que 160px
-    // ou se o scroll_x estiver congelado no início da porta, a sub-sala é limitada.
+    // 3. Detecção de Sala / Interfase / Parede através do registrador de scroll $A938
+    // No Wario Land 1, o byte em $A938 (ctx->eram[0x0938]) guarda os flags de colisão da câmara:
+    // Bit 0 (0x01): Câmara bateu na parede/limite da DIREITA (fim da sala/interfase com porta)
+    // Bit 1 (0x02): Câmara bateu na parede/limite da ESQUERDA (início da sala ao sair da porta)
+    /*
     bool left_wall_locked = false;
     bool right_wall_locked = false;
 
-    if (ctx && ctx->eram && ctx->eram_size >= 0x058F) {
-        // Se a posição da câmara for igual ao limite esquerdo da sala atual
-        uint16_t min_room_scroll = ((uint16_t)ctx->eram[0x058B] << 8) | ctx->eram[0x058C];
-        uint16_t max_room_scroll = ((uint16_t)ctx->eram[0x058D] << 8) | ctx->eram[0x058E];
-
-        if (min_room_scroll > 0 && scroll_x <= min_room_scroll) {
-            left_wall_locked = true;
-        }
-        if (max_room_scroll > 0 && scroll_x >= max_room_scroll) {
-            right_wall_locked = true;
-        }
+    if (ctx && ctx->eram && ctx->eram_size > 0x0938) {
+        const uint8_t cam_status = ctx->eram[0x0938];
+        right_wall_locked = (cam_status & 0x01) != 0;
+        left_wall_locked  = (cam_status & 0x02) != 0;
     }
-    //_____________________tentativa limitar a borda de interfase
+    */
 
-    
      for (int extended_x = -GB_WIDESCREEN_MARGIN; extended_x < GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN; extended_x++) {
         const int dest_x = extended_x + GB_WIDESCREEN_MARGIN;
 
-        //___________________ exclui o começo das fases
         // Calcula a coordenada real de mundo do pixel atual
         const int world_x = (int)scroll_x - 0x50 + extended_x;
 
-        // A) Se não estiver em game_mode == 3, pinta as margens externas de preto
-        /*if (!is_sidescrolling_gameplay) {
-            if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
-                ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u; // Pixel preto
+        // 1. LIMITE DA ESQUERDA:
+        // Se o pixel cai antes do início do mapa mundial (world_x < 0)
+        // OU se a câmara está travada no limite esquerdo da sala atual e o pixel está na margem esquerda
+        if (is_sidescrolling_gameplay) {
+            /*
+            if (world_x < 0 || (left_wall_locked && extended_x < 0)) {
+                ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u; // Força preto
+                continue;
+            }*/
+            if (world_x < 0) {
+                ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u;
                 continue;
             }
-        }*/
+            if (extended_x < 0 || extended_x >= GB_SCREEN_WIDTH) {
+                if ((g_ws_bounds.valid_l && world_x <  g_ws_bounds.left_edge) ||
+                    (g_ws_bounds.valid_r && world_x >= g_ws_bounds.right_edge)) {
+                    ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u;
+                    continue;
+                }
+            }
+        }
 
-        // 1. LIMITE DA ESQUERDA: Se o pixel cai antes do início do mapa (world_x < 0)
+        // 2. LIMITE DA DIREITA:
+        // Se a câmara bateu no limite direito da sala/interfase OU no fim do nível
+        /*
         if (is_sidescrolling_gameplay) {
-            if (world_x < 0) {
+            if ((right_wall_locked || scroll_x >= max_scroll_x) && extended_x >= GB_SCREEN_WIDTH) {
                 ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u; // Força preto
                 continue;
             }
-        }
-
-        // C) MÁSCARA DA DIREITA (Fim do nível):
-        // Verifica se a câmara bateu no limite direito de scroll da fase E o pixel ultrapassou o limite do mapa
-        if (scroll_x >= max_scroll_x && extended_x >= GB_SCREEN_WIDTH) {
-            ppu->widescreen_framebuffer[row_base + dest_x] = 0xFF000000u;
-            continue;
-        }
-
-        //___________________
+        }*/
 
         WidescreenBackgroundPixel bg = ppu_fetch_widescreen_background_pixel(
             ppu, ctx, extended_x, &attribute_cache);
