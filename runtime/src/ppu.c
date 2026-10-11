@@ -1368,7 +1368,7 @@ static int ppu_unwrap_widescreen_map_coordinate(int map_tile, int reference) {
 }
 
 static void ppu_build_widescreen_block_attribute_cache(
-    const GBPPU* ppu,
+    GBPPU* ppu,     //const GBPPU* ppu,
     const GBContext* ctx,
     WidescreenBlockAttributeCache* cache) {
     memset(cache, 0, sizeof(*cache));
@@ -1410,6 +1410,15 @@ static void ppu_build_widescreen_block_attribute_cache(
                 continue;
             }
 
+            //armazena o atributo aprendido para o tile de fundo no cache de atributos
+            const uint8_t learned_attr = vram_read_bank(ctx, 1, map_entry);
+            const uint8_t learned_tile = ctx->eram[block_offset + tile_in_block];
+            ppu->ws_block_known[block_id][tile_in_block] = true;
+            ppu->ws_block_attr[block_id][tile_in_block]  = learned_attr;
+            ppu->ws_tile_known[learned_tile] = true;
+            ppu->ws_tile_attr[learned_tile]  = learned_attr;
+            // fim armazena
+
             if (cache->count < WIDESCREEN_ATTRIBUTE_CACHE_CAPACITY) {
                 const uint16_t candidate_index = cache->count++;
                 WidescreenBlockAttributeCandidate* candidate =
@@ -1449,6 +1458,32 @@ static bool ppu_find_widescreen_block_attributes(
     return found;
 }
 
+/* Tabela de paleta CGB do patch DX (banco ROM 0x22). Retorna false se a ROM
+ * não for a DX, se a fase for desconhecida ou se o tile usa rotina especial. */
+static bool ppu_dx_attribute_from_rom(const GBContext* ctx,
+                                      uint8_t tile,
+                                      uint8_t* attr) {
+    if (!ctx || !ctx->rom || ctx->rom_size < 0x100000u ||
+        ctx->rom[0x143] != 0xC0 ||
+        !ctx->eram || ctx->eram_size <= 0x800u) {
+        return false;
+    }
+    const uint8_t level = ctx->eram[0x800];
+    if (level > 0x2D) {
+        return false;
+    }
+    const size_t offset = 0x84000u + ((size_t)(0x41u + level) << 8) + tile;
+    if (offset >= ctx->rom_size) {
+        return false;
+    }
+    const uint8_t value = ctx->rom[offset];
+    if (value >= 8) {
+        return false;
+    }
+    *attr = value;
+    return true;
+}
+
 static bool ppu_fetch_warioland_world_pixel(
     const GBPPU* ppu,
     const GBContext* ctx,
@@ -1482,7 +1517,26 @@ static bool ppu_fetch_warioland_world_pixel(
     uint8_t attr = cgb_mode ? vram_read_bank(ctx, 1, map_entry) : 0;
     bool has_current_map_attribute =
         !cgb_mode || vram_read_bank(ctx, 0, map_entry) == tile_idx;
+
+    /*
+    // tile descoloridos: log temporario para verificar se o atributo do tile no mapa corresponde ao atributo do tile na ROM DX    
+    if (cgb_mode && has_current_map_attribute) {
+        uint8_t rom_attr;
+        if (ppu_dx_attribute_from_rom(ctx, tile_idx, &rom_attr) &&
+            rom_attr != (attr & 7)) {
+            static int n = 0;
+            if (n++ < 20) {
+                fprintf(stderr, "[ATTR-CHECK] fase=%02X tile=%02X vram=%d rom=%d\n",
+                        ctx->eram[0x800], tile_idx, attr & 7, rom_attr);
+            }
+        }
+    }
+    // fim log
+    */
+
     const size_t tile_in_block = (size_t)tile_y * 2u + tile_x;
+    
+    /*
     if (cgb_mode && !has_current_map_attribute && attribute_cache) {
         ppu_find_widescreen_block_attributes(
             attribute_cache,
@@ -1491,7 +1545,28 @@ static bool ppu_fetch_warioland_world_pixel(
             world_x,
             world_y,
             &attr);
-    }
+    }*/
+
+    // correção: se o tile atual não tiver atributo, tenta buscar no ROM DX ou no cache de atributos
+    if (cgb_mode && !has_current_map_attribute) {
+        uint8_t rom_attr;
+        if (ppu_dx_attribute_from_rom(ctx, tile_idx, &rom_attr)) {
+            attr = rom_attr;
+        } else {
+            const bool found = attribute_cache &&
+                ppu_find_widescreen_block_attributes(
+                    attribute_cache, block_id, tile_in_block,
+                    world_x, world_y, &attr);
+            if (!found) {
+                if (ppu->ws_block_known[block_id][tile_in_block]) {
+                    attr = ppu->ws_block_attr[block_id][tile_in_block];
+                } else if (ppu->ws_tile_known[tile_idx]) {
+                    attr = ppu->ws_tile_attr[tile_idx];
+                }
+            }
+        }
+    }  
+
     const uint8_t tile_bank = (attr & OAM_CGB_BANK) ? 1u : 0u;
     pixel->palette = attr & OAM_CGB_PALETTE;
     pixel->priority = has_current_map_attribute && (attr & OAM_PRIORITY) != 0;
@@ -1812,6 +1887,17 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
         ppu->frame_widescreen_scroll_y = (uint16_t)ctx->eram[0x0900u] << 8u | ctx->eram[0x0901u];
     }
 
+    //lembrar tiles e atributos de fundo para o cache de atributos do Widescreen
+    if (ctx && ctx->eram && ctx->eram_size > 0x08C3) {
+        const uint8_t mode_now = ctx->eram[0x08C3];
+        if (mode_now == 2 && ppu->ws_prev_game_mode != 2) {
+            memset(ppu->ws_block_known, 0, sizeof(ppu->ws_block_known));
+            memset(ppu->ws_tile_known, 0, sizeof(ppu->ws_tile_known));
+        }
+        ppu->ws_prev_game_mode = mode_now;
+    } 
+    // fim lembrar tiles e atributos de fundo para o cache de atributos do Widescreen   
+
     const size_t row_base = (size_t)scanline * GB_WIDESCREEN_WIDTH;
     WidescreenBlockAttributeCache attribute_cache;
     ppu_build_widescreen_block_attribute_cache(ppu, ctx, &attribute_cache);
@@ -1878,7 +1964,7 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     }
 
     // Se NÃO for a gameplay de side-scrolling (game_mode != 3), força o corte preto em AMBAS as margens Widescreen
-    const bool is_sidescrolling_gameplay = (game_mode == 3 || game_mode == 2 );
+    const bool is_sidescrolling_gameplay = (game_mode == 3 || game_mode == 2);
     //____gamemode
 
     

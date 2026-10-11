@@ -203,6 +203,14 @@ typedef struct GBPPU {
     /* ADD AQUI: Travamento do scroll da ERAM por frame para sincronizar o Wario Land */
     uint16_t frame_widescreen_scroll_x;
     uint16_t frame_widescreen_scroll_y;
+
+    /* Atributos CGB aprendidos para as margens do widescreen */
+    bool    ws_block_known[0x80][4];
+    uint8_t ws_block_attr[0x80][4];
+    bool    ws_tile_known[256];
+    uint8_t ws_tile_attr[256];
+    uint8_t ws_prev_game_mode;
+
     /* Allocated lazily on the heap (only when widescreen is first enabled)
      * to avoid growing GBPPU by ~144KB for every context, whether or not
      * widescreen is ever used. */

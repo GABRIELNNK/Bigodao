@@ -212,6 +212,7 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
                               mode 3 = gameplay
                               mode 4 = Level win - choose bonus and final coind and medals
                               resto = preta nas laterais*/
+        case 1:
         case 2:  /* Mode_LevelInit */    
         case 3:  /* Mode_Level */
             return true;
