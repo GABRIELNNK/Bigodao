@@ -1745,7 +1745,8 @@ static WidescreenObjectPixel ppu_fetch_widescreen_object_pixel(
          * is correct regardless of where the real edge/margin boundary is,
          * since the wrong one is always ~256px further away. */
         {
-            const int center = GB_SCREEN_WIDTH / 2;
+            //const int center = 72;   /* janela representável: -56 .. 200 */
+            const int center = (GB_SCREEN_WIDTH / 2);
             int best = screen_x;
             const int alt_low = screen_x - 256;
             const int alt_high = screen_x + 256;

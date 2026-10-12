@@ -1,4 +1,5 @@
 {
   "/* 3218 */     gb_add8(ctx, 0x10);": "/* 3218 */     gb_add8(ctx, 0x1e);",
-  "/* 321a */     gb_cp8(ctx, 0xd0);": "/* 321a */     gb_cp8(ctx, 0xdc);"
+  "/* 321a */     gb_cp8(ctx, 0xd0);": "/* 321a */     gb_cp8(ctx, 0xded);",
+  "/* 31fd */     ctx->bc = 0x00d0;": "/* 31fd */     ctx->bc = 0x00d1;"
 }

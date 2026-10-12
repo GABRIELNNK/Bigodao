@@ -2958,6 +2958,33 @@ static void gbrt_write8_impl(GBContext* ctx,
         if (ctx->eram) {
             uint32_t eram_addr = ((uint32_t)ctx->ram_bank * 0x2000) + (addr - 0xA000);
             if (eram_addr < ctx->eram_size) {
+
+                /*
+                //debugging: log writes to external RAM in the range 0xA200-0xA204
+                #ifdef GBRT_TRACE_SPAWN
+                if (eram_addr >= 0x0200 && eram_addr < 0x0300 &&
+                    (eram_addr & 0x1F) == 0 &&
+                    ctx->eram[eram_addr] == 0 && value != 0) {
+                    fprintf(stderr,
+                        "[SPAWN] slot A%03X state=%02X pc=%04X scroll=%02X%02X\n"
+                        "        A100: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n"
+                        "        stack:",
+                        0xA000 + eram_addr, value, ctx->pc,
+                        ctx->eram[0x0902], ctx->eram[0x0903],
+                        ctx->eram[0x100], ctx->eram[0x101], ctx->eram[0x102], ctx->eram[0x103],
+                        ctx->eram[0x104], ctx->eram[0x105], ctx->eram[0x106], ctx->eram[0x107],
+                        ctx->eram[0x108], ctx->eram[0x109], ctx->eram[0x10A], ctx->eram[0x10B],
+                        ctx->eram[0x10C]);
+                    for (int i = 0; i < 6; i++) {
+                        uint16_t a = (uint16_t)(ctx->sp + i * 2);
+                        fprintf(stderr, " %02X%02X", gb_read8(ctx, (uint16_t)(a + 1)), gb_read8(ctx, a));
+                    }
+                    fprintf(stderr, "\n");
+                }
+                #endif
+                //fim debugging
+                */
+
                 ctx->eram[eram_addr] = value;
             }
         }

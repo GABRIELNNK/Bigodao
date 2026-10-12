@@ -37,6 +37,34 @@ aparentemente não regula posiçao de surgir inimigo a direita, só regula até
 onde vai para a esquerda
 
 ***TODO: achar posição de surgimento de inimigo a direita. func3.c parece ter indicios nos valores 0xA0 (160px)  - gb_cp8(ctx, 0xe0); - pc_374e e pc_33d7
+*** func3 tem a permanencia dos inimigos, func 7 tem o ponto de surgimento
+injecao json
+
+  "/* 3218 */     gb_add8(ctx, 0x10);": "/* 3218 */     gb_add8(ctx, 0x1e);",  >>> func3
+  "/* 321a */     gb_cp8(ctx, 0xd0);": "/* 321a */     gb_cp8(ctx, 0xdc);",  >>> func3
+  "/* 02:4476 */     gb_sub8(ctx, 0x07);": "/* 02:4476 */     gb_sub8(ctx, 0x08);",  >>> func7
+  "/* 02:4485 */     ctx->e = 0x0e;":      "/* 02:4485 */     ctx->e = 0x10;",  >>> func7
+  "/* 02:449f */     gb_add8(ctx, 0x06);": "/* 02:449f */     gb_add8(ctx, 0x07);",  >>> func7 - inverte aparecimento inimigo (para esquerda)
+  "/* 02:44bf */     gb_sub8(ctx, 0x07);": "/* 02:44bf */     gb_sub8(ctx, 0x08);",  >>> func7 - apaga inimigos a esquerda passado
+  "/* 02:44df */     gb_sub8(ctx, 0x07);": "/* 02:44df */     gb_sub8(ctx, 0x08);",  >>> func7
+  "/* 02:44ec */     ctx->e = 0x0e;":      "/* 02:44ec */     ctx->e = 0x10;",  >>> func7
+  "/* 02:44ff */     gb_sub8(ctx, 0x07);": "/* 02:44ff */     gb_sub8(ctx, 0x08);",  >>> func7
+  "/* 02:450c */     ctx->e = 0x0e;":      "/* 02:450c */     ctx->e = 0x10;"  >>> func7
+
+outro json
+{
+  "/* 3218 */     gb_add8(ctx, 0x10);": "/* 3218 */     gb_add8(ctx, 0x1e);",
+  "/* 321a */     gb_cp8(ctx, 0xd0);": "/* 321a */     gb_cp8(ctx, 0xd7);",
+
+  "/* 31fd */     ctx->bc = 0x00d0;": "/* 31fd */     ctx->bc = 0x00d7;",
+  "/* 3209 */     ctx->bc = 0x0030;": "/* 3209 */     ctx->bc = 0x001e;",
+
+  "/* 321b */     if (!ctx->f_c) {":  "/* 321b */     if (!ctx->f_c) {",
+  "/* 321c */     if (!ctx->f_c) {":  "/* 321c */     if (0) {" >>> ghosting do outro esquerda vai na direita
+
+}
+
+
 
 
 *** O aplicativo valida a ROM original pelo SHA-256 e aplica em memoria o IPS
