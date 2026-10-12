@@ -6,6 +6,14 @@
 #include <commdlg.h>
 #endif
 
+// stb_image (single-header, domínio público): decodifica a arte JPEG embutida e
+// fornece o inflate usado para ler entradas comprimidas do wario.o2r.
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#define STBI_SUPPORT_ZLIB
+#define STBI_NO_STDIO
+#include "stb_image.h"
+
 #include "asset_extractor.hpp"
 #include "platform_sdl.h"
 #include "ppu.h"
@@ -21,12 +29,6 @@
 #include "runtime/vendor/imgui/imgui.h"
 #include "runtime/vendor/imgui/backends/imgui_impl_sdl2.h"
 #include "runtime/vendor/imgui/backends/imgui_impl_sdlrenderer2.h"
-
-// Decodificador de imagem (single-header, domínio público) — só JPEG, lendo da memória.
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_JPEG
-#define STBI_NO_STDIO
-#include "stb_image.h"
 
 // Arte + fontes embutidas no executável (gerado a partir do PNG/TTF).
 #include "launcher_assets.h"
@@ -887,57 +889,82 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
     return ready_to_launch;
 }
 
+// Onde fica o wario.o2r: ao lado do executável, para não depender da pasta de
+// trabalho (atalhos, abrir pelo Explorer etc.). Um wario.o2r na pasta atual ainda
+// é aceito, para compatibilidade com a versão anterior.
+static fs::path resolve_o2r_path() {
+    const fs::path name = "wario.o2r";
+    fs::path beside_exe = name;
+    if (char* base = SDL_GetBasePath()) {
+        beside_exe = path_from_utf8(base) / name;
+        SDL_free(base);
+    }
+    std::error_code ec;
+    if (fs::is_regular_file(beside_exe, ec)) return beside_exe;
+    if (fs::is_regular_file(name, ec))       return fs::absolute(name, ec);
+    return beside_exe;   // onde será criado
+}
+
 int main(int argc, char* argv[]) {
     // ---------------------------------------------------------------------
-    // 1. Check for extracted asset file (wario.o2r)
+    // 1. Fast path: assets already extracted (wario.o2r)
+    //    The package holds the patched ROM, so no ROM, IPS or manifest is needed.
     // ---------------------------------------------------------------------
-    const std::filesystem::path o2r_file = "wario.o2r";
-    std::string rom_input_path = argc > 1 ? argv[1] : "";
+    AssetExtractor assets(resolve_o2r_path());
+    std::string rom_input_path  = argc > 1 ? argv[1] : "";
     std::string custom_ips_path = argc > 2 ? argv[2] : "";
 
-    if (!std::filesystem::exists(o2r_file) && rom_input_path.empty()) {
-        std::cout << "[Launcher] File " << o2r_file << " not found. Launching ImGui Interface...\n";
-        
-        if (!run_imgui_launcher(rom_input_path, custom_ips_path, argv[0])) {
-            std::cout << "[Launcher] Cancelled by user.\n";
-            return 0;
-        }
-    }
-
-    if (rom_input_path.empty()) {
-        rom_input_path = "rom.gb";
-    }
-
-    // ---------------------------------------------------------------------
-    // 2. IPS Patch Application
-    // ---------------------------------------------------------------------
     std::vector<uint8_t> patched_rom;
-    try {
-        std::filesystem::path manifest_path = find_patch_manifest(argv[0]);
 
-        if (!custom_ips_path.empty()) {
-            std::cout << "Using custom IPS patch: " << custom_ips_path << "\n";
-            patched_rom = wl_sm3_patch::load_and_patch_rom_with_override(rom_input_path, manifest_path, custom_ips_path);
+    if (rom_input_path.empty() && assets.exists()) {
+        std::string err;
+        if (assets.load(patched_rom, err)) {
+            std::cout << "[VFS] Loaded patched ROM from " << assets.path().filename().string()
+                      << " (" << patched_rom.size() << " bytes).\n";
         } else {
-            patched_rom = wl_sm3_patch::load_and_patch_rom(rom_input_path, manifest_path);
+            std::cerr << "[VFS] " << assets.path().filename().string() << " can't be used (" << err
+                      << "). It will be rebuilt from the ROM.\n";
+            patched_rom.clear();
         }
-
-        std::cout << "IPS patch applied successfully in memory: " << rom_input_path << " -> "
-                  << patched_rom.size() << " bytes\n";
-
-    } catch (const std::exception& error) {
-        std::cerr << "Failed to prepare ROM: " << error.what() << '\n'
-                  << "Usage: " << argv[0] << " <rom.gb> [patch_path.ips]\n";
-        return 1;
     }
 
     // ---------------------------------------------------------------------
-    // 3. Asset Extraction (.o2r)
+    // 2. First run (or a ROM given on the command line):
+    //    launcher -> IPS patch in memory -> build wario.o2r
     // ---------------------------------------------------------------------
-    AssetExtractor extractor;
-    
-    if (!extractor.check_and_prepare_assets(rom_input_path)) {
-        return 1;
+    if (patched_rom.empty()) {
+        if (rom_input_path.empty()) {
+            std::cout << "[Launcher] No usable " << assets.path().filename().string() << ". Opening the launcher...\n";
+            if (!run_imgui_launcher(rom_input_path, custom_ips_path, argv[0])) {
+                std::cout << "[Launcher] Cancelled by user.\n";
+                return 0;
+            }
+        }
+
+        try {
+            const fs::path manifest_path = find_patch_manifest(argv[0]);
+            if (!custom_ips_path.empty()) {
+                std::cout << "Using IPS patch: " << custom_ips_path << "\n";
+                patched_rom = wl_sm3_patch::load_and_patch_rom_with_override(rom_input_path, manifest_path, custom_ips_path);
+            } else {
+                patched_rom = wl_sm3_patch::load_and_patch_rom(rom_input_path, manifest_path);
+            }
+            std::cout << "IPS patch applied in memory: " << rom_input_path << " -> "
+                      << patched_rom.size() << " bytes\n";
+        } catch (const std::exception& error) {
+            std::cerr << "Failed to prepare ROM: " << error.what() << '\n'
+                      << "Usage: " << argv[0] << " [rom.gb [patch.ips]]\n";
+            return 1;
+        }
+
+        // ---------------------------------------------------------------------
+        // 3. Asset extraction (.o2r) — from now on the game starts from it alone
+        // ---------------------------------------------------------------------
+        std::string err;
+        if (!assets.build(patched_rom, err)) {
+            std::cerr << "[VFS] Warning: could not create " << assets.path().string() << " (" << err
+                      << "). The game will start, but the ROM will be needed again next time.\n";
+        }
     }
 
     std::cout << "[VFS] Initializing runtime context allocation...\n";
