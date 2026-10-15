@@ -2770,6 +2770,13 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 ppu_native_reset_compare_stats();
                 save_runtime_preferences();
             }
+            bool hd_check = ppu_native_get_hd_check();
+            if (ImGui::Checkbox("Conferir amostragem HD", &hd_check)) {
+                ppu_native_set_hd_check(hd_check);
+                ppu_native_reset_hd_stats();
+            }
+            ImGui::TextDisabled("Escala HD: %dx (segue a Internal Resolution)",
+                                ppu_native_get_hd_scale());
         }
 
         int filter_mode = (int)g_render_filter_mode;
@@ -3064,6 +3071,18 @@ static void render_frame_internal(const uint32_t* framebuffer,
                             g_texture_scale, g_internal_res_scale);
                 ImGui::Text("Underruns: %u", current_audio_underruns());
                 ImGui::Text("Renderer: %s", ppu_native_mode_name(ppu_native_get_mode()));
+                {
+                    int hd_scale = 0;
+                    ppu_native_hd_frame(&hd_scale);
+                    ImGui::Text("HD: %dx%s", hd_scale,
+                                ppu_native_get_hd_check() ? " (conferindo)" : "");
+                    if (ppu_native_get_hd_check()) {
+                        const PPUNativeHdStats* hs = ppu_native_hd_stats();
+                        ImGui::Text("HD cmp: %llu frames, %llu com diferenca",
+                                    (unsigned long long)hs->frames_checked,
+                                    (unsigned long long)hs->frames_with_mismatch);
+                    }
+                }
                 if (ppu_native_get_mode() == PPU_RENDERER_COMPARE) {
                     const PPUNativeCompareStats* cmp = ppu_native_compare_stats();
                     ImGui::Text("Comparar: %llu frames, %llu com diferenca",
@@ -4121,6 +4140,7 @@ void gb_platform_submit_port_frame(void* user, const GBPortFrame* frame) {
 
 
 void gb_platform_render_frame(const uint32_t* framebuffer) {
+    ppu_native_set_hd_scale(g_internal_res_scale); /* passo 4a */
     //render_frame_internal(framebuffer, true, false);
     // Utilize o framebuffer gerado nativamente no VBlank
     GBPPU* ppu = active_ppu();

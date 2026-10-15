@@ -89,6 +89,36 @@ void ppu_native_reset_compare_stats(void);
 /* GB_SCREEN_HEIGHT entradas, válidas para o último frame desenhado */
 const PPUNativeLineState* ppu_native_line_states(void);
 
+/* ----------------------------------------------------------------------------
+ * Frame em alta resolução (passo 4a)
+ *
+ * Com escala N > 1, cada linha também é desenhada em N linhas de 160*N pixels
+ * (só o centro de 160 px; as margens do widescreen não entram aqui).
+ * Sem tiles HD (passo 5) cada pixel vira um bloco N x N da mesma cor.
+ * A "conferência" força o caminho que amostra cada subpixel dentro do tile
+ * (o mesmo que os PNGs vão usar) e compara com o bloco da cor original.
+ * -------------------------------------------------------------------------- */
+#define PPU_NATIVE_HD_MAX_SCALE 4
+
+typedef struct {
+    uint64_t frames_checked;
+    uint64_t frames_with_mismatch;
+    uint64_t pixels_mismatched;   /* subpixels diferentes, acumulado */
+    int16_t last_x;               /* coordenada HD do primeiro subpixel diferente */
+    int16_t last_y;
+} PPUNativeHdStats;
+
+/* 1 desliga. Vale a partir do próximo frame. */
+void ppu_native_set_hd_scale(int scale);
+int ppu_native_get_hd_scale(void);
+/* Último frame HD completo (160*N x 144*N, RGBA) ou NULL. */
+const uint32_t* ppu_native_hd_frame(int* out_scale);
+
+void ppu_native_set_hd_check(bool enabled);
+bool ppu_native_get_hd_check(void);
+const PPUNativeHdStats* ppu_native_hd_stats(void);
+void ppu_native_reset_hd_stats(void);
+
 #ifdef __cplusplus
 }
 #endif

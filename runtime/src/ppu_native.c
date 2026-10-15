@@ -2,7 +2,8 @@
  * @file ppu_native.c
  * @brief Renderizador nativo por linha. Veja ppu_native.h.
  *
- * Desenha só os 160 px reais. As margens do widescreen continuam vindo de
+ * Desenha só os 160 px reais (e, com escala N > 1, o mesmo centro em N x N:
+ * passo 4a). As margens do widescreen continuam vindo de
  * ppu_render_widescreen_scanline() em ppu.c (que tem a lógica de paredes de
  * sala, tabela de atributos do DX e atributos aprendidos); no VBlank este
  * módulo sobrescreve apenas o centro do framebuffer widescreen.
@@ -57,6 +58,19 @@ static uint32_t g_cur_first_expected = 0;
 static uint32_t g_cur_first_got = 0;
 
 static const uint16_t k_dmg_rgb555[4] = {0x67DC, 0x32EE, 0x2A66, 0x0841};
+
+/* Frame HD (passo 4a): só o centro, 160*N x 144*N. */
+#define HD_MAX PPU_NATIVE_HD_MAX_SCALE
+static uint32_t g_hd[(NATIVE_W * HD_MAX) * (NATIVE_H * HD_MAX)];
+static int g_hd_scale_req = 1;     /* pedida pela plataforma */
+static int g_hd_scale = 1;         /* usada no frame em andamento */
+static int g_hd_valid_scale = 0;   /* escala do último frame completo (0 = nenhum) */
+static bool g_hd_frame_full = false;
+static bool g_hd_check = false;
+static PPUNativeHdStats g_hd_stats;
+static uint32_t g_hd_cur_mismatch = 0;
+static int16_t g_hd_cur_x = -1;
+static int16_t g_hd_cur_y = -1;
 
 /* ============================================================================
  * Utilitários
@@ -198,11 +212,16 @@ typedef struct {
     uint8_t raw;
     uint8_t palette;
     bool priority;
+    /* Origem do pixel, para a amostragem em alta resolução */
+    const uint8_t* tile;  /* 64 índices de cor do tile (cache) */
+    uint8_t u;            /* coluna dentro do tile, no espaço da tela (antes do flip) */
+    uint8_t v;            /* linha dentro do tile, no espaço da tela (antes do flip) */
+    uint8_t flags;        /* OAM_FLIP_X / OAM_FLIP_Y */
 } BgPixel;
 
 static BgPixel sample_map(const GBContext* ctx, bool cgb, uint8_t lcdc,
                           uint16_t map_offset, int source_x, int source_y) {
-    BgPixel p = {0, 0, false};
+    BgPixel p = {0, 0, false, NULL, 0, 0, 0};
     const unsigned sx = (unsigned)source_x;
     const unsigned sy = (unsigned)source_y;
     const uint16_t entry = (uint16_t)(map_offset + ((sy >> 3) & 31u) * 32u + ((sx >> 3) & 31u));
@@ -210,12 +229,30 @@ static BgPixel sample_map(const GBContext* ctx, bool cgb, uint8_t lcdc,
     const uint8_t attr = cgb ? ctx->vram[BANK1_OFFSET + entry] : 0u;
     unsigned px = sx & 7u;
     unsigned py = sy & 7u;
+    p.u = (uint8_t)px;
+    p.v = (uint8_t)py;
+    p.flags = attr & (OAM_FLIP_X | OAM_FLIP_Y);
     if (attr & OAM_FLIP_X) px = 7u - px;
     if (attr & OAM_FLIP_Y) py = 7u - py;
     p.palette = attr & OAM_CGB_PALETTE;
     p.priority = (attr & OAM_PRIORITY) != 0;
-    p.raw = tile_pixels(ctx, (attr & OAM_CGB_BANK) ? 1u : 0u, bg_tile_index(lcdc, number))[py * 8u + px];
+    p.tile = tile_pixels(ctx, (attr & OAM_CGB_BANK) ? 1u : 0u, bg_tile_index(lcdc, number));
+    p.raw = p.tile[py * 8u + px];
     return p;
+}
+
+/* Amostra um subpixel (cs, rs) no espaço HD da tela, com escala n, de um tile
+ * cujo pixel de tela está em (u, v). Com tiles 8x8 isso devolve o mesmo
+ * índice de cor do pixel original; com PNG (passo 5) vai amostrar a imagem. */
+static inline uint8_t sample_tile_sub(const uint8_t* tile, unsigned u, unsigned v,
+                                      uint8_t flags, unsigned sx, unsigned sy,
+                                      unsigned n) {
+    const unsigned span = 8u * n;
+    unsigned cs = u * n + sx;
+    unsigned rs = v * n + sy;
+    if (flags & OAM_FLIP_X) cs = span - 1u - cs;
+    if (flags & OAM_FLIP_Y) rs = span - 1u - rs;
+    return tile[(rs / n) * 8u + (cs / n)];
 }
 
 /* ============================================================================
@@ -228,6 +265,11 @@ typedef struct {
     uint8_t behind[NATIVE_W];
     int16_t screen_x[NATIVE_W];
     uint8_t oam_index[NATIVE_W];
+    /* Origem do pixel vencedor, para a amostragem em alta resolução */
+    const uint8_t* tile[NATIVE_W];
+    uint8_t u[NATIVE_W];      /* coluna no sprite, espaço da tela */
+    uint8_t v[NATIVE_W];      /* linha no tile de 8, espaço da tela */
+    uint8_t flags[NATIVE_W];  /* OAM_FLIP_X / OAM_FLIP_Y */
 } ObjLine;
 
 /* Rasteriza todos os sprites da linha num buffer, com a mesma regra de
@@ -262,7 +304,9 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
             ? (unsigned)(oam[2] & 0xFEu) + (unsigned)(line >> 3)
             : oam[2];
         const unsigned bank = (cgb && (flags & OAM_CGB_BANK)) ? 1u : 0u;
-        const uint8_t* row = tile_pixels(ctx, bank, tile) + (line & 7) * 8;
+        const uint8_t* tile_px = tile_pixels(ctx, bank, tile);
+        const uint8_t* row = tile_px + (line & 7) * 8;
+        const uint8_t screen_v = (uint8_t)((y - sprite_y) & 7);
         const uint8_t palette = cgb ? (flags & OAM_CGB_PALETTE) : ((flags & OAM_PALETTE) ? 1u : 0u);
 
         for (int p = 0; p < 8; ++p) {
@@ -288,6 +332,10 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
             out->behind[x] = (flags & OAM_PRIORITY) ? 1u : 0u;
             out->screen_x[x] = (int16_t)sprite_x;
             out->oam_index[x] = (uint8_t)index;
+            out->tile[x] = tile_px;
+            out->u[x] = (uint8_t)p;
+            out->v[x] = screen_v;
+            out->flags[x] = flags & (OAM_FLIP_X | OAM_FLIP_Y);
         }
     }
 }
@@ -312,7 +360,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     const uint16_t window_map = (st->lcdc & LCDC_WINDOW_TILEMAP) ? MAP1_OFFSET : MAP0_OFFSET;
 
     for (int x = 0; x < GB_SCREEN_WIDTH; ++x) {
-        BgPixel bg = {0, 0, false};
+        BgPixel bg = {0, 0, false, NULL, 0, 0, 0};
         if (bg_on) {
             if (window_on && x >= window_start) {
                 bg = sample_map(ctx, cgb, st->lcdc, window_map, x - window_start, st->window_line);
@@ -337,6 +385,56 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             row[x] = obj_color(ppu, cgb, compat, objects.palette[x], objects.raw[x], obp);
         } else {
             row[x] = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
+        }
+
+        if (g_hd_scale > 1) {
+            const unsigned n = (unsigned)g_hd_scale;
+            const size_t stride = (size_t)NATIVE_W * n;
+            uint32_t* hd = g_hd + (size_t)y * n * stride + (size_t)x * n;
+            if (!g_hd_check) {
+                /* Sem tiles HD: bloco N x N com a cor do pixel. */
+                for (unsigned sy = 0; sy < n; ++sy) {
+                    uint32_t* d = hd + sy * stride;
+                    for (unsigned sx = 0; sx < n; ++sx) d[sx] = row[x];
+                }
+            } else {
+                /* Caminho de amostragem por subpixel (o dos PNGs), com as
+                 * mesmas regras de prioridade, conferido contra row[x]. */
+                const uint8_t obp = objects.palette[x] ? st->obp1 : st->obp0;
+                for (unsigned sy = 0; sy < n; ++sy) {
+                    uint32_t* d = hd + sy * stride;
+                    for (unsigned sx = 0; sx < n; ++sx) {
+                        const uint8_t bg_raw = bg.tile
+                            ? sample_tile_sub(bg.tile, bg.u, bg.v, bg.flags, sx, sy, n)
+                            : 0u;
+                        const uint8_t obj_raw = objects.raw[x]
+                            ? sample_tile_sub(objects.tile[x], objects.u[x], objects.v[x],
+                                              objects.flags[x], sx, sy, n)
+                            : 0u;
+                        bool obj_wins = obj_raw != 0;
+                        if (obj_wins && bg_raw != 0) {
+                            if (cgb) {
+                                if ((st->lcdc & LCDC_BG_ENABLE) && (bg.priority || objects.behind[x])) {
+                                    obj_wins = false;
+                                }
+                            } else if (objects.behind[x]) {
+                                obj_wins = false;
+                            }
+                        }
+                        const uint32_t c = obj_wins
+                            ? obj_color(ppu, cgb, compat, objects.palette[x], obj_raw, obp)
+                            : bg_color(ppu, cgb, compat, bg.palette, bg_raw, st->bgp);
+                        d[sx] = c;
+                        if (c != row[x]) {
+                            if (g_hd_cur_mismatch == 0) {
+                                g_hd_cur_x = (int16_t)(x * (int)n + (int)sx);
+                                g_hd_cur_y = (int16_t)(y * (int)n + (int)sy);
+                            }
+                            g_hd_cur_mismatch++;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -369,8 +467,13 @@ const char* ppu_native_mode_name(PPURendererMode mode) {
     }
 }
 
-static void begin_frame(const GBContext* ctx) {
+static void begin_frame(const GBContext* ctx, uint8_t first_line) {
     g_frame_open = true;
+    g_hd_scale = g_hd_scale_req;
+    g_hd_frame_full = (first_line == 0);
+    g_hd_cur_mismatch = 0;
+    g_hd_cur_x = -1;
+    g_hd_cur_y = -1;
     g_cur_mismatch = 0;
     g_cur_first_x = -1;
     g_cur_first_y = -1;
@@ -391,7 +494,7 @@ void ppu_native_begin_line(GBPPU* ppu, const GBContext* ctx) {
         ppu_native_invalidate_all();
     }
     if (y == 0 || !g_frame_open) {
-        begin_frame(ctx);
+        begin_frame(ctx, y);
     }
 
     const bool cgb = is_cgb(ctx);
@@ -478,6 +581,20 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
             }
         }
     }
+    if (g_frame_open && g_hd_scale > 1 && g_hd_check) {
+        g_hd_stats.frames_checked++;
+        if (g_hd_cur_mismatch > 0) {
+            g_hd_stats.frames_with_mismatch++;
+            g_hd_stats.pixels_mismatched += g_hd_cur_mismatch;
+            g_hd_stats.last_x = g_hd_cur_x;
+            g_hd_stats.last_y = g_hd_cur_y;
+            if (g_hd_stats.frames_with_mismatch <= 20u) {
+                fprintf(stderr, "[HD-CMP] escala=%d subpixels_diferentes=%u primeiro=(%d,%d)\n",
+                        g_hd_scale, g_hd_cur_mismatch, g_hd_cur_x, g_hd_cur_y);
+            }
+        }
+    }
+    g_hd_valid_scale = (g_frame_open && g_hd_frame_full && g_hd_scale > 1) ? g_hd_scale : 0;
     g_frame_open = false;
 
     /* Publica o centro no framebuffer normal e no meio do widescreen.
@@ -504,4 +621,43 @@ void ppu_native_reset_compare_stats(void) {
 
 const PPUNativeLineState* ppu_native_line_states(void) {
     return g_lines;
+}
+
+/* ============================================================================
+ * Frame HD (passo 4a)
+ * ========================================================================== */
+
+void ppu_native_set_hd_scale(int scale) {
+    if (scale < 1) scale = 1;
+    if (scale > HD_MAX) scale = HD_MAX;
+    g_hd_scale_req = scale;
+}
+
+int ppu_native_get_hd_scale(void) {
+    return g_hd_scale_req;
+}
+
+const uint32_t* ppu_native_hd_frame(int* out_scale) {
+    if (out_scale) {
+        *out_scale = g_hd_valid_scale;
+    }
+    return g_hd_valid_scale > 1 ? g_hd : NULL;
+}
+
+void ppu_native_set_hd_check(bool enabled) {
+    g_hd_check = enabled;
+}
+
+bool ppu_native_get_hd_check(void) {
+    return g_hd_check;
+}
+
+const PPUNativeHdStats* ppu_native_hd_stats(void) {
+    return &g_hd_stats;
+}
+
+void ppu_native_reset_hd_stats(void) {
+    memset(&g_hd_stats, 0, sizeof(g_hd_stats));
+    g_hd_stats.last_x = -1;
+    g_hd_stats.last_y = -1;
 }
