@@ -119,6 +119,31 @@ bool ppu_native_get_hd_check(void);
 const PPUNativeHdStats* ppu_native_hd_stats(void);
 void ppu_native_reset_hd_stats(void);
 
+/* ----------------------------------------------------------------------------
+ * Despejo de tiles (passo 5a)
+ *
+ * Com o despejo ligado, cada combinação nova de tile + paleta que aparece na
+ * tela entra numa fila. A plataforma retira da fila e grava como PNG 8x8:
+ *   b_<hash do tile>_<hash da paleta>.png  (fundo/window, opaco)
+ *   o_<hash do tile>_<hash da paleta>.png  (sprite, cor 0 transparente)
+ * Esses mesmos nomes serão os dos PNGs HD na pasta de mods (passo 5b).
+ * -------------------------------------------------------------------------- */
+typedef struct {
+    char kind;            /* 'b' fundo/window, 'o' sprite */
+    uint64_t tile_hash;   /* FNV-1a 64 dos 16 bytes do tile */
+    uint32_t pal_hash;    /* FNV-1a 32 das 4 cores RGB555 */
+    uint8_t index[64];    /* índice de cor (0..3) de cada pixel, linha a linha */
+    uint32_t rgba[4];     /* cor de cada índice, 0xAARRGGBB */
+} PPUNativeTileDump;
+
+void ppu_native_set_tile_dump(bool enabled);
+bool ppu_native_get_tile_dump(void);
+/* Retira até max itens da fila; devolve quantos retirou. */
+int ppu_native_take_tile_dumps(PPUNativeTileDump* out, int max);
+/* Quantas combinações tile + paleta já foram vistas desde o último reset. */
+uint32_t ppu_native_tile_dump_seen(void);
+void ppu_native_reset_tile_dump(void);
+
 #ifdef __cplusplus
 }
 #endif

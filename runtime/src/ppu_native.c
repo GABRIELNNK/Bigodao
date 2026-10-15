@@ -72,6 +72,19 @@ static uint32_t g_hd_cur_mismatch = 0;
 static int16_t g_hd_cur_x = -1;
 static int16_t g_hd_cur_y = -1;
 
+/* Passo 5a: identidade dos tiles e despejo (dump) para PNG.
+ * O hash do tile vem dos 16 bytes dele na VRAM (igual em qualquer banco ou
+ * posição); o hash da paleta vem das 4 cores RGB555 resolvidas na linha. */
+static uint64_t g_tile_hash[2][NATIVE_TILES];
+static bool g_dump_enabled = false;
+#define DUMP_SEEN_CAP 65536u            /* potência de 2 */
+#define DUMP_QUEUE_CAP 512u
+static uint64_t g_dump_seen[DUMP_SEEN_CAP]; /* 0 = vazio */
+static uint32_t g_dump_seen_count = 0;
+static PPUNativeTileDump g_dump_queue[DUMP_QUEUE_CAP];
+static uint32_t g_dump_head = 0;         /* próximo a retirar */
+static uint32_t g_dump_size = 0;
+
 /* ============================================================================
  * Utilitários
  * ========================================================================== */
@@ -149,6 +162,14 @@ static void decode_tile(const GBContext* ctx, unsigned bank, unsigned tile) {
         }
     }
     memcpy(&g_tile_shadow[bank][tile * 16u], src, 16);
+    {
+        uint64_t h = 1469598103934665603ull;          /* FNV-1a 64 */
+        for (unsigned i = 0; i < 16u; ++i) {
+            h ^= src[i];
+            h *= 1099511628211ull;
+        }
+        g_tile_hash[bank][tile] = h;
+    }
     g_tile_dirty[bank][tile] = false;
 }
 
@@ -344,6 +365,87 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
  * Linha completa (regras de ppu_render_dot)
  * ========================================================================== */
 
+/* ============================================================================
+ * Despejo de tiles (passo 5a)
+ * ========================================================================== */
+
+static inline unsigned tile_global_index(const uint8_t* tile_px) {
+    return (unsigned)((tile_px - &g_tile_px[0][0][0]) / 64);   /* 0..767 */
+}
+
+static uint32_t palette_hash(const uint16_t colors[4]) {
+    uint32_t h = 2166136261u;                         /* FNV-1a 32 */
+    for (unsigned i = 0; i < 4u; ++i) {
+        h ^= (uint32_t)(colors[i] & 0xFFu);
+        h *= 16777619u;
+        h ^= (uint32_t)(colors[i] >> 8);
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static inline uint64_t dump_key(char kind, uint64_t tile_hash, uint32_t pal_hash) {
+    uint64_t k = tile_hash ^ ((uint64_t)pal_hash * 0x9E3779B97F4A7C15ull) ^
+                 (kind == 'o' ? 0xD1B54A32D192ED03ull : 0u);
+    return k ? k : 1u;
+}
+
+/* Marca como visto; devolve true se for novo. */
+static bool dump_mark_seen(uint64_t key) {
+    if (g_dump_seen_count >= DUMP_SEEN_CAP / 2u) {
+        return false;   /* tabela cheia: para de despejar */
+    }
+    uint32_t i = (uint32_t)(key ^ (key >> 29)) & (DUMP_SEEN_CAP - 1u);
+    while (g_dump_seen[i] != 0) {
+        if (g_dump_seen[i] == key) {
+            return false;
+        }
+        i = (i + 1u) & (DUMP_SEEN_CAP - 1u);
+    }
+    g_dump_seen[i] = key;
+    g_dump_seen_count++;
+    return true;
+}
+
+static void dump_tile(char kind, const uint8_t* tile_px, const uint16_t colors[4],
+                      uint32_t pal_hash) {
+    const unsigned gi = tile_global_index(tile_px);
+    const uint64_t th = g_tile_hash[gi / NATIVE_TILES][gi % NATIVE_TILES];
+    if (g_dump_size >= DUMP_QUEUE_CAP) {
+        return;         /* fila cheia: tenta de novo num próximo frame */
+    }
+    if (!dump_mark_seen(dump_key(kind, th, pal_hash))) {
+        return;
+    }
+    PPUNativeTileDump* d = &g_dump_queue[(g_dump_head + g_dump_size) % DUMP_QUEUE_CAP];
+    g_dump_size++;
+    d->kind = kind;
+    d->tile_hash = th;
+    d->pal_hash = pal_hash;
+    memcpy(d->index, tile_px, 64);
+    for (unsigned c = 0; c < 4u; ++c) {
+        d->rgba[c] = rgb(colors[c]);
+    }
+    if (kind == 'o') {
+        d->rgba[0] &= 0x00FFFFFFu;  /* cor 0 do sprite é transparente */
+    }
+}
+
+/* Cores RGB555 de uma paleta, como a linha as resolve. */
+static void line_palette_colors(const GBPPU* ppu, bool cgb, bool compat, bool obj,
+                                uint8_t palette, uint8_t dmg_reg, uint16_t out[4]) {
+    for (uint8_t raw = 0; raw < 4u; ++raw) {
+        if (cgb) {
+            out[raw] = palette_word(obj ? ppu->obj_palette_ram : ppu->bg_palette_ram, palette, raw);
+        } else if (compat) {
+            out[raw] = palette_word(obj ? ppu->obj_palette_ram : ppu->bg_palette_ram,
+                                    obj ? palette : 0u, dmg_shade(raw, dmg_reg));
+        } else {
+            out[raw] = k_dmg_rgb555[dmg_shade(raw, dmg_reg)];
+        }
+    }
+}
+
 static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     static ObjLine objects;
     const PPUNativeLineState* st = &g_lines[y];
@@ -352,6 +454,26 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     uint32_t* row = g_frame + (size_t)y * NATIVE_W;
 
     rasterize_objects(ppu, ctx, cgb, st, y, &objects);
+
+    /* Passo 5a: cores e hash de cada paleta nesta linha (só no despejo). */
+    uint16_t bg_cols[8][4];
+    uint16_t obj_cols[8][4];
+    uint32_t bg_hash[8];
+    uint32_t obj_hash[8];
+    const uint8_t* last_bg_tile = NULL;
+    const uint8_t* last_obj_tile = NULL;
+    uint8_t last_bg_pal = 0xFFu;
+    uint8_t last_obj_pal = 0xFFu;
+    if (g_dump_enabled) {
+        const unsigned count = cgb ? 8u : 2u;
+        for (unsigned p = 0; p < count; ++p) {
+            line_palette_colors(ppu, cgb, compat, false, (uint8_t)p, st->bgp, bg_cols[p]);
+            bg_hash[p] = palette_hash(bg_cols[p]);
+            line_palette_colors(ppu, cgb, compat, true, (uint8_t)p,
+                                p ? st->obp1 : st->obp0, obj_cols[p]);
+            obj_hash[p] = palette_hash(obj_cols[p]);
+        }
+    }
 
     const bool bg_on = cgb || (st->lcdc & LCDC_BG_ENABLE) != 0;
     const bool window_on = (st->flags & PPU_NATIVE_LINE_WINDOW) != 0;
@@ -385,6 +507,22 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             row[x] = obj_color(ppu, cgb, compat, objects.palette[x], objects.raw[x], obp);
         } else {
             row[x] = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
+        }
+
+        if (g_dump_enabled) {
+            if (bg.tile && (bg.tile != last_bg_tile || bg.palette != last_bg_pal)) {
+                last_bg_tile = bg.tile;
+                last_bg_pal = bg.palette;
+                const uint8_t pi = cgb ? (bg.palette & 7u) : 0u;
+                dump_tile('b', bg.tile, bg_cols[pi], bg_hash[pi]);
+            }
+            if (use_object &&
+                (objects.tile[x] != last_obj_tile || objects.palette[x] != last_obj_pal)) {
+                last_obj_tile = objects.tile[x];
+                last_obj_pal = objects.palette[x];
+                const uint8_t pi = objects.palette[x] & 7u;
+                dump_tile('o', objects.tile[x], obj_cols[pi], obj_hash[pi]);
+            }
         }
 
         if (g_hd_scale > 1) {
@@ -660,4 +798,37 @@ void ppu_native_reset_hd_stats(void) {
     memset(&g_hd_stats, 0, sizeof(g_hd_stats));
     g_hd_stats.last_x = -1;
     g_hd_stats.last_y = -1;
+}
+
+/* ============================================================================
+ * Despejo de tiles (passo 5a): API
+ * ========================================================================== */
+
+void ppu_native_set_tile_dump(bool enabled) {
+    g_dump_enabled = enabled;
+}
+
+bool ppu_native_get_tile_dump(void) {
+    return g_dump_enabled;
+}
+
+int ppu_native_take_tile_dumps(PPUNativeTileDump* out, int max) {
+    int n = 0;
+    while (n < max && g_dump_size > 0) {
+        out[n++] = g_dump_queue[g_dump_head];
+        g_dump_head = (g_dump_head + 1u) % DUMP_QUEUE_CAP;
+        g_dump_size--;
+    }
+    return n;
+}
+
+uint32_t ppu_native_tile_dump_seen(void) {
+    return g_dump_seen_count;
+}
+
+void ppu_native_reset_tile_dump(void) {
+    memset(g_dump_seen, 0, sizeof(g_dump_seen));
+    g_dump_seen_count = 0;
+    g_dump_head = 0;
+    g_dump_size = 0;
 }

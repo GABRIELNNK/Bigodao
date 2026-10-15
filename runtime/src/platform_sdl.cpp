@@ -8,6 +8,7 @@
 #include "gbrt_port.h"
 #include "ppu.h"
 #include "ppu_native.h"
+#include "hd_pack_io.h"
 #include "audio_stats.h"
 #include "gbrt_debug.h"
 #include "post_processing.h"
@@ -2802,6 +2803,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
             ImGui::TextDisabled("Escala HD: %dx (segue a escala da textura)",
                                 ppu_native_get_hd_scale());
             ImGui::Checkbox("Usar frame HD na tela", &g_use_hd_frame);
+            bool tile_dump = ppu_native_get_tile_dump();
+            if (ImGui::Checkbox("Despejar tiles (PNG)", &tile_dump)) {
+                ppu_native_set_tile_dump(tile_dump);
+            }
+            if (tile_dump || hd_pack_io_dumped_total() > 0) {
+                ImGui::TextDisabled("Vistos: %u  Gravados: %u",
+                                    ppu_native_tile_dump_seen(),
+                                    hd_pack_io_dumped_total());
+                ImGui::TextWrapped("Pasta: %s", hd_pack_io_dump_dir());
+                if (ImGui::Button("Esquecer tiles vistos")) {
+                    ppu_native_reset_tile_dump();
+                }
+            }
         }
 
         int filter_mode = (int)g_render_filter_mode;
@@ -3733,6 +3747,13 @@ bool gb_platform_init(int scale) {
     }
     load_runtime_preferences();
     fprintf(stderr, "[SDL] SDL initialized.\n");
+    {
+        char* hd_base = SDL_GetBasePath();
+        hd_pack_io_set_base_dir(hd_base ? hd_base : "");
+        if (hd_base) {
+            SDL_free(hd_base);
+        }
+    }
 
 #if defined(__ANDROID__)
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
@@ -4166,6 +4187,7 @@ void gb_platform_submit_port_frame(void* user, const GBPortFrame* frame) {
 
 void gb_platform_render_frame(const uint32_t* framebuffer) {
     ppu_native_set_hd_scale(effective_internal_scale()); /* passo 4b: segue a textura */
+    hd_pack_io_flush_dumps(128); /* passo 5a */
     //render_frame_internal(framebuffer, true, false);
     // Utilize o framebuffer gerado nativamente no VBlank
     GBPPU* ppu = active_ppu();
