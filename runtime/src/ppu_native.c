@@ -352,7 +352,7 @@ PPURendererMode ppu_native_get_mode(void) {
 
 const char* ppu_native_mode_name(PPURendererMode mode) {
     switch (mode) {
-        case PPU_RENDERER_EMULATED: return "Emulado (referencia)";
+        case PPU_RENDERER_EMULATED: return "Atual (renderizador antigo)";
         case PPU_RENDERER_NATIVE: return "Nativo";
         case PPU_RENDERER_COMPARE: return "Comparar (nativo x emulado)";
         default: return "?";

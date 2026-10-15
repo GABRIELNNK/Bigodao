@@ -6,6 +6,7 @@
 #include "ppu.h"
 #include "gbrt.h"
 #include "gbrt_debug.h"
+#include "ppu_native.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -974,8 +975,19 @@ static DotObjectPixel ppu_fetch_object_dot(const GBPPU* ppu,
     return chosen;
 }
 
+/* Passo 2: decide se a PPU emulada gera pixels.
+ * Comparar: gera (e a referencia). Nativo: nao gera.
+ * Atual: segue o renderizador antigo (native_render_enabled). */
+static bool ppu_skip_emulated_pixels(const GBPPU* ppu) {
+    switch (ppu_native_get_mode()) {
+        case PPU_RENDERER_COMPARE: return false;
+        case PPU_RENDERER_NATIVE:  return true;
+        default:                   return ppu->native_render_enabled;
+    }
+}
+
 static void ppu_render_dot(GBPPU* ppu, GBContext* ctx) {
-    if (ppu->native_render_enabled) return;
+    if (ppu_skip_emulated_pixels(ppu)) return;
     const size_t framebuffer_index =
         (size_t)ppu->ly * GB_SCREEN_WIDTH + ppu->draw_x;
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
@@ -1017,7 +1029,7 @@ static void ppu_render_dot(GBPPU* ppu, GBContext* ctx) {
 static void ppu_render_background_span(GBPPU* ppu,
                                        GBContext* ctx,
                                        uint32_t span) {
-    if (ppu->native_render_enabled) return;
+    if (ppu_skip_emulated_pixels(ppu)) return;
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
     const bool bg_enabled = cgb_mode || (ppu->lcdc & LCDC_BG_ENABLE) != 0;
     const bool in_window = ppu->window_active_line;
@@ -1146,6 +1158,7 @@ static void ppu_begin_dot_transfer(GBPPU* ppu, const GBContext* ctx) {
         s->window_y_triggered = ppu->window_y_triggered;
         s->valid = true;
     }
+    ppu_native_begin_line(ppu, ctx);
 }
 
 static bool ppu_try_start_window(GBPPU* ppu, const GBContext* ctx) {
@@ -2481,6 +2494,7 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
                     break;
                 }
                 ppu_render_widescreen_scanline(ppu, ctx);
+                ppu_native_end_line(ppu, ctx);
 
                 ppu->mode3_length = (uint16_t)ppu->mode_cycles;
                 if (ppu->lcd_startup_phase == LCD_STARTUP_DRAW) {
@@ -2640,7 +2654,9 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
                     ppu->vblank_oam_irq_source =
                         !ppu_is_cgb_hardware(ctx);
                     if (!ppu->frame_ready) {
-                        if (ppu->native_render_enabled) {
+                        if (ppu_native_get_mode() != PPU_RENDERER_EMULATED) {
+                            ppu_native_end_frame(ppu, ctx);
+                        } else if (ppu->native_render_enabled) {
                             ppu_render_frame_native(ppu, ctx);
                         } else {
                             convert_to_rgb(ppu);

@@ -2,6 +2,7 @@
 #include "gbrt_data_mod.h"
 #include "gbrt_port.h"
 #include "ppu.h"
+#include "ppu_native.h"
 #include "audio.h"
 #include "audio_stats.h"
 #include "platform_sdl.h"
@@ -1810,6 +1811,7 @@ bool gb_context_load_state_file(GBContext* ctx, const char* path) {
     if (ctx->eram_size > 0) memcpy(ctx->eram, eram_data, ctx->eram_size);
     memcpy(ctx->wram, wram_data, WRAM_BANK_SIZE * 8u);
     memcpy(ctx->vram, vram_data, VRAM_SIZE * 2u);
+    ppu_native_invalidate_all();
     memcpy(ctx->oam, oam_data, OAM_SIZE);
     memcpy(ctx->hram, hram_data, HRAM_SIZE);
     memcpy(ctx->io, io_data, IO_SIZE + 1u);
@@ -1920,6 +1922,7 @@ static void gb_hdma_copy_block(GBContext* ctx) {
         if (dest >= 0x8000 && dest < 0xA000) {
             ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (dest - 0x8000)] =
                 gb_direct_read_dma_source(ctx, src);
+            ppu_native_on_vram_write(ctx->vram_bank, (uint16_t)(dest - 0x8000));
         }
     }
 
@@ -2909,6 +2912,7 @@ static void gbrt_write8_impl(GBContext* ctx,
         }
 
         ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (addr - 0x8000)] = value;
+        ppu_native_on_vram_write(ctx->vram_bank, (uint16_t)(addr - 0x8000));
 
         // 2. [ETAPA 2] Marca a tile correspondente no cache como DIRTY
         if (ctx->ppu) {

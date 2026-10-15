@@ -7,6 +7,7 @@
 #include "gbrt.h"   /* For GBPlatformCallbacks */
 #include "gbrt_port.h"
 #include "ppu.h"
+#include "ppu_native.h"
 #include "audio_stats.h"
 #include "gbrt_debug.h"
 #include "post_processing.h"
@@ -1184,6 +1185,13 @@ static void load_runtime_preferences(void) {
                     }
                     continue;
                 }                
+                if (strcmp(key, "display.renderer") == 0) {
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 0 && parsed < PPU_RENDERER_COUNT) {
+                        ppu_native_set_mode((PPURendererMode)parsed);
+                    }
+                    continue;
+                }
                 bool is_keyboard = strncmp(key, "keyboard.", 9) == 0;
                 bool is_controller = strncmp(key, "controller.", 11) == 0;
                 if (!is_keyboard && !is_controller) {
@@ -1330,6 +1338,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.internal_scale=%d\n", g_internal_res_scale);
     fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
+    fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
 
     for (int action = 0; action < GB_INPUT_ACTION_COUNT; action++) {
         for (int slot = 0; slot < 2; slot++) {
@@ -2750,6 +2759,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
 
+        {
+            int renderer_mode = (int)ppu_native_get_mode();
+            const char* renderer_names[PPU_RENDERER_COUNT];
+            for (int i = 0; i < PPU_RENDERER_COUNT; ++i) {
+                renderer_names[i] = ppu_native_mode_name((PPURendererMode)i);
+            }
+            if (ImGui::Combo("Renderer", &renderer_mode, renderer_names, PPU_RENDERER_COUNT)) {
+                ppu_native_set_mode((PPURendererMode)renderer_mode);
+                ppu_native_reset_compare_stats();
+                save_runtime_preferences();
+            }
+        }
+
         int filter_mode = (int)g_render_filter_mode;
         if (ImGui::Combo("Scale Filter",
                          &filter_mode,
@@ -3041,6 +3063,22 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 ImGui::Text("Textura: escala %dx (pedida %dx)",
                             g_texture_scale, g_internal_res_scale);
                 ImGui::Text("Underruns: %u", current_audio_underruns());
+                ImGui::Text("Renderer: %s", ppu_native_mode_name(ppu_native_get_mode()));
+                if (ppu_native_get_mode() == PPU_RENDERER_COMPARE) {
+                    const PPUNativeCompareStats* cmp = ppu_native_compare_stats();
+                    ImGui::Text("Comparar: %llu frames, %llu com diferenca",
+                                (unsigned long long)cmp->frames_compared,
+                                (unsigned long long)cmp->frames_with_mismatch);
+                    ImGui::Text("Ultimo frame: %u px diferentes",
+                                cmp->last_frame_mismatched_pixels);
+                    if (cmp->frames_with_mismatch > 0) {
+                        ImGui::Text("Ultima dif.: frame %llu, x=%d y=%d",
+                                    (unsigned long long)cmp->first_mismatch_frame,
+                                    cmp->first_mismatch_x, cmp->first_mismatch_y);
+                    }
+                    ImGui::Text("VRAM sem hook: %llu tiles",
+                                (unsigned long long)cmp->unhooked_tile_writes);
+                }
                 ImGui::Separator();
             }
             ImGui::Text("%s", overlay_menu_hint_text());
