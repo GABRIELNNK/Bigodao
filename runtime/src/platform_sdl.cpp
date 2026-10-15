@@ -226,6 +226,9 @@ static GBPostFilterMode g_post_filter_mode = GB_POST_FILTER_NONE;
 /* Com filtro Nearest e sem pós-processamento, ampliar na CPU não muda nada na
  * imagem: o SDL_RenderCopy já amplia na GPU. Nesse caso a textura fica em 1x.
  * A resolução interna maior só é usada quando um filtro se beneficia dela. */
+/* Passo 4b: usa o centro em alta resolucao do ppu_native na textura. */
+static bool g_use_hd_frame = true;
+
 static int effective_internal_scale(void) {
     if (g_post_filter_mode == GB_POST_FILTER_NONE &&
         g_render_filter_mode == GB_RENDER_FILTER_NEAREST) {
@@ -2529,6 +2532,18 @@ static void render_frame_internal(const uint32_t* framebuffer,
          * repetindo o pixel e replica a linha pronta na vertical com memcpy.
          * Sem divisão nem if por pixel de destino. */
         uint32_t base_row[GB_WIDESCREEN_WIDTH];
+        /* Passo 4b: centro em alta resolucao vindo do ppu_native. So para
+         * frames novos do jogo e com a mesma escala da textura. */
+        int hd_scale = 0;
+        const uint32_t* hd_frame = NULL;
+        if (count_guest_frame && g_use_hd_frame &&
+            ppu_native_get_mode() != PPU_RENDERER_EMULATED) {
+            hd_frame = ppu_native_hd_frame(&hd_scale);
+            if (hd_scale != scale) {
+                hd_frame = NULL;
+            }
+        }
+        const int hd_dst_x = (base_width == GB_WIDESCREEN_WIDTH) ? GB_WIDESCREEN_MARGIN * scale : 0;
 
         for (int y = 0; y < base_height; y++) {
             if (base_width == GB_WIDESCREEN_WIDTH) {
@@ -2567,6 +2582,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 for (int k = 1; k < scale; k++) {
                     memcpy((uint8_t*)pixels + (size_t)(y * scale + k) * pitch,
                            first, (size_t)texture_width * sizeof(uint32_t));
+                }
+            }
+            if (hd_frame) {
+                const size_t hd_stride = (size_t)GB_SCREEN_WIDTH * (size_t)scale;
+                for (int k = 0; k < scale; k++) {
+                    memcpy((uint8_t*)pixels + (size_t)(y * scale + k) * pitch +
+                               (size_t)hd_dst_x * sizeof(uint32_t),
+                           hd_frame + ((size_t)y * scale + k) * hd_stride,
+                           hd_stride * sizeof(uint32_t));
                 }
             }
         }
@@ -2775,8 +2799,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 ppu_native_set_hd_check(hd_check);
                 ppu_native_reset_hd_stats();
             }
-            ImGui::TextDisabled("Escala HD: %dx (segue a Internal Resolution)",
+            ImGui::TextDisabled("Escala HD: %dx (segue a escala da textura)",
                                 ppu_native_get_hd_scale());
+            ImGui::Checkbox("Usar frame HD na tela", &g_use_hd_frame);
         }
 
         int filter_mode = (int)g_render_filter_mode;
@@ -4140,7 +4165,7 @@ void gb_platform_submit_port_frame(void* user, const GBPortFrame* frame) {
 
 
 void gb_platform_render_frame(const uint32_t* framebuffer) {
-    ppu_native_set_hd_scale(g_internal_res_scale); /* passo 4a */
+    ppu_native_set_hd_scale(effective_internal_scale()); /* passo 4b: segue a textura */
     //render_frame_internal(framebuffer, true, false);
     // Utilize o framebuffer gerado nativamente no VBlank
     GBPPU* ppu = active_ppu();
