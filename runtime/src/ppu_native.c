@@ -31,7 +31,7 @@
  * Estado do módulo
  * ========================================================================== */
 
-static PPURendererMode g_mode = PPU_RENDERER_EMULATED;
+static PPURendererMode g_mode = PPU_RENDERER_NATIVE; /* padrao desde o passo 2c */
 
 /* Cache de tiles: índice de cor de 2 bits por pixel, linha a linha, x=0 é o
  * pixel mais à esquerda (bit 7). A paleta é aplicada só na composição. */
@@ -352,7 +352,7 @@ PPURendererMode ppu_native_get_mode(void) {
 
 const char* ppu_native_mode_name(PPURendererMode mode) {
     switch (mode) {
-        case PPU_RENDERER_EMULATED: return "Atual (renderizador antigo)";
+        case PPU_RENDERER_EMULATED: return "Emulado (referencia)";
         case PPU_RENDERER_NATIVE: return "Nativo";
         case PPU_RENDERER_COMPARE: return "Comparar (nativo x emulado)";
         default: return "?";

@@ -326,10 +326,6 @@ void ppu_render_scanline(GBPPU* ppu, GBContext* ctx);
 
 // Na struct GBPPU, podemos adicionar o cache e a flag de renderização direta:
 
-/**
- * @brief Renderiza o frame completo de uma só vez (chamado no VBlank)
- */
-void ppu_render_frame_native(GBPPU* ppu, GBContext* ctx);
 
 /**
  * @brief Decodifica um tile específico da VRAM
