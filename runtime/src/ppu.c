@@ -2391,6 +2391,89 @@ static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
 
 /* Escreve a linha em out_row (GB_WIDESCREEN_WIDTH pixels). Com skip_center,
  * as colunas do centro nao sao tocadas. */
+/* Passo 3b (parte 1): mesma montagem do cache de atributos que
+ * ppu_build_widescreen_block_attribute_cache(), mais barata:
+ *  - so inicializa o que e lido depois (heads e count), sem zerar os
+ *    ~9 KB de candidates (a busca so percorre candidatos ligados em heads);
+ *  - le o mapa de tiles direto da VRAM (os enderecos 0x9800-0x9FFF sao
+ *    sempre validos), sem passar por vram_read_bank();
+ *  - calcula as 32 coordenadas world_x uma vez, e nao em cada linha do mapa.
+ * Os atributos aprendidos (ws_block_*, ws_tile_*) sao gravados na mesma
+ * ordem que na versao original. */
+static void ppu_build_widescreen_block_attribute_cache_fast(
+    GBPPU* ppu,
+    const GBContext* ctx,
+    WidescreenBlockAttributeCache* cache) {
+    if (!ctx || !ctx->vram) {
+        ppu_build_widescreen_block_attribute_cache(ppu, ctx, cache);
+        return;
+    }
+    memset(cache->heads, 0xFF, sizeof(cache->heads)); /* UINT16_MAX */
+    cache->count = 0;
+    if (!ppu_is_cgb_mode(ctx) || !ctx->wram || !ctx->eram) {
+        return;
+    }
+
+    const int reference_x = (int)ppu->frame_widescreen_scroll_x - 0x50;
+    const int reference_y = (int)ppu->frame_widescreen_scroll_y - 0x48;
+    const uint16_t tilemap_offset =
+        (uint16_t)(get_bg_tilemap_addr(ppu->latched_lcdc) - 0x8000u);
+    const uint8_t* map0 = ctx->vram + tilemap_offset;
+    const uint8_t* map1 = ctx->vram + VRAM_SIZE + tilemap_offset;
+
+    int world_xs[32];
+    for (int map_x = 0; map_x < 32; ++map_x) {
+        world_xs[map_x] = ppu_unwrap_widescreen_map_coordinate(map_x, reference_x);
+    }
+
+    for (int map_y = 0; map_y < 32; ++map_y) {
+        const int world_y = ppu_unwrap_widescreen_map_coordinate(map_y, reference_y);
+        if (world_y < 0 || world_y >= 0x0200) {
+            continue;
+        }
+        const size_t layout_row = (size_t)(world_y >> 4) * 0x100u;
+        const size_t tile_row = (size_t)((world_y >> 3) & 1) * 2u;
+        const uint8_t* row0 = map0 + map_y * 32;
+        const uint8_t* row1 = map1 + map_y * 32;
+
+        for (int map_x = 0; map_x < 32; ++map_x) {
+            const int world_x = world_xs[map_x];
+            if (world_x < 0 || world_x >= 0x1000) {
+                continue;
+            }
+
+            const uint8_t block_id = ctx->wram[layout_row + (size_t)(world_x >> 4)] & 0x7Fu;
+            const size_t block_offset = 0x0D00u + (size_t)block_id * 4u;
+            if (block_offset + 3u >= ctx->eram_size) {
+                continue;
+            }
+
+            const size_t tile_in_block = tile_row + (size_t)((world_x >> 3) & 1);
+            const uint8_t learned_tile = ctx->eram[block_offset + tile_in_block];
+            if (row0[map_x] != learned_tile) {
+                continue;
+            }
+
+            const uint8_t learned_attr = row1[map_x];
+            ppu->ws_block_known[block_id][tile_in_block] = true;
+            ppu->ws_block_attr[block_id][tile_in_block]  = learned_attr;
+            ppu->ws_tile_known[learned_tile] = true;
+            ppu->ws_tile_attr[learned_tile]  = learned_attr;
+
+            if (cache->count < WIDESCREEN_ATTRIBUTE_CACHE_CAPACITY) {
+                const uint16_t candidate_index = cache->count++;
+                WidescreenBlockAttributeCandidate* candidate =
+                    &cache->candidates[candidate_index];
+                candidate->world_x = (uint16_t)(world_x & ~7);
+                candidate->world_y = (uint16_t)(world_y & ~7);
+                candidate->attributes = learned_attr;
+                candidate->next = cache->heads[block_id][tile_in_block];
+                cache->heads[block_id][tile_in_block] = candidate_index;
+            }
+        }
+    }
+}
+
 static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
                                                 const GBContext* ctx,
                                                 uint32_t* out_row,
@@ -2410,7 +2493,7 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
     }
 
     WidescreenBlockAttributeCache attribute_cache;
-    ppu_build_widescreen_block_attribute_cache(ppu, ctx, &attribute_cache);
+    ppu_build_widescreen_block_attribute_cache_fast(ppu, ctx, &attribute_cache);
 
     const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
     bool wall_l, wall_r;
