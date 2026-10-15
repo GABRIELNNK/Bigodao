@@ -62,6 +62,32 @@ static double g_timing_vsync_total = 0.0;
 static uint32_t g_timing_frame_count = 0;
 static GBPlatformTimingInfo g_last_timing = {};
 
+/* Janela de 60 frames para média e pico de tempo. */
+struct GBTimingWindow {
+    double acc = 0.0;
+    double max = 0.0;
+    uint32_t count = 0;
+    double shown_avg = 0.0;
+    double shown_max = 0.0;
+};
+
+static void timing_window_add(GBTimingWindow& w, double ms) {
+    w.acc += ms;
+    if (ms > w.max) w.max = ms;
+    if (++w.count >= 60) {
+        w.shown_avg = w.acc / (double)w.count;
+        w.shown_max = w.max;
+        w.acc = 0.0;
+        w.max = 0.0;
+        w.count = 0;
+    }
+}
+
+static GBTimingWindow g_emu_window;      /* fim do vsync -> início do render */
+static GBTimingWindow g_render_window;   /* upload + compose + present */
+static double g_last_vsync_end_ms = 0.0;
+static int g_texture_scale = 1;          /* escala com que a textura foi criada */
+
 // Supersampling
 static int g_internal_res_scale = 1; // 1x (Nativo), 2x, 3x, 4x
 static const char* g_internal_res_names[] = {
@@ -195,6 +221,17 @@ static bool g_widescreen_auto_active = false; /* current effective state, gated 
 
 // Variável para guardar o estado do filtro selecionado
 static GBPostFilterMode g_post_filter_mode = GB_POST_FILTER_NONE;
+
+/* Com filtro Nearest e sem pós-processamento, ampliar na CPU não muda nada na
+ * imagem: o SDL_RenderCopy já amplia na GPU. Nesse caso a textura fica em 1x.
+ * A resolução interna maior só é usada quando um filtro se beneficia dela. */
+static int effective_internal_scale(void) {
+    if (g_post_filter_mode == GB_POST_FILTER_NONE &&
+        g_render_filter_mode == GB_RENDER_FILTER_NEAREST) {
+        return 1;
+    }
+    return g_internal_res_scale < 1 ? 1 : g_internal_res_scale;
+}
 
 static GBPPU* active_ppu(void) {
     return g_registered_ctx ? (GBPPU*)g_registered_ctx->ppu : NULL;
@@ -1126,6 +1163,27 @@ static void load_runtime_preferences(void) {
                     g_widescreen_fade_percent = (int)parsed;
                     continue;
                 }
+                if (strcmp(key, "display.internal_scale") == 0) {
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 1 && parsed <= IM_ARRAYSIZE(g_internal_res_names)) {
+                        g_internal_res_scale = (int)parsed;
+                    }
+                    continue;
+                }
+                if (strcmp(key, "display.scale_filter") == 0) {
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 0 && parsed < IM_ARRAYSIZE(g_render_filter_names)) {
+                        g_render_filter_mode = (GBRenderFilterMode)parsed;
+                    }
+                    continue;
+                }
+                if (strcmp(key, "display.post_filter") == 0) {
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 0 && parsed < GB_POST_FILTER_COUNT) {
+                        g_post_filter_mode = (GBPostFilterMode)parsed;
+                    }
+                    continue;
+                }                
                 bool is_keyboard = strncmp(key, "keyboard.", 9) == 0;
                 bool is_controller = strncmp(key, "controller.", 11) == 0;
                 if (!is_keyboard && !is_controller) {
@@ -1269,6 +1327,9 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.widescreen=%d\n", g_widescreen_mode ? 1 : 0);
     fprintf(file, "display.widescreen_fade_enabled=%d\n", g_widescreen_fade_enabled ? 1 : 0);
     fprintf(file, "display.widescreen_fade_percent=%d\n", g_widescreen_fade_percent);
+    fprintf(file, "display.internal_scale=%d\n", g_internal_res_scale);
+    fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
+    fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
 
     for (int action = 0; action < GB_INPUT_ACTION_COUNT; action++) {
         for (int slot = 0; slot < 2; slot++) {
@@ -1972,8 +2033,11 @@ static bool recreate_streaming_texture(void) {
     //const int texture_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
     const int base_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
     const int base_height = GB_SCREEN_HEIGHT;
-    const int texture_width = base_width * g_internal_res_scale;
-    const int texture_height = base_height * g_internal_res_scale;
+    //const int texture_width = base_width * g_internal_res_scale;
+    //const int texture_height = base_height * g_internal_res_scale;
+    g_texture_scale = effective_internal_scale();
+    const int texture_width = base_width * g_texture_scale;
+    const int texture_height = base_height * g_texture_scale;
 
     g_texture = SDL_CreateTexture(
         g_renderer,
@@ -2226,6 +2290,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
     }
 
     g_present_count++;
+    if (count_guest_frame && g_last_vsync_end_ms > 0.0) {
+        timing_window_add(g_emu_window, sdl_now_ms() - g_last_vsync_end_ms);
+    }
     if (count_guest_frame) {
         g_frame_count++;
         /* Copy the incoming framebuffer into the appropriate stable buffer
@@ -2306,7 +2373,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
         return;
     }
 
-    if ((!g_texture || g_renderer_reset_pending) && !recreate_streaming_texture()) {
+    //if ((!g_texture || g_renderer_reset_pending) && !recreate_streaming_texture()) {
+    if ((!g_texture || g_renderer_reset_pending ||
+         effective_internal_scale() != g_texture_scale) &&
+        !recreate_streaming_texture()) {
         g_last_timing.upload_ms = 0.0;
         g_last_timing.compose_ms = 0.0;
         g_last_timing.present_ms = 0.0;
@@ -2368,7 +2438,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     }
 
     // --- DIMENSÕES BASE E COM SUPERSAMPLING ---
-    const int base_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    /*const int base_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
     const int base_height = GB_SCREEN_HEIGHT;
 
     const int texture_width = base_width * g_internal_res_scale;
@@ -2377,7 +2447,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
     if (g_palette_idx == 0) {
         if (g_internal_res_scale > 1) {
-            /* Caminho com Supersampling Ativo (>1x) */
+            // Caminho com Supersampling Ativo (>1x) 
             for (int y = 0; y < texture_height; y++) {
                 uint32_t* dst_row = (uint32_t*)((uint8_t*)pixels + y * pitch);
                 int src_y = y / g_internal_res_scale;
@@ -2395,7 +2465,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 }
             }
         } else {
-            /* Caminho nativo 1x */
+            // Caminho nativo 1x
             for (int y = 0; y < texture_height; y++) {
                 uint32_t* dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
                 if (texture_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
@@ -2433,7 +2503,65 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 }
             }
         }
-    } else {
+    } else {*/
+
+    // --- DIMENSÕES BASE E COM SUPERSAMPLING ---
+    const int scale = g_texture_scale;
+    const int base_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    const int base_height = GB_SCREEN_HEIGHT;
+
+    const int texture_width = base_width * scale;
+    const int texture_height = base_height * scale;
+    const bool black_fill_non_side_scrolling = g_widescreen_mode && gb_platform_should_black_fill_non_side_scrolling(g_registered_ctx);
+    const bool src_is_wide = (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE);
+
+    if (g_palette_idx == 0) {
+        /* Monta cada linha uma vez na resolução base, amplia na horizontal
+         * repetindo o pixel e replica a linha pronta na vertical com memcpy.
+         * Sem divisão nem if por pixel de destino. */
+        uint32_t base_row[GB_WIDESCREEN_WIDTH];
+
+        for (int y = 0; y < base_height; y++) {
+            if (base_width == GB_WIDESCREEN_WIDTH) {
+                if (src_is_wide) {
+                    memcpy(base_row, src + (size_t)y * GB_WIDESCREEN_WIDTH,
+                           GB_WIDESCREEN_WIDTH * sizeof(uint32_t));
+                } else {
+                    /* Frame 160 px numa textura wide: estica as bordas. */
+                    const uint32_t* s = src + (size_t)y * GB_SCREEN_WIDTH;
+                    for (int x = 0; x < GB_WIDESCREEN_MARGIN; x++) base_row[x] = s[0];
+                    memcpy(&base_row[GB_WIDESCREEN_MARGIN], s, GB_SCREEN_WIDTH * sizeof(uint32_t));
+                    for (int x = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH; x < GB_WIDESCREEN_WIDTH; x++) {
+                        base_row[x] = s[GB_SCREEN_WIDTH - 1];
+                    }
+                }
+                if (black_fill_non_side_scrolling) {
+                    for (int x = 0; x < GB_WIDESCREEN_MARGIN; x++) {
+                        base_row[x] = 0xFF000000;
+                        base_row[GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH + x] = 0xFF000000;
+                    }
+                }
+            } else {
+                memcpy(base_row, src + (size_t)y * GB_SCREEN_WIDTH,
+                       GB_SCREEN_WIDTH * sizeof(uint32_t));
+            }
+
+            uint32_t* first = (uint32_t*)((uint8_t*)pixels + (size_t)(y * scale) * pitch);
+            if (scale == 1) {
+                memcpy(first, base_row, (size_t)base_width * sizeof(uint32_t));
+            } else {
+                uint32_t* d = first;
+                for (int x = 0; x < base_width; x++) {
+                    const uint32_t c = base_row[x];
+                    for (int k = 0; k < scale; k++) *d++ = c;
+                }
+                for (int k = 1; k < scale; k++) {
+                    memcpy((uint8_t*)pixels + (size_t)(y * scale + k) * pitch,
+                           first, (size_t)texture_width * sizeof(uint32_t));
+                }
+            }
+        }
+    } else {    
         /* Palette remap path */
         uint32_t source_palette[4];
         for (int shade = 0; shade < 4; ++shade) {
@@ -2441,10 +2569,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
         }
         for (int y = 0; y < texture_height; y++) {
             uint32_t* dst_row_ptr = (uint32_t*)((uint8_t*)pixels + y * pitch);
-            int src_y = y / g_internal_res_scale;
+            int src_y = y / scale;// y / g_internal_res_scale;
 
             for (int x = 0; x < texture_width; x++) {
-                int src_x = x / g_internal_res_scale;
+                int src_x = x / scale;// x / g_internal_res_scale;
                 uint32_t src_pixel = 0;
 
                 if (base_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
@@ -2562,6 +2690,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
             save_runtime_preferences();
         }
 
+        if (effective_internal_scale() == 1 && g_internal_res_scale > 1) {
+            ImGui::TextDisabled("Sem efeito com filtro Nearest e sem pos-processamento: a GPU ja amplia.");
+        }        
+
         bool fullscreen = g_fullscreen;
         if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
             set_fullscreen_enabled(fullscreen);
@@ -2625,6 +2757,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                          IM_ARRAYSIZE(g_render_filter_names))) {
             g_render_filter_mode = (GBRenderFilterMode)filter_mode;
             update_render_filter();
+            save_runtime_preferences();
         }
 
         int current_post_filter = (int)g_post_filter_mode;
@@ -2897,6 +3030,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
         if (ImGui::Begin("Overlay", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
             update_audio_stats_from_ring();
             ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            {
+                const double budget_ms = 1000.0 * 70224.0 / 4194304.0; /* 16,74 ms */
+                ImGui::Separator();
+                ImGui::Text("Orcamento: %.2f ms/frame", budget_ms);
+                ImGui::Text("Emu:    med %.2f  pico %.2f ms",
+                            g_emu_window.shown_avg, g_emu_window.shown_max);
+                ImGui::Text("Render: med %.2f  pico %.2f ms",
+                            g_render_window.shown_avg, g_render_window.shown_max);
+                ImGui::Text("Textura: escala %dx (pedida %dx)",
+                            g_texture_scale, g_internal_res_scale);
+                ImGui::Text("Underruns: %u", current_audio_underruns());
+                ImGui::Separator();
+            }
             ImGui::Text("%s", overlay_menu_hint_text());
             ImGui::Text("%s", overlay_visibility_hint_text());
             ImGui::Text("Viewport: %d x %d (%s)",
@@ -2979,6 +3125,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     g_last_timing.present_ms = sdl_now_ms() - present_start_ms;
     g_last_timing.total_render_ms = sdl_now_ms() - total_render_start_ms;
     g_timing_render_total += g_last_timing.total_render_ms;
+    timing_window_add(g_render_window, g_last_timing.total_render_ms);
 }
 ////////////////
 
@@ -4019,10 +4166,16 @@ void gb_platform_vsync(uint32_t frame_cycles) {
 
     frame_remainder = frame_ticks_num % frame_ticks_den;
     next_frame_time += frame_ticks;
-    uint64_t target_frame_time = next_frame_time;
+    //uint64_t target_frame_time = next_frame_time;
 
     uint32_t audio_fill = audio_ring_fill_samples();
     bool audio_starved = audio_output_should_run() && g_audio_started && audio_fill < g_audio_low_watermark;
+    bool audio_overfull = audio_output_should_run() && g_audio_started &&
+                      audio_fill > g_audio_start_threshold + g_audio_start_threshold / 4;
+    if (audio_overfull) {
+    next_frame_time += frame_ticks / 50; /* ~2% mais lento até drenar */
+    }
+    uint64_t target_frame_time = next_frame_time;
 
     if (!audio_starved && now < target_frame_time) {
         for (;;) {
@@ -4067,6 +4220,7 @@ void gb_platform_vsync(uint32_t frame_cycles) {
     g_timing_vsync_total += g_last_timing.pacing_ms;
     g_timing_frame_count++;
     g_last_frame_time = SDL_GetTicks();
+    g_last_vsync_end_ms = sdl_now_ms();
 }
 
 bool gb_platform_get_smooth_lcd_transitions(void) {
