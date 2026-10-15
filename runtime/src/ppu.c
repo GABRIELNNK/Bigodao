@@ -2474,6 +2474,56 @@ static void ppu_build_widescreen_block_attribute_cache_fast(
     }
 }
 
+/* Passo 3b (parte 2): o cache de atributos das margens e montado uma vez por
+ * frame e reaproveitado nas linhas seguintes. E remontado no meio do frame se
+ * mudar algo que ele usa e que da para detectar barato: camera (ERAM $A900-
+ * $A903), mapa de BG escolhido no LCDC, modo CGB, modo de jogo (o que tambem
+ * cobre o reset dos atributos aprendidos ao entrar no modo 2) ou qualquer
+ * escrita no mapa de tiles da VRAM (contador do ppu_native).
+ * Mudancas no layout da fase (WRAM) ou na tabela de blocos (ERAM $AD00) no
+ * meio do frame so entram no frame seguinte. */
+static WidescreenBlockAttributeCache g_ws_attr_cache;
+static struct {
+    bool valid;
+    uint8_t last_ly;
+    uint16_t scroll_x;
+    uint16_t scroll_y;
+    uint8_t map_bit;
+    bool cgb;
+    uint8_t game_mode;
+    uint32_t map_generation;
+} g_ws_attr_key;
+
+static const WidescreenBlockAttributeCache* ppu_ws_attribute_cache_for_line(
+    GBPPU* ppu,
+    const GBContext* ctx) {
+    const uint8_t game_mode =
+        (ctx && ctx->eram && ctx->eram_size > 0x08C3) ? ctx->eram[0x08C3] : 0xFFu;
+    const bool cgb = ppu_is_cgb_mode(ctx);
+    const uint8_t map_bit = (uint8_t)(ppu->latched_lcdc & LCDC_BG_TILEMAP);
+    const uint32_t map_generation = ppu_native_vram_map_generation();
+
+    if (!g_ws_attr_key.valid ||
+        ppu->ly <= g_ws_attr_key.last_ly ||               /* frame novo */
+        g_ws_attr_key.scroll_x != ppu->frame_widescreen_scroll_x ||
+        g_ws_attr_key.scroll_y != ppu->frame_widescreen_scroll_y ||
+        g_ws_attr_key.map_bit != map_bit ||
+        g_ws_attr_key.cgb != cgb ||
+        g_ws_attr_key.game_mode != game_mode ||
+        g_ws_attr_key.map_generation != map_generation) {
+        ppu_build_widescreen_block_attribute_cache_fast(ppu, ctx, &g_ws_attr_cache);
+        g_ws_attr_key.valid = true;
+        g_ws_attr_key.scroll_x = ppu->frame_widescreen_scroll_x;
+        g_ws_attr_key.scroll_y = ppu->frame_widescreen_scroll_y;
+        g_ws_attr_key.map_bit = map_bit;
+        g_ws_attr_key.cgb = cgb;
+        g_ws_attr_key.game_mode = game_mode;
+        g_ws_attr_key.map_generation = map_generation;
+    }
+    g_ws_attr_key.last_ly = ppu->ly;
+    return &g_ws_attr_cache;
+}
+
 static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
                                                 const GBContext* ctx,
                                                 uint32_t* out_row,
@@ -2492,8 +2542,8 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
         ppu->ws_prev_game_mode = mode_now;
     }
 
-    WidescreenBlockAttributeCache attribute_cache;
-    ppu_build_widescreen_block_attribute_cache_fast(ppu, ctx, &attribute_cache);
+    const WidescreenBlockAttributeCache* attribute_cache =
+        ppu_ws_attribute_cache_for_line(ppu, ctx);
 
     const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
     bool wall_l, wall_r;
@@ -2536,7 +2586,7 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
         }
 
         WidescreenBackgroundPixel bg = ppu_fetch_widescreen_background_pixel(
-            ppu, ctx, extended_x, &attribute_cache);
+            ppu, ctx, extended_x, attribute_cache);
         if (margin) {
             bg.priority = false;
         }

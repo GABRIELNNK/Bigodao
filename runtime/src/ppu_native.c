@@ -169,14 +169,24 @@ static void verify_shadow(const GBContext* ctx) {
     }
 }
 
+/* Passo 3b: conta escritas no mapa de tiles (0x9800-0x9FFF, dois bancos). */
+static uint32_t g_vram_map_generation = 0;
+
+uint32_t ppu_native_vram_map_generation(void) {
+    return g_vram_map_generation;
+}
+
 void ppu_native_on_vram_write(uint8_t bank, uint16_t offset) {
     if (offset < TILE_DATA_BYTES) {
         g_tile_dirty[bank & 1u][offset >> 4] = true;
+    } else {
+        g_vram_map_generation++;
     }
 }
 
 void ppu_native_invalidate_all(void) {
     memset(g_tile_dirty, 1, sizeof(g_tile_dirty));
+    g_vram_map_generation++;
     g_cache_ready = true;
 }
 

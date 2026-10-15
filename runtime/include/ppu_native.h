@@ -75,6 +75,8 @@ const char* ppu_native_mode_name(PPURendererMode mode);
 /* Hooks de VRAM: offset relativo a 0x8000 (0x0000-0x1FFF). */
 void ppu_native_on_vram_write(uint8_t bank, uint16_t offset);
 void ppu_native_invalidate_all(void);
+/* Muda a cada escrita no mapa de tiles (0x9800-0x9FFF). */
+uint32_t ppu_native_vram_map_generation(void);
 
 /* Chamados pela PPU emulada */
 void ppu_native_begin_line(GBPPU* ppu, const GBContext* ctx); /* início do modo 3 */
