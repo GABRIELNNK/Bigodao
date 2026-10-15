@@ -3376,10 +3376,19 @@ static void recompute_audio_targets(void) {
         target = AUDIO_RING_SIZE / 2;
     }
 
+    /* O piso precisa ficar acima de uma puxada inteira do dispositivo,
+     * senão o buffer pode estacionar abaixo dela e dar underrun em toda puxada. */
+    const uint32_t min_low = device_buffer + device_buffer / 2;  /* 1,5 puxada */
+    if (target < min_low * 2) {
+        target = min_low * 2;
+    }
+    if (target > (AUDIO_RING_SIZE / 2)) {
+        target = AUDIO_RING_SIZE / 2;
+    }
     g_audio_start_threshold = target;
     g_audio_low_watermark = target / 2;
-    if (g_audio_low_watermark == 0) {
-        g_audio_low_watermark = 1;
+    if (g_audio_low_watermark < min_low) {
+        g_audio_low_watermark = min_low;
     }
 }
 
