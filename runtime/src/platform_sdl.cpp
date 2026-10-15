@@ -1185,6 +1185,13 @@ static void load_runtime_preferences(void) {
                     }
                     continue;
                 }                
+                if (strcmp(key, "display.ws_margin") == 0) {
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 0 && parsed < PPU_WS_MARGIN_COUNT) {
+                        ppu_set_widescreen_margin_mode((PPUWidescreenMarginMode)parsed);
+                    }
+                    continue;
+                }
                 if (strcmp(key, "display.renderer") == 0) {
                     long parsed = strtol(value, NULL, 10);
                     if (parsed >= 0 && parsed < PPU_RENDERER_COUNT) {
@@ -1339,6 +1346,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
+    fprintf(file, "display.ws_margin=%d\n", (int)ppu_get_widescreen_margin_mode());
 
     for (int action = 0; action < GB_INPUT_ACTION_COUNT; action++) {
         for (int slot = 0; slot < 2; slot++) {
@@ -2772,6 +2780,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
 
+        if (g_widescreen_mode) {
+            int margin_mode = (int)ppu_get_widescreen_margin_mode();
+            const char* margin_names[PPU_WS_MARGIN_COUNT];
+            for (int i = 0; i < PPU_WS_MARGIN_COUNT; ++i) {
+                margin_names[i] = ppu_widescreen_margin_mode_name((PPUWidescreenMarginMode)i);
+            }
+            if (ImGui::Combo("Margens widescreen", &margin_mode, margin_names, PPU_WS_MARGIN_COUNT)) {
+                ppu_set_widescreen_margin_mode((PPUWidescreenMarginMode)margin_mode);
+                ppu_reset_widescreen_margin_stats();
+                save_runtime_preferences();
+            }
+        }
+
         int filter_mode = (int)g_render_filter_mode;
         if (ImGui::Combo("Scale Filter",
                          &filter_mode,
@@ -3063,6 +3084,17 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 ImGui::Text("Textura: escala %dx (pedida %dx)",
                             g_texture_scale, g_internal_res_scale);
                 ImGui::Text("Underruns: %u", current_audio_underruns());
+                ImGui::Text("Margens: %s", ppu_widescreen_margin_mode_name(ppu_get_widescreen_margin_mode()));
+                if (ppu_get_widescreen_margin_mode() == PPU_WS_MARGIN_COMPARE) {
+                    const PPUWidescreenMarginStats* ws = ppu_widescreen_margin_stats();
+                    ImGui::Text("Margens cmp: %llu linhas, %llu com diferenca (%llu px)",
+                                (unsigned long long)ws->lines_compared,
+                                (unsigned long long)ws->lines_with_mismatch,
+                                (unsigned long long)ws->pixels_mismatched);
+                    if (ws->lines_with_mismatch > 0) {
+                        ImGui::Text("Ultima dif. margem: y=%d x=%d", ws->last_y, ws->last_x);
+                    }
+                }
                 ImGui::Text("Renderer: %s", ppu_native_mode_name(ppu_native_get_mode()));
                 if (ppu_native_get_mode() == PPU_RENDERER_COMPARE) {
                     const PPUNativeCompareStats* cmp = ppu_native_compare_stats();

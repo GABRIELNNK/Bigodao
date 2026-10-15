@@ -2052,7 +2052,7 @@ static void ppu_room_walls(const GBContext* ctx, uint16_t scroll_x,
 // fim do codigo para subfases
 
 
-static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
+static void ppu_render_widescreen_scanline_ref(GBPPU* ppu, const GBContext* ctx) {
     if (!ppu->widescreen_enabled || !ppu->widescreen_framebuffer) {
         return;
     }
@@ -2247,6 +2247,322 @@ static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
     }
 }
 
+
+/* ============================================================================
+ * Margens do widescreen: versao rapida (passo 3a)
+ *
+ * Mesma logica de ppu_render_widescreen_scanline_ref(), com duas mudancas
+ * que nao alteram o resultado:
+ *   1. Quando o renderizador e Nativo/Comparar, o centro de 160 px e
+ *      sobrescrito por ppu_native_end_frame() no VBlank. Entao so as margens
+ *      sao calculadas aqui.
+ *   2. Os sprites que cruzam a linha sao escolhidos uma vez por linha (com o
+ *      mesmo filtro e a mesma ordem de OAM), em vez de varrer os 40 sprites
+ *      em cada um dos 256 pixels.
+ * O modo Comparar roda as duas versoes e confere pixel a pixel.
+ * ========================================================================== */
+
+static PPUWidescreenMarginMode g_ws_margin_mode = PPU_WS_MARGIN_ORIGINAL;
+static PPUWidescreenMarginStats g_ws_margin_stats;
+
+typedef struct {
+    int screen_x;
+    uint8_t oam_index;
+    uint8_t flags;
+    uint8_t palette;
+    uint8_t lo;
+    uint8_t hi;
+} WsLineSprite;
+
+static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
+                                       const GBContext* ctx,
+                                       WsLineSprite* out) {
+    int count = 0;
+    if (!(ppu->latched_lcdc & LCDC_OBJ_ENABLE)) {
+        return 0;
+    }
+    const bool cgb_mode = ppu_is_cgb_mode(ctx);
+    for (uint8_t oam_index = 0; oam_index < 40; ++oam_index) {
+        const size_t oam_offset = (size_t)oam_index * 4u;
+        const uint8_t current_y = ctx->oam[oam_offset];
+        const uint8_t current_x = ctx->oam[oam_offset + 1u];
+        const uint8_t current_tile = ctx->oam[oam_offset + 2u];
+        const uint8_t current_flags = ctx->oam[oam_offset + 3u];
+
+        if (current_y == 0 || current_x == 0 || current_y >= 160) {
+            continue;
+        }
+
+        const int screen_y = (int)current_y - 16;
+        int screen_x = (int)current_x - 8;
+        {
+            const int center = (GB_SCREEN_WIDTH / 2);
+            int best = screen_x;
+            const int alt_low = screen_x - 256;
+            const int alt_high = screen_x + 256;
+            if (abs(alt_low - center) < abs(best - center)) {
+                best = alt_low;
+            }
+            if (abs(alt_high - center) < abs(best - center)) {
+                best = alt_high;
+            }
+            screen_x = best;
+        }
+
+        if (ppu->ly < screen_y || ppu->ly >= screen_y + ppu->line_sprite_height) {
+            continue;
+        }
+
+        int line = (int)ppu->ly - screen_y;
+        uint8_t tile = current_tile;
+        uint8_t bank = 0;
+        if (ppu->line_sprite_height == 16) {
+            tile &= 0xFE;
+        }
+        if (current_flags & OAM_FLIP_Y) {
+            line = ppu->line_sprite_height - 1 - line;
+        }
+        if (line < 0 || line >= ppu->line_sprite_height) {
+            continue;
+        }
+        if (cgb_mode && (current_flags & OAM_CGB_BANK)) {
+            bank = 1;
+        }
+
+        const uint16_t tile_addr = (uint16_t)(0x8000u + tile * 16u + line * 2u);
+        WsLineSprite* s = &out[count++];
+        s->screen_x = screen_x;
+        s->oam_index = oam_index;
+        s->flags = current_flags;
+        s->palette = cgb_mode
+            ? (current_flags & OAM_CGB_PALETTE)
+            : ((current_flags & OAM_PALETTE) ? 1 : 0);
+        s->lo = vram_read_bank(ctx, bank, tile_addr);
+        s->hi = vram_read_bank(ctx, bank, (uint16_t)(tile_addr + 1u));
+    }
+    return count;
+}
+
+static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
+                                                 int count,
+                                                 bool dmg_priority,
+                                                 int extended_x) {
+    WidescreenObjectPixel chosen = {false, 0, 0, false, 0, 0};
+    int chosen_x = 256;
+    int chosen_index = 256;
+
+    for (int i = 0; i < count; ++i) {
+        const WsLineSprite* s = &sprites[i];
+        const int sprite_pixel = extended_x - s->screen_x;
+        if (sprite_pixel < 0 || sprite_pixel >= 8) {
+            continue;
+        }
+        const int bit = (s->flags & OAM_FLIP_X) ? sprite_pixel : (7 - sprite_pixel);
+        const uint8_t raw = (uint8_t)(((s->lo >> bit) & 1u) |
+                                      (((s->hi >> bit) & 1u) << 1u));
+        if (raw == 0) {
+            continue;
+        }
+
+        bool wins = !chosen.present;
+        if (!wins) {
+            if (dmg_priority) {
+                wins = s->screen_x < chosen_x ||
+                       (s->screen_x == chosen_x && s->oam_index < chosen_index);
+            } else {
+                wins = s->oam_index < chosen_index;
+            }
+        }
+        if (!wins) {
+            continue;
+        }
+
+        chosen.present = true;
+        chosen.raw_color = raw;
+        chosen.palette = s->palette;
+        chosen.behind_bg = (s->flags & OAM_PRIORITY) != 0;
+        chosen.screen_x = s->screen_x;
+        chosen.oam_index = s->oam_index;
+        chosen_x = s->screen_x;
+        chosen_index = s->oam_index;
+    }
+    return chosen;
+}
+
+/* Escreve a linha em out_row (GB_WIDESCREEN_WIDTH pixels). Com skip_center,
+ * as colunas do centro nao sao tocadas. */
+static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
+                                                const GBContext* ctx,
+                                                uint32_t* out_row,
+                                                bool skip_center) {
+    if (ctx && ctx->eram && ctx->eram_size >= 0x0904) {
+        ppu->frame_widescreen_scroll_x = (uint16_t)ctx->eram[0x0902u] << 8u | ctx->eram[0x0903u];
+        ppu->frame_widescreen_scroll_y = (uint16_t)ctx->eram[0x0900u] << 8u | ctx->eram[0x0901u];
+    }
+
+    if (ctx && ctx->eram && ctx->eram_size > 0x08C3) {
+        const uint8_t mode_now = ctx->eram[0x08C3];
+        if (mode_now == 2 && ppu->ws_prev_game_mode != 2) {
+            memset(ppu->ws_block_known, 0, sizeof(ppu->ws_block_known));
+            memset(ppu->ws_tile_known, 0, sizeof(ppu->ws_tile_known));
+        }
+        ppu->ws_prev_game_mode = mode_now;
+    }
+
+    WidescreenBlockAttributeCache attribute_cache;
+    ppu_build_widescreen_block_attribute_cache(ppu, ctx, &attribute_cache);
+
+    const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
+    bool wall_l, wall_r;
+    int wall_l_x = 0, wall_r_x = 0;
+    ppu_room_walls(ctx, scroll_x, &wall_l, &wall_l_x, &wall_r, &wall_r_x);
+
+    uint8_t game_mode = 0;
+    if (ctx && ctx->eram && ctx->eram_size > 0x08C3) {
+        game_mode = ctx->eram[0x08C3];
+    }
+    const bool is_sidescrolling_gameplay = (game_mode == 3 || game_mode == 2);
+
+    WsLineSprite sprites[40];
+    const int sprite_count = ppu_ws_collect_line_sprites(ppu, ctx, sprites);
+    const bool dmg_priority = !ppu_is_cgb_mode(ctx) || ppu->opri != 0;
+
+    for (int extended_x = -GB_WIDESCREEN_MARGIN;
+         extended_x < GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN;
+         extended_x++) {
+        if (skip_center && extended_x == 0) {
+            extended_x = GB_SCREEN_WIDTH - 1; /* o for leva para 160 */
+            continue;
+        }
+        const int dest_x = extended_x + GB_WIDESCREEN_MARGIN;
+        const bool margin = extended_x < 0 || extended_x >= GB_SCREEN_WIDTH;
+        const int world_x = (int)scroll_x - 0x50 + extended_x;
+
+        if (is_sidescrolling_gameplay) {
+            if (world_x < 0) {
+                out_row[dest_x] = 0xFF000000u;
+                continue;
+            }
+            if (margin) {
+                if ((wall_l && world_x < wall_l_x) ||
+                    (wall_r && world_x >= wall_r_x)) {
+                    out_row[dest_x] = 0xFF000000u;
+                    continue;
+                }
+            }
+        }
+
+        WidescreenBackgroundPixel bg = ppu_fetch_widescreen_background_pixel(
+            ppu, ctx, extended_x, &attribute_cache);
+        if (margin) {
+            bg.priority = false;
+        }
+        WidescreenObjectPixel obj =
+            ppu_ws_object_pixel(sprites, sprite_count, dmg_priority, extended_x);
+        if (margin) {
+            obj.behind_bg = false;
+        }
+
+        if (extended_x < 0) {
+            const double left_edge_t = (double)(-extended_x) / (double)GB_WIDESCREEN_MARGIN;
+            bg.rgba = fade_widescreen_edge(bg.rgba, left_edge_t, ppu->widescreen_fade_enabled, ppu->widescreen_fade_amount);
+        } else if (extended_x >= GB_SCREEN_WIDTH) {
+            const double right_edge_t = (double)(extended_x - GB_SCREEN_WIDTH + 1) / (double)GB_WIDESCREEN_MARGIN;
+            bg.rgba = fade_widescreen_edge(bg.rgba, right_edge_t, ppu->widescreen_fade_enabled, ppu->widescreen_fade_amount);
+        }
+
+        out_row[dest_x] = ppu_composite_widescreen_pixel(ppu, ctx, &bg, &obj);
+    }
+}
+
+/* Escolhe a versao das margens. Chamado no fim do modo 3 de cada linha. */
+static void ppu_render_widescreen_scanline(GBPPU* ppu, const GBContext* ctx) {
+    if (!ppu->widescreen_enabled || !ppu->widescreen_framebuffer) {
+        return;
+    }
+    if (ppu->ly >= GB_SCREEN_HEIGHT) {
+        return;
+    }
+
+    /* No Nativo/Comparar o centro vem do ppu_native no VBlank. */
+    const bool skip_center = ppu_native_get_mode() != PPU_RENDERER_EMULATED;
+    uint32_t* row = ppu->widescreen_framebuffer + (size_t)ppu->ly * GB_WIDESCREEN_WIDTH;
+
+    if (g_ws_margin_mode == PPU_WS_MARGIN_FAST) {
+        ppu_render_widescreen_scanline_fast(ppu, ctx, row, skip_center);
+        return;
+    }
+    if (g_ws_margin_mode != PPU_WS_MARGIN_COMPARE) {
+        ppu_render_widescreen_scanline_ref(ppu, ctx);
+        return;
+    }
+
+    static uint32_t fast_row[GB_WIDESCREEN_WIDTH];
+    ppu_render_widescreen_scanline_fast(ppu, ctx, fast_row, skip_center);
+    ppu_render_widescreen_scanline_ref(ppu, ctx);
+
+    uint32_t mismatched = 0;
+    for (int x = 0; x < GB_WIDESCREEN_WIDTH; ++x) {
+        const bool center = x >= GB_WIDESCREEN_MARGIN &&
+                            x < GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH;
+        if (skip_center && center) {
+            continue;
+        }
+        if (fast_row[x] != row[x]) {
+            if (mismatched == 0) {
+                g_ws_margin_stats.last_y = (int16_t)ppu->ly;
+                g_ws_margin_stats.last_x = (int16_t)x;
+                g_ws_margin_stats.last_expected = row[x];
+                g_ws_margin_stats.last_got = fast_row[x];
+            }
+            mismatched++;
+        }
+    }
+    g_ws_margin_stats.lines_compared++;
+    if (mismatched > 0) {
+        g_ws_margin_stats.lines_with_mismatch++;
+        g_ws_margin_stats.pixels_mismatched += mismatched;
+        if (g_ws_margin_stats.lines_with_mismatch <= 20u ||
+            (g_ws_margin_stats.lines_with_mismatch % 1000u) == 0u) {
+            fprintf(stderr,
+                    "[WS-CMP] ly=%u px=%u primeiro x=%d esperado=%08X obtido=%08X modo=%u scroll=%04X\n",
+                    (unsigned)ppu->ly, mismatched, g_ws_margin_stats.last_x,
+                    g_ws_margin_stats.last_expected, g_ws_margin_stats.last_got,
+                    (ctx && ctx->eram && ctx->eram_size > 0x08C3) ? ctx->eram[0x08C3] : 0u,
+                    (unsigned)ppu->frame_widescreen_scroll_x);
+        }
+    }
+}
+
+void ppu_set_widescreen_margin_mode(PPUWidescreenMarginMode mode) {
+    if ((int)mode < 0 || mode >= PPU_WS_MARGIN_COUNT) {
+        mode = PPU_WS_MARGIN_ORIGINAL;
+    }
+    g_ws_margin_mode = mode;
+}
+
+PPUWidescreenMarginMode ppu_get_widescreen_margin_mode(void) {
+    return g_ws_margin_mode;
+}
+
+const char* ppu_widescreen_margin_mode_name(PPUWidescreenMarginMode mode) {
+    switch (mode) {
+        case PPU_WS_MARGIN_ORIGINAL: return "Original";
+        case PPU_WS_MARGIN_FAST: return "Rapida";
+        case PPU_WS_MARGIN_COMPARE: return "Comparar (rapida x original)";
+        default: return "?";
+    }
+}
+
+const PPUWidescreenMarginStats* ppu_widescreen_margin_stats(void) {
+    return &g_ws_margin_stats;
+}
+
+void ppu_reset_widescreen_margin_stats(void) {
+    memset(&g_ws_margin_stats, 0, sizeof(g_ws_margin_stats));
+    g_ws_margin_stats.last_x = -1;
+    g_ws_margin_stats.last_y = -1;
+}
 
 void ppu_render_scanline(GBPPU* ppu, GBContext* ctx) {
     uint8_t bg_raw[GB_SCREEN_WIDTH];

@@ -318,6 +318,35 @@ void ppu_set_widescreen_fade_amount(GBPPU* ppu, float amount);
 float ppu_get_widescreen_fade_amount(const GBPPU* ppu);
 
 /**
+ * @brief Versao das margens do widescreen (passo 3a).
+ *        Original = codigo antigo; Rapida = so margens + sprites por linha;
+ *        Comparar = roda as duas e confere pixel a pixel.
+ */
+typedef enum {
+    PPU_WS_MARGIN_ORIGINAL = 0,
+    PPU_WS_MARGIN_FAST = 1,
+    PPU_WS_MARGIN_COMPARE = 2,
+    PPU_WS_MARGIN_COUNT
+} PPUWidescreenMarginMode;
+
+typedef struct {
+    uint64_t lines_compared;
+    uint64_t lines_with_mismatch;
+    uint64_t pixels_mismatched;
+    int16_t last_y;
+    int16_t last_x;
+    uint32_t last_expected;
+    uint32_t last_got;
+} PPUWidescreenMarginStats;
+
+void ppu_set_widescreen_margin_mode(PPUWidescreenMarginMode mode);
+PPUWidescreenMarginMode ppu_get_widescreen_margin_mode(void);
+const char* ppu_widescreen_margin_mode_name(PPUWidescreenMarginMode mode);
+const PPUWidescreenMarginStats* ppu_widescreen_margin_stats(void);
+void ppu_reset_widescreen_margin_stats(void);
+
+
+/**
  * @brief Render a scanline
  */
 void ppu_render_scanline(GBPPU* ppu, GBContext* ctx);
