@@ -181,6 +181,16 @@ static bool g_audio_output_enabled = true;
 static std::atomic<bool> g_audio_muted{false};
 static uint32_t g_audio_latency_ms = 80;
 static std::atomic<uint32_t> g_audio_volume_percent{100};
+
+
+/* Passo 6a: mixer com controle de taxa (veja sdl_audio_callback). */
+static std::atomic<bool> g_audio_rate_control{true};
+static std::atomic<int32_t> g_audio_rate_ppm{0};      /* ajuste atual, em partes por milhão */
+static std::atomic<uint32_t> g_audio_target_fill{0};  /* nível alvo do buffer, em amostras */
+static std::atomic<int32_t> g_audio_pace_ppm{0};      /* ajuste do ritmo dos frames (ppm) */
+static uint64_t g_resample_frac = 0;                  /* thread de áudio: posição 32.32 */
+static double g_rate_adjust = 0.0;                    /* thread de áudio: ajuste suavizado */
+static double g_rate_integral = 0.0;                  /* thread de áudio: parte integral (ritmo) */
 static uint32_t g_audio_low_watermark = 0;
 static uint32_t g_audio_device_sample_rate = 44100;
 static uint32_t g_audio_device_buffer_samples = 0;
@@ -2311,7 +2321,8 @@ static void ensure_lcd_off_framebuffer(void) {
 
 static void render_frame_internal(const uint32_t* framebuffer,
                                    bool count_guest_frame,
-                                   bool framebuffer_is_widescreen = false) {
+                                   bool framebuffer_is_widescreen = false,
+                                   bool reuse_hd_frame = false) {
     if (!framebuffer) {
         DBG_FRAME("Platform render_frame: SKIPPED (null: texture=%d, renderer=%d, fb=%d)",
                   g_texture == NULL, g_renderer == NULL, framebuffer == NULL);
@@ -2464,6 +2475,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
             src = widesrc;
             src_pixel_count = GB_WIDESCREEN_FRAMEBUFFER_SIZE;
         }
+    } else if (!count_guest_frame && framebuffer_is_widescreen && g_widescreen_mode) {
+        /* Passo 6a.3: frame repetido (LCD desligado/pausa) ja vem com 256 px.
+         * Antes era lido como se tivesse 160 px: linhas embaralhadas. */
+        src_pixel_count = GB_WIDESCREEN_FRAMEBUFFER_SIZE;
     }
 
     // --- DIMENSÕES BASE E COM SUPERSAMPLING ---
@@ -2553,7 +2568,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
          * frames novos do jogo e com a mesma escala da textura. */
         int hd_scale = 0;
         const uint32_t* hd_frame = NULL;
-        if (count_guest_frame && g_use_hd_frame &&
+        if ((count_guest_frame || reuse_hd_frame) && g_use_hd_frame &&
             ppu_native_get_mode() != PPU_RENDERER_EMULATED) {
             hd_frame = ppu_native_hd_frame(&hd_scale);
             if (hd_scale != scale) {
@@ -2759,6 +2774,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
             ImGui::TextDisabled("Escala HD: %dx (segue a escala da textura)",
                                 ppu_native_get_hd_scale());
             ImGui::Checkbox("Usar frame HD na tela", &g_use_hd_frame);
+            bool rate_control = g_audio_rate_control.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Audio: controle de taxa (mixer)", &rate_control)) {
+                g_audio_rate_control.store(rate_control, std::memory_order_relaxed);
+            }
             bool tile_dump = ppu_native_get_tile_dump();
             if (ImGui::Checkbox("Despejar tiles (PNG)", &tile_dump)) {
                 ppu_native_set_tile_dump(tile_dump);
@@ -3202,6 +3221,16 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 ImGui::Text("Textura: escala %dx (pedida %dx)",
                             g_texture_scale, g_internal_res_scale);
                 ImGui::Text("Underruns: %u", current_audio_underruns());
+                if (g_audio_rate_control.load(std::memory_order_relaxed)) {
+                    ImGui::Text("Mixer: leitura %+.3f%%  ritmo %+.3f%%",
+                                (double)g_audio_rate_ppm.load(std::memory_order_relaxed) / 10000.0,
+                                (double)g_audio_pace_ppm.load(std::memory_order_relaxed) / 10000.0);
+                    ImGui::Text("       nivel %u (alvo %u)",
+                                current_audio_ring_fill_samples(),
+                                g_audio_target_fill.load(std::memory_order_relaxed));
+                } else {
+                    ImGui::Text("Mixer: copia direta");
+                }
                 ImGui::Text("Renderer: %s", ppu_native_mode_name(ppu_native_get_mode()));
                 {
                     int hd_scale = 0;
@@ -3578,6 +3607,7 @@ static void recompute_audio_targets(void) {
         target = AUDIO_RING_SIZE / 2;
     }
     g_audio_start_threshold = target;
+    g_audio_target_fill.store(target, std::memory_order_relaxed);
     g_audio_low_watermark = target / 2;
     if (g_audio_low_watermark < min_low) {
         g_audio_low_watermark = min_low;
@@ -3592,6 +3622,8 @@ static void clear_audio_ring_buffer_locked(void) {
     memset(g_audio_ring, 0, sizeof(g_audio_ring));
     g_audio_started = false;
     update_audio_stats_from_ring();
+    g_resample_frac = 0;
+    g_rate_adjust = 0.0;
 }
 
 static void refresh_audio_device_pause_state(void) {
@@ -3621,8 +3653,8 @@ static void reset_audio_output_buffer(bool preserve_stats) {
     }
 }
 
-/* SDL callback - pulls samples from ring buffer */
-static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
+/* Copia direta (antes do passo 6a); usada com o controle de taxa desligado. */
+static void sdl_audio_callback_direct(void* userdata, Uint8* stream, int len) {
     (void)userdata;
     int16_t* out = (int16_t*)stream;
     const uint32_t samples_needed = (uint32_t)(len / 4);
@@ -3675,6 +3707,129 @@ static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
     g_audio_read_pos.store(read_pos, std::memory_order_release);
 }
 
+/* ============================================================================
+ * Passo 6a: mixer com controle de taxa
+ *
+ * O jogo gera exatamente 44100 amostras por segundo de tempo emulado, e o
+ * ritmo dos frames segue o relógio do PC. O relógio da placa de som nunca bate
+ * exatamente com esse, então o buffer tende a encher ou esvaziar devagar.
+ * Antes isso era corrigido deixando o frame ~2% mais lento quando o buffer
+ * passava do alvo (aos trancos). Agora:
+ *  - a diferença constante entre os relógios (que numa VM pode passar de 1%)
+ *    é corrigida aos poucos no ritmo dos frames (parte integral, até ±3%);
+ *  - as variações rápidas são absorvidas lendo o buffer do jogo um pouco
+ *    mais rápido ou mais devagar (parte proporcional, até ±0,5%, inaudível),
+ *    com interpolação linear.
+ * As fontes são somadas aqui: por enquanto só existe a do Game Boy (a trilha
+ * externa entra no passo 6c). Com o controle desligado (menu Desenvolvedor)
+ * volta a cópia direta de antes.
+ * ========================================================================== */
+#define AUDIO_RATE_MAX_ADJUST 0.005   /* ±0,5% */
+#define AUDIO_RATE_SMOOTHING 0.1      /* fração do erro corrigida por puxada */
+#define AUDIO_RATE_INTEGRAL_GAIN 0.0003
+#define AUDIO_RATE_INTEGRAL_ERR_CAP 0.25
+#define AUDIO_PACE_PROPORTIONAL 0.01   /* ritmo: 1% com o erro máximo */
+#define AUDIO_PACE_MAX_ADJUST 0.03     /* ritmo dos frames: até ±3% */
+
+static inline int16_t audio_apply_volume(int32_t sample, bool muted, uint32_t volume_percent) {
+    if (muted || volume_percent == 0) {
+        return 0;
+    }
+    if (volume_percent != 100) {
+        sample = (sample * (int32_t)volume_percent) / 100;
+    }
+    if (sample < -32768) sample = -32768;
+    if (sample > 32767) sample = 32767;
+    return (int16_t)sample;
+}
+
+static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
+    if (!g_audio_rate_control.load(std::memory_order_relaxed)) {
+        g_audio_rate_ppm.store(0, std::memory_order_relaxed);
+        sdl_audio_callback_direct(userdata, stream, len);
+        return;
+    }
+    (void)userdata;
+    int16_t* out = (int16_t*)stream;
+    const uint32_t frames = (uint32_t)(len / 4);
+    const bool muted = g_audio_muted.load(std::memory_order_relaxed);
+    const uint32_t volume_percent = g_audio_volume_percent.load(std::memory_order_relaxed);
+    const uint32_t write_pos = g_audio_write_pos.load(std::memory_order_acquire);
+    uint32_t read_pos = g_audio_read_pos.load(std::memory_order_relaxed);
+    uint32_t available = (write_pos >= read_pos)
+        ? (write_pos - read_pos)
+        : (AUDIO_RING_SIZE - read_pos + write_pos);
+
+    /* Controle de taxa: erro relativo do nível em relação ao alvo. */
+    const uint32_t target = g_audio_target_fill.load(std::memory_order_relaxed);
+    if (target > 0) {
+        double err = ((double)available - (double)target) / (double)target;
+        if (err > 1.0) err = 1.0;
+        if (err < -1.0) err = -1.0;
+        /* Parte integral: aprende a diferença constante entre os relógios e
+         * corrige no ritmo dos frames (gb_platform_vsync), não no tom. O erro
+         * entra limitado, para um evento isolado (porta, LCD desligado, pico de
+         * CPU) não "ensinar" um desvio falso que depois vira underrun. */
+        double err_i = err;
+        if (err_i > AUDIO_RATE_INTEGRAL_ERR_CAP) err_i = AUDIO_RATE_INTEGRAL_ERR_CAP;
+        if (err_i < -AUDIO_RATE_INTEGRAL_ERR_CAP) err_i = -AUDIO_RATE_INTEGRAL_ERR_CAP;
+        g_rate_integral += err_i * AUDIO_RATE_INTEGRAL_GAIN;
+        if (g_rate_integral > AUDIO_PACE_MAX_ADJUST) g_rate_integral = AUDIO_PACE_MAX_ADJUST;
+        if (g_rate_integral < -AUDIO_PACE_MAX_ADJUST) g_rate_integral = -AUDIO_PACE_MAX_ADJUST;
+        /* Ritmo = aprendido + proporcional ao erro atual (drena ou enche o
+         * buffer depois de um evento e volta sozinho a zero). */
+        double pace = g_rate_integral + err * AUDIO_PACE_PROPORTIONAL;
+        if (pace > AUDIO_PACE_MAX_ADJUST) pace = AUDIO_PACE_MAX_ADJUST;
+        if (pace < -AUDIO_PACE_MAX_ADJUST) pace = -AUDIO_PACE_MAX_ADJUST;
+        g_audio_pace_ppm.store((int32_t)(pace * 1000000.0), std::memory_order_relaxed);
+        /* Parte proporcional: correções rápidas, na leitura do buffer. */
+        double desired = err * AUDIO_RATE_MAX_ADJUST;
+        g_rate_adjust += (desired - g_rate_adjust) * AUDIO_RATE_SMOOTHING;
+    }
+    g_audio_rate_ppm.store((int32_t)(g_rate_adjust * 1000000.0), std::memory_order_relaxed);
+    const uint32_t device_rate = g_audio_device_sample_rate ? g_audio_device_sample_rate : AUDIO_SAMPLE_RATE;
+    const double step = ((double)AUDIO_SAMPLE_RATE / (double)device_rate) * (1.0 + g_rate_adjust);
+    const uint64_t step_fx = (uint64_t)(step * 4294967296.0);
+
+    uint64_t frac = g_resample_frac;
+    uint32_t produced = 0;
+    for (; produced < frames; ++produced) {
+        if (available < 2u) {
+            break;
+        }
+        const uint32_t i0 = read_pos;
+        const uint32_t i1 = (read_pos + 1u) % AUDIO_RING_SIZE;
+        const int32_t f = (int32_t)(frac >> 16);   /* 0..65535 */
+        const int32_t l0 = g_audio_ring[i0 * 2], l1 = g_audio_ring[i1 * 2];
+        const int32_t r0 = g_audio_ring[i0 * 2 + 1], r1 = g_audio_ring[i1 * 2 + 1];
+        const int32_t left = l0 + (int32_t)(((int64_t)(l1 - l0) * f) >> 16);
+        const int32_t right = r0 + (int32_t)(((int64_t)(r1 - r0) * f) >> 16);
+        /* Aqui entram as outras fontes do mixer (passo 6c). */
+        out[produced * 2] = audio_apply_volume(left, muted, volume_percent);
+        out[produced * 2 + 1] = audio_apply_volume(right, muted, volume_percent);
+
+        frac += step_fx;
+        uint32_t advance = (uint32_t)(frac >> 32);
+        frac &= 0xFFFFFFFFull;
+        if (advance > available) advance = available;
+        read_pos = (read_pos + advance) % AUDIO_RING_SIZE;
+        available -= advance;
+    }
+    g_resample_frac = frac;
+
+    const uint32_t underruns = frames - produced;
+    if (underruns > 0) {
+        memset(out + produced * 2, 0, (size_t)underruns * 2u * sizeof(int16_t));
+        g_audio_underruns.fetch_add(underruns, std::memory_order_relaxed);
+    }
+
+    g_audio_read_pos.store(read_pos, std::memory_order_release);
+}
+
+
+
+
+
 static void publish_audio_write_batch(void) {
     if (g_audio_pending_write_frames == 0) return;
 
@@ -3725,6 +3880,7 @@ static void reset_audio_test_ring(void) {
     g_audio_started = false;
     g_audio_start_threshold = AUDIO_RING_SIZE;
     g_audio_low_watermark = 1;
+    g_audio_rate_control.store(false, std::memory_order_relaxed);
     g_audio_samples_written = 0;
     g_audio_write_publications = 0;
     g_audio_underruns.store(0, std::memory_order_relaxed);
@@ -4329,16 +4485,27 @@ void gb_platform_present_framebuffer(const uint32_t* framebuffer) {
 void gb_platform_render_lcd_off_frame(void) {
     ensure_lcd_off_framebuffer();
     const uint32_t* stable_framebuffer = g_lcd_off_framebuffer;
+    bool is_wide = false;
+    bool is_last_frame = false;   /* passo 6a.3 */
     if (g_widescreen_mode) {
         if (g_last_guest_widescreen_framebuffer_valid) {
             stable_framebuffer = g_last_guest_widescreen_framebuffer;
+            is_wide = true;
+            is_last_frame = true;
         } else if (g_last_guest_framebuffer_valid) {
             stable_framebuffer = g_last_guest_framebuffer;
+            is_last_frame = true;
         }
     } else if (g_last_guest_framebuffer_valid) {
         stable_framebuffer = g_last_guest_framebuffer;
+        is_last_frame = true;
     }
-    render_frame_internal(stable_framebuffer, false);
+    /* Passo 6a.3: repete o ultimo frame com a largura certa e, se for o
+     * caso, com o mesmo frame HD (o ppu_native nao desenha com o LCD
+     * desligado, entao o frame HD ainda e o do ultimo frame mostrado; se o
+     * LCD ja religou no meio da fatia, fica sem HD so neste frame). */
+    const bool lcd_still_off = g_registered_ctx && g_registered_ctx->lcd_off_active;
+    render_frame_internal(stable_framebuffer, false, is_wide, is_last_frame && lcd_still_off);
 }
 
 void gb_platform_get_timing_info(GBPlatformTimingInfo* out) {
@@ -4381,6 +4548,15 @@ void gb_platform_vsync(uint32_t frame_cycles) {
     if (frame_ticks == 0) {
         frame_ticks = 1;
     }
+    /* Passo 6a.1: o ritmo dos frames segue o relógio da placa de som
+     * (parte integral do mixer, até ±3%). */
+    if (g_audio_rate_control.load(std::memory_order_relaxed) && audio_output_should_run()) {
+        const double pace = (double)g_audio_pace_ppm.load(std::memory_order_relaxed) / 1000000.0;
+        frame_ticks = (uint64_t)((double)frame_ticks * (1.0 + pace));
+        if (frame_ticks == 0) {
+            frame_ticks = 1;
+        }
+    }
 
     if (next_frame_time == 0) {
         next_frame_time = now;
@@ -4394,7 +4570,7 @@ void gb_platform_vsync(uint32_t frame_cycles) {
     bool audio_starved = audio_output_should_run() && g_audio_started && audio_fill < g_audio_low_watermark;
     bool audio_overfull = audio_output_should_run() && g_audio_started &&
                       audio_fill > g_audio_start_threshold + g_audio_start_threshold / 4;
-    if (audio_overfull) {
+    if (audio_overfull && !g_audio_rate_control.load(std::memory_order_relaxed)) {
     next_frame_time += frame_ticks / 50; /* ~2% mais lento até drenar */
     }
     uint64_t target_frame_time = next_frame_time;

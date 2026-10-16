@@ -1042,7 +1042,15 @@ int main(int argc, char* argv[]) {
                 gb_platform_render_frame(fb);
             }
             gb_platform_vsync(ctx->frame_cycles);
-    }
+        } else if (ctx->frame_lcd_off_cycles > 0) {
+            /* Passo 6a.2: com o LCD desligado (portas, troca de sala) a fatia
+             * termina sem frame. Antes ela nao esperava nada: o jogo corria
+             * sem freio ate o LCD religar e gerava audio demais de uma vez,
+             * o que confundia o controle de taxa (underrun ~8 s depois).
+             * Agora a fatia espera o tempo que ela representa. */
+            gb_platform_render_lcd_off_frame();
+            gb_platform_vsync(ctx->frame_cycles);
+        }
         /*
 
         if (!running) break;
