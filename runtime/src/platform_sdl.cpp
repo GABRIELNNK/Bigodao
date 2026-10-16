@@ -1090,6 +1090,7 @@ static std::string runtime_preferences_path(void) {
 static void load_runtime_preferences(void) {
     set_default_audio_preferences();
     set_default_input_bindings();
+    hd_pack_io_clear_disabled_names();
     g_savestate_slot = 0;
     g_savestate_status.clear();
     g_max_speed_mode = false;
@@ -1192,6 +1193,10 @@ static void load_runtime_preferences(void) {
                     }
                     continue;
                 }                
+                if (strcmp(key, "mods.disabled") == 0) {
+                    hd_pack_io_add_disabled_name(value);
+                    continue;
+                }
                 if (strcmp(key, "display.hd_tiles") == 0) {
                     ppu_native_hd_set_tiles_enabled(strcmp(value, "0") != 0);
                     continue;
@@ -1351,6 +1356,9 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
+    for (int i = 0; i < hd_pack_io_disabled_count(); ++i) {
+        fprintf(file, "mods.disabled=%s\n", hd_pack_io_disabled_name(i));
+    }
 
     for (int action = 0; action < GB_INPUT_ACTION_COUNT; action++) {
         for (int slot = 0; slot < 2; slot++) {
@@ -2423,15 +2431,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
     if (count_guest_frame && (g_frame_count % 60) == 0) {
         char title[64];
-        snprintf(title, sizeof(title), "GameBoy Recompiled - Frame %d", g_frame_count);
+        snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Frame %d", g_frame_count);
         SDL_SetWindowTitle(g_window, title);
     } else if (!count_guest_frame && (g_present_count % 30) == 0) {
         char title[96];
         if (g_frame_count == 0) {
-            snprintf(title, sizeof(title), "GameBoy Recompiled - Starting... (%llu)",
+            snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Starting... (%llu)",
                      (unsigned long long)(g_present_count / 30));
         } else {
-            snprintf(title, sizeof(title), "GameBoy Recompiled - Frame %d (Working...)",
+            snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Frame %d (Working...)",
                      g_frame_count);
         }
         SDL_SetWindowTitle(g_window, title);
@@ -2696,7 +2704,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                          ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoCollapse);
-        ImGui::Text("GameBoy Recompiled");
+        ImGui::Text("Bigodão - GameBoy Recompiled");
         ImGui::TextDisabled("Settings");
         ImGui::SameLine();
         if (ImGui::Button("Resume")) {
@@ -2711,6 +2719,94 @@ static void render_frame_internal(const uint32_t* framebuffer,
 #endif
         ImGui::Separator();
         ImGui::BeginChild("SettingsScroll", ImVec2(0.0f, -footer_height), false);
+        if (ImGui::CollapsingHeader("Desenvolvedor")) {
+            int renderer_mode = (int)ppu_native_get_mode();
+            const char* renderer_names[PPU_RENDERER_COUNT];
+            for (int i = 0; i < PPU_RENDERER_COUNT; ++i) {
+                renderer_names[i] = ppu_native_mode_name((PPURendererMode)i);
+            }
+            if (ImGui::Combo("Renderer", &renderer_mode, renderer_names, PPU_RENDERER_COUNT)) {
+                ppu_native_set_mode((PPURendererMode)renderer_mode);
+                ppu_native_reset_compare_stats();
+                save_runtime_preferences();
+            }
+            bool hd_check = ppu_native_get_hd_check();
+            if (ImGui::Checkbox("Conferir amostragem HD", &hd_check)) {
+                ppu_native_set_hd_check(hd_check);
+                ppu_native_reset_hd_stats();
+            }
+            ImGui::TextDisabled("Escala HD: %dx (segue a escala da textura)",
+                                ppu_native_get_hd_scale());
+            ImGui::Checkbox("Usar frame HD na tela", &g_use_hd_frame);
+            bool tile_dump = ppu_native_get_tile_dump();
+            if (ImGui::Checkbox("Despejar tiles (PNG)", &tile_dump)) {
+                ppu_native_set_tile_dump(tile_dump);
+            }
+            if (tile_dump || hd_pack_io_dumped_total() > 0) {
+                ImGui::TextDisabled("Vistos: %u  Gravados: %u",
+                                    ppu_native_tile_dump_seen(),
+                                    hd_pack_io_dumped_total());
+                ImGui::TextWrapped("Pasta: %s", hd_pack_io_dump_dir());
+                if (ImGui::Button("Esquecer tiles vistos")) {
+                    ppu_native_reset_tile_dump();
+                }
+            }
+            if (ImGui::Button("Capturar cena (F9)")) {
+                ppu_native_request_scene_capture();
+            }
+            if (ppu_native_scene_capture_pending()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("capturando...");
+            }
+            if (hd_pack_io_last_scene()[0]) {
+                ImGui::TextWrapped("Ultima cena: %s", hd_pack_io_last_scene());
+            } else {
+                ImGui::TextWrapped("Cenas: %s", hd_pack_io_scene_dir());
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Mods")) {
+            bool hd_tiles = ppu_native_hd_get_tiles_enabled();
+            if (ImGui::Checkbox("Tiles HD", &hd_tiles)) {
+                ppu_native_hd_set_tiles_enabled(hd_tiles);
+                g_renderer_reset_pending = true;
+                save_runtime_preferences();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Recarregar")) {
+                hd_pack_io_load_pack();
+                g_renderer_reset_pending = true;
+            }
+            ImGui::TextDisabled("%s", hd_pack_io_pack_status());
+            if (hd_tiles && ppu_native_hd_tile_count() > 0 && g_internal_res_scale < 2) {
+                ImGui::TextDisabled("Escolha Internal Resolution 2x ou mais para ver os tiles HD.");
+            }
+            const int mod_count = hd_pack_io_mod_count();
+            if (mod_count == 0) {
+                ImGui::TextWrapped("Coloque arquivos .o2r em %s e clique em Recarregar.",
+                                   hd_pack_io_mods_dir());
+            } else {
+                ImGui::TextDisabled("Quando o mesmo tile esta em mais de um mod, vale o de baixo.");
+                for (int i = 0; i < mod_count; ++i) {
+                    ImGui::PushID(i);
+                    bool mod_on = hd_pack_io_mod_enabled(i);
+                    std::string mod_label = hd_pack_io_mod_name(i);
+                    if (hd_pack_io_mod_is_folder(i)) {
+                        mod_label += " (pasta)";
+                    }
+                    if (ImGui::Checkbox(mod_label.c_str(), &mod_on)) {
+                        hd_pack_io_set_mod_enabled(i, mod_on);
+                        g_renderer_reset_pending = true;
+                        save_runtime_preferences();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", hd_pack_io_mod_info(i));
+                    ImGui::PopID();
+                }
+                ImGui::TextWrapped("Pasta: %s", hd_pack_io_mods_dir());
+            }
+        }
+
         ImGui::Text("Performance: %.1f FPS", ImGui::GetIO().Framerate);
 
         int window_w = 0;
@@ -2736,23 +2832,6 @@ static void render_frame_internal(const uint32_t* framebuffer,
             ImGui::TextDisabled("Sem efeito com filtro Nearest e sem pos-processamento: a GPU ja amplia.");
         }
 
-        {
-            bool hd_tiles = ppu_native_hd_get_tiles_enabled();
-            if (ImGui::Checkbox("Tiles HD (mods/hd)", &hd_tiles)) {
-                ppu_native_hd_set_tiles_enabled(hd_tiles);
-                g_renderer_reset_pending = true;
-                save_runtime_preferences();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Recarregar")) {
-                hd_pack_io_load_pack();
-                g_renderer_reset_pending = true;
-            }
-            ImGui::TextDisabled("%s", hd_pack_io_pack_status());
-            if (hd_tiles && ppu_native_hd_tile_count() > 0 && g_internal_res_scale < 2) {
-                ImGui::TextDisabled("Escolha Internal Resolution 2x ou mais para ver os tiles HD.");
-            }
-        }        
 
         bool fullscreen = g_fullscreen;
         if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
@@ -2810,51 +2889,6 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
 
-        if (ImGui::CollapsingHeader("Desenvolvedor")) {
-            int renderer_mode = (int)ppu_native_get_mode();
-            const char* renderer_names[PPU_RENDERER_COUNT];
-            for (int i = 0; i < PPU_RENDERER_COUNT; ++i) {
-                renderer_names[i] = ppu_native_mode_name((PPURendererMode)i);
-            }
-            if (ImGui::Combo("Renderer", &renderer_mode, renderer_names, PPU_RENDERER_COUNT)) {
-                ppu_native_set_mode((PPURendererMode)renderer_mode);
-                ppu_native_reset_compare_stats();
-                save_runtime_preferences();
-            }
-            bool hd_check = ppu_native_get_hd_check();
-            if (ImGui::Checkbox("Conferir amostragem HD", &hd_check)) {
-                ppu_native_set_hd_check(hd_check);
-                ppu_native_reset_hd_stats();
-            }
-            ImGui::TextDisabled("Escala HD: %dx (segue a escala da textura)",
-                                ppu_native_get_hd_scale());
-            ImGui::Checkbox("Usar frame HD na tela", &g_use_hd_frame);
-            bool tile_dump = ppu_native_get_tile_dump();
-            if (ImGui::Checkbox("Despejar tiles (PNG)", &tile_dump)) {
-                ppu_native_set_tile_dump(tile_dump);
-            }
-            if (tile_dump || hd_pack_io_dumped_total() > 0) {
-                ImGui::TextDisabled("Vistos: %u  Gravados: %u",
-                                    ppu_native_tile_dump_seen(),
-                                    hd_pack_io_dumped_total());
-                ImGui::TextWrapped("Pasta: %s", hd_pack_io_dump_dir());
-                if (ImGui::Button("Esquecer tiles vistos")) {
-                    ppu_native_reset_tile_dump();
-                }
-            }
-            if (ImGui::Button("Capturar cena (F9)")) {
-                ppu_native_request_scene_capture();
-            }
-            if (ppu_native_scene_capture_pending()) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("capturando...");
-            }
-            if (hd_pack_io_last_scene()[0]) {
-                ImGui::TextWrapped("Ultima cena: %s", hd_pack_io_last_scene());
-            } else {
-                ImGui::TextWrapped("Cenas: %s", hd_pack_io_scene_dir());
-            }
-        }
 
         int filter_mode = (int)g_render_filter_mode;
         if (ImGui::Combo("Scale Filter",
@@ -3807,7 +3841,7 @@ bool gb_platform_init(int scale) {
     
     fprintf(stderr, "[SDL] Creating window...\n");
     g_window = SDL_CreateWindow(
-        "GameBoy Recompiled",
+        "Bigodão - GameBoy Recompiled",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         g_windowed_width,

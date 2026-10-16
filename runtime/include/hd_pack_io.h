@@ -1,7 +1,7 @@
 /**
  * @file hd_pack_io.h
  * @brief Arquivos dos tiles HD (passo 5): despejo de tiles e captura de cena.
- *        e carregamento do pacote HD (mods/hd).
+ *        e carregamento dos mods HD (mods/<nome>.o2r e mods/hd).
  */
 #ifndef HD_PACK_IO_H
 #define HD_PACK_IO_H
@@ -31,11 +31,32 @@ int hd_pack_io_write_scene(const PPUNativeScene* scene);
 const char* hd_pack_io_scene_dir(void);
 const char* hd_pack_io_last_scene(void);
 
-/* Passo 5b: carrega <base>/mods/hd (b_<tile>.png, o_<tile>.png e pack.json)
- * no ppu_native, substituindo o que estava carregado. Devolve quantos tiles. */
+/* Passo 5b/5c: mods HD.
+ * Relê a lista de mods e carrega os ligados no ppu_native, substituindo o que
+ * estava carregado. Fontes, nesta ordem (a de baixo sobrepõe a de cima):
+ *   <base>/mods/<nome>.o2r  (ZIP com outra extensão), em ordem alfabética;
+ *   <base>/mods/hd     (pasta solta).
+ * Em cada fonte: b_<tile>.png / o_<tile>.png (qualquer subpasta) e pack.json.
+ * Devolve quantos tiles HD ficaram carregados. */
 int hd_pack_io_load_pack(void);
-const char* hd_pack_io_pack_dir(void);
+const char* hd_pack_io_pack_dir(void);   /* <base>/mods/hd */
+const char* hd_pack_io_mods_dir(void);   /* <base>/mods */
 const char* hd_pack_io_pack_status(void);
+
+/* Lista de mods encontrada no último hd_pack_io_load_pack(). */
+int hd_pack_io_mod_count(void);
+const char* hd_pack_io_mod_name(int index);   /* "meu_mod.o2r" ou "hd/" */
+const char* hd_pack_io_mod_info(int index);   /* "38 tiles", "desligado", erro */
+bool hd_pack_io_mod_is_folder(int index);
+bool hd_pack_io_mod_enabled(int index);
+/* Liga/desliga e recarrega os tiles na hora. */
+void hd_pack_io_set_mod_enabled(int index, bool enabled);
+
+/* Nomes desligados (salvos nas preferências; mod novo começa ligado). */
+void hd_pack_io_clear_disabled_names(void);
+void hd_pack_io_add_disabled_name(const char* name);
+int hd_pack_io_disabled_count(void);
+const char* hd_pack_io_disabled_name(int index);
 
 #ifdef __cplusplus
 }

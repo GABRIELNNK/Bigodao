@@ -1,3 +1,7 @@
+Scripts:
+tools/hd_slice.py - gera o mod de textura
+tools/hd_empacotar.py - gera o o2r
+
 O fluxo para pintar:
 
 Aperte F9 numa tela que você queira redesenhar.
@@ -69,3 +73,20 @@ Fluxo completo: captura, fatiamento sem pintura, carregamento e desenho em 4x. A
 Em 40 cenas aleatórias, com tiles HD iguais ao original e depois um fade, a imagem também foi idêntica, o que confirma a recoloração.
 Com uma pintura vermelha, o vermelho apareceu no jogo. Com os tiles HD desligados, a imagem volta exatamente à original.
 Os testes anteriores continuam passando.
+
+
+_______________________________________________________________________________________________________
+
+jogo agora lê mods .o2r da pasta mods, e o menu ganhou uma seção “Mods” com uma caixa para ligar e desligar cada um.
+
+Como os mods são lidos:
+
+Entram todos os .o2r da pasta mods, em ordem alfabética, e por último a pasta mods/hd, se ela existir.
+Quando o mesmo tile aparece em mais de um mod, vale o que está mais embaixo na lista. Para mudar a ordem, renomeie os arquivos, por exemplo 01_base.o2r e 02_detalhes.o2r.
+Dentro do .o2r valem os b_<tile>.png e o_<tile>.png em qualquer subpasta, e os pack.json.
+Um .o2r criado no 7-Zip, no WinRAR, no Ark ou no zip funciona, comprimido ou não. Só não é aceito ZIP com senha ou ZIP64 (arquivos acima de 4 GB).
+Um arquivo que não seja ZIP aparece na lista com o erro ao lado, sem travar os outros.
+
+Empacotador: o zip inclui o tools/hd_empacotar.py, que junta uma pasta de tiles num .o2r e deixa de fora os mapas de conflito e os outros arquivos:
+
+python3 tools/hd_empacotar.py mods/hd mods/meu_mod.o2r
