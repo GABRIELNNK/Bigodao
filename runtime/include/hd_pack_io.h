@@ -7,6 +7,7 @@
 #define HD_PACK_IO_H
 
 #include <stdint.h>
+#include <stddef.h> /* passo 6c */
 #include "ppu_native.h"
 
 #ifdef __cplusplus
@@ -57,6 +58,18 @@ void hd_pack_io_clear_disabled_names(void);
 void hd_pack_io_add_disabled_name(const char* name);
 int hd_pack_io_disabled_count(void);
 const char* hd_pack_io_disabled_name(int index);
+
+/* Passo 6c: arquivos avulsos dos mods ligados (usado pelas trilhas .ogg).
+ * Visita cada arquivo das fontes ligadas, na ordem da lista (a de baixo
+ * sobrepoe a de cima); path e relativo a raiz do .o2r ou da pasta. */
+typedef void (*hd_pack_io_file_visitor)(int source_index, const char* source_name,
+                                        const char* path, void* user);
+void hd_pack_io_list_files(hd_pack_io_file_visitor visit, void* user);
+/* Le um arquivo de uma fonte (so a parte dele no .o2r). Buffer de malloc:
+ * liberar com free(). NULL se nao achar. */
+uint8_t* hd_pack_io_read_file(int source_index, const char* path, size_t* out_size);
+/* Muda a cada recarga ou liga/desliga de mod. */
+uint32_t hd_pack_io_generation(void);
 
 #ifdef __cplusplus
 }

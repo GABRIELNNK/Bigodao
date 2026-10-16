@@ -257,6 +257,7 @@ struct HdModSource {
 };
 
 static std::vector<HdModSource> g_mods;
+static uint32_t g_mods_generation = 0;   /* passo 6c */
 static std::vector<std::string> g_disabled_names;   /* vem das preferências */
 
 const char* hd_pack_io_pack_dir(void) {
@@ -592,6 +593,14 @@ static void scan_mods(void) {
         s.is_folder = true;
         g_mods.push_back(s);
     }
+    /* Passo 6d: pasta solta de trilhas, mods/music (por ultimo: sobrepoe). */
+    if (fs::is_directory(mods_dir / "music", ec)) {
+        HdModSource s;
+        s.name = "music/";
+        s.path = mods_dir / "music";
+        s.is_folder = true;
+        g_mods.push_back(s);
+    }
     for (HdModSource& s : g_mods) {
         s.enabled = !name_disabled(s.name);
         s.info = s.enabled ? "" : "desligado";
@@ -601,6 +610,7 @@ static void scan_mods(void) {
 /* Carrega as fontes ligadas, na ordem da lista. */
 static int load_enabled_mods(void) {
     ppu_native_hd_clear_tiles();
+    g_mods_generation++; /* passo 6c */
     int loaded = 0, active = 0, no_ref = 0;
     for (HdModSource& s : g_mods) {
         if (!s.enabled) {
@@ -679,4 +689,135 @@ int hd_pack_io_disabled_count(void) {
 const char* hd_pack_io_disabled_name(int index) {
     return (index >= 0 && index < (int)g_disabled_names.size())
         ? g_disabled_names[(size_t)index].c_str() : "";
+}
+
+/* ============================================================================
+ * Passo 6c: arquivos avulsos dos mods (trilhas .ogg)
+ *
+ * Aqui o .o2r nao e lido inteiro: so o diretorio do ZIP e, na hora de tocar,
+ * o pedaco do arquivo pedido (as trilhas podem somar centenas de MB).
+ * ========================================================================== */
+static bool zip_list_file(const fs::path& path, std::vector<ZipEntry>& out, std::string& err) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) { err = "nao consegui abrir"; return false; }
+    const std::streamoff size = in.tellg();
+    if (size < 22) { err = "arquivo pequeno demais para ser ZIP"; return false; }
+    const std::streamoff tail_len = std::min<std::streamoff>(size, 22 + 65535);
+    std::vector<uint8_t> tail((size_t)tail_len);
+    in.seekg(size - tail_len);
+    if (!in.read((char*)tail.data(), tail_len)) { err = "erro de leitura"; return false; }
+    size_t eocd = std::string::npos;
+    for (size_t i = tail.size() - 22 + 1; i-- > 0;) {
+        if (rd32(&tail[i]) == 0x06054b50u) { eocd = i; break; }
+    }
+    if (eocd == std::string::npos) { err = "nao e um ZIP (fim do diretorio nao encontrado)"; return false; }
+    const uint16_t count = rd16(&tail[eocd + 10]);
+    const uint32_t cd_size = rd32(&tail[eocd + 12]);
+    const uint32_t cd_off = rd32(&tail[eocd + 16]);
+    if (count == 0xFFFFu || cd_off == 0xFFFFFFFFu) { err = "ZIP64 nao suportado"; return false; }
+    if ((uint64_t)cd_off + cd_size > (uint64_t)size) { err = "diretorio do ZIP corrompido"; return false; }
+    std::vector<uint8_t> cd(cd_size);
+    in.seekg((std::streamoff)cd_off);
+    if (cd_size && !in.read((char*)cd.data(), cd_size)) { err = "erro de leitura"; return false; }
+    size_t p = 0;
+    for (uint16_t i = 0; i < count; ++i) {
+        if (p + 46 > cd.size() || rd32(&cd[p]) != 0x02014b50u) { err = "diretorio do ZIP corrompido"; return false; }
+        ZipEntry e;
+        e.flags = rd16(&cd[p + 8]);
+        e.method = rd16(&cd[p + 10]);
+        e.csize = rd32(&cd[p + 20]);
+        e.usize = rd32(&cd[p + 24]);
+        const uint16_t name_len = rd16(&cd[p + 28]);
+        const uint16_t extra_len = rd16(&cd[p + 30]);
+        const uint16_t comment_len = rd16(&cd[p + 32]);
+        e.local_offset = rd32(&cd[p + 42]);
+        if (p + 46 + name_len > cd.size()) { err = "diretorio do ZIP corrompido"; return false; }
+        e.name.assign((const char*)&cd[p + 46], name_len);
+        p += 46u + name_len + extra_len + comment_len;
+        out.push_back(e);
+    }
+    return true;
+}
+
+static bool zip_read_entry_file(const fs::path& path, const ZipEntry& e, std::vector<uint8_t>& out) {
+    if ((e.flags & 1u) != 0) return false;                       /* criptografado */
+    if (e.csize == 0xFFFFFFFFu || e.usize == 0xFFFFFFFFu) return false;
+    if (e.usize > (256u << 20)) return false;                    /* 256 MB por arquivo */
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    uint8_t lh[30];
+    in.seekg((std::streamoff)e.local_offset);
+    if (!in.read((char*)lh, 30) || rd32(lh) != 0x04034b50u) return false;
+    const std::streamoff data = (std::streamoff)e.local_offset + 30 + rd16(&lh[26]) + rd16(&lh[28]);
+    std::vector<uint8_t> comp(e.csize);
+    in.seekg(data);
+    if (e.csize && !in.read((char*)comp.data(), e.csize)) return false;
+    if (e.method == 0) {
+        if (e.csize != e.usize) return false;
+        out.swap(comp);
+        return true;
+    }
+    if (e.method == 8) {
+        out.resize(e.usize);
+        if (e.usize == 0) return true;
+        const int got = stbi_zlib_decode_noheader_buffer(
+            (char*)out.data(), (int)e.usize, (const char*)comp.data(), (int)e.csize);
+        return got == (int)e.usize;
+    }
+    return false;
+}
+
+void hd_pack_io_list_files(hd_pack_io_file_visitor visit, void* user) {
+    if (!visit) return;
+    for (size_t i = 0; i < g_mods.size(); ++i) {
+        const HdModSource& s = g_mods[i];
+        if (!s.enabled) continue;
+        std::error_code ec;
+        if (s.is_folder) {
+            for (auto it = fs::recursive_directory_iterator(s.path, ec);
+                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                /* Passo 6d: relativo a pasta mods (inclui "hd/" ou "music/"). */
+                const std::string rel = fs::relative(it->path(), s.path.parent_path(), ec).generic_string();
+                if (ec || rel.empty()) { ec.clear(); continue; }
+                visit((int)i, s.name.c_str(), rel.c_str(), user);
+            }
+            continue;
+        }
+        std::vector<ZipEntry> entries;
+        std::string err;
+        if (!zip_list_file(s.path, entries, err)) continue;
+        for (const ZipEntry& e : entries) {
+            if (e.name.empty() || e.name.back() == '/') continue;
+            visit((int)i, s.name.c_str(), e.name.c_str(), user);
+        }
+    }
+}
+
+uint8_t* hd_pack_io_read_file(int source_index, const char* path, size_t* out_size) {
+    if (out_size) *out_size = 0;
+    if (!path || source_index < 0 || source_index >= (int)g_mods.size()) return NULL;
+    const HdModSource& s = g_mods[(size_t)source_index];
+    std::vector<uint8_t> bytes;
+    if (s.is_folder) {
+        if (!read_whole_file(s.path.parent_path() / fs::path(path), bytes, 256u << 20)) return NULL;
+    } else {
+        std::vector<ZipEntry> entries;
+        std::string err;
+        if (!zip_list_file(s.path, entries, err)) return NULL;
+        bool ok = false;
+        for (const ZipEntry& e : entries) {
+            if (e.name == path) { ok = zip_read_entry_file(s.path, e, bytes); break; }
+        }
+        if (!ok) return NULL;
+    }
+    uint8_t* out = (uint8_t*)malloc(bytes.empty() ? 1 : bytes.size());
+    if (!out) return NULL;
+    if (!bytes.empty()) memcpy(out, bytes.data(), bytes.size());
+    if (out_size) *out_size = bytes.size();
+    return out;
+}
+
+uint32_t hd_pack_io_generation(void) {
+    return g_mods_generation;
 }

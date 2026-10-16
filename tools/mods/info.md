@@ -1,6 +1,7 @@
 Scripts:
 tools/hd_slice.py - gera o mod de textura
 tools/hd_empacotar.py - gera o o2r
+tools/musica_empacotar.py - gera o2r para musicas
 
 O fluxo para pintar:
 
@@ -90,3 +91,12 @@ Um arquivo que não seja ZIP aparece na lista com o erro ao lado, sem travar os 
 Empacotador: o zip inclui o tools/hd_empacotar.py, que junta uma pasta de tiles num .o2r e deixa de fora os mapas de conflito e os outros arquivos:
 
 python3 tools/hd_empacotar.py mods/hd mods/meu_mod.o2r
+
+
+_________________________________________________________
+musicas
+
+Fontes:
+
+Wario Land: Super Mario Land 3 – RAM map (Data Crystal) - https://datacrystal.tcrf.net/wiki/Wario_Land:_Super_Mario_Land_3/RAM_map
+Multimedia: Wario Land: Super Mario Land 3 (MarioWiki) - https://www.mariowiki.com/Multimedia:Wario_Land:_Super_Mario_Land_3

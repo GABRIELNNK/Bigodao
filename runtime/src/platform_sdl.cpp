@@ -11,6 +11,7 @@
 #include "hd_pack_io.h"
 #include "audio_stats.h"
 #include "audio.h" /* passo 6c.1 */
+#include "music_replace.h" /* passo 6c */
 #include "gbrt_debug.h"
 #include "post_processing.h"
 
@@ -276,6 +277,10 @@ static uint32_t g_music_history_total = 0;   /* trocas vistas (o vetor guarda as
 static int g_music_current = -1;             /* -1 = ainda nao lido */
 static int g_music_request_seen = -1;        /* ultimo pedido diferente de zero visto */
 static uint32_t g_music_monitor_frames = 0;
+static bool g_audio_lab_gate = false;        /* passo 6c: checkbox do laboratorio */
+static bool g_music_log = false;             /* passo 6d: [Musica] no terminal */
+static uint32_t g_music_mods_generation = 0;  /* passo 6c: recarga de mods vista */
+static uint32_t audio_ring_fill_samples(void);
 
 /* Passo 6c.1: vigia de 64 bytes da RAM do cartucho (padrao $A600, onde
  * ficam os gatilhos de efeito e a musica). Guarda quando cada byte mudou
@@ -328,6 +333,18 @@ static void music_monitor_update(void) {
         g_music_request_seen = request;
     }
     const int current = read_cart_ram_byte(WL_MUSIC_CURRENT_ADDR);
+    /* Passo 6c: trilhas .ogg. Reindexa quando os mods mudam; segue $A61D
+     * (os primeiros frames tem a sobra do save e sao ignorados); o portao
+     * do GB fica ligado enquanto uma trilha toca. */
+    if (hd_pack_io_generation() != g_music_mods_generation) {
+        g_music_mods_generation = hd_pack_io_generation();
+        music_replace_rescan();
+    }
+    if (current >= 0 && g_music_monitor_frames > 8) {
+        music_replace_set_song(current, audio_ring_fill_samples());
+    }
+    music_replace_collect();
+    gb_audio_set_gate_enabled(g_audio_lab_gate || music_replace_active());
     if (current < 0 || current == g_music_current) {
         return;
     }
@@ -338,9 +355,11 @@ static void music_monitor_update(void) {
     e.song = (uint8_t)current;
     e.game_mode = (uint8_t)(mode < 0 ? 0 : mode);
     g_music_history_total++;
-    printf("[Musica] frame %u: musica %02X (modo de jogo %02X)\n",
-           e.frame, (unsigned)e.song, (unsigned)e.game_mode);
-    fflush(stdout);
+    if (g_music_log) {   /* passo 6d */
+        printf("[Musica] frame %u: musica %02X (modo de jogo %02X)\n",
+               e.frame, (unsigned)e.song, (unsigned)e.game_mode);
+        fflush(stdout);
+    }
 }
 
 /* sGameMode ($A8C3, wl disassembly bank01.asm CheckMode) - only the actual
@@ -1295,6 +1314,23 @@ static void load_runtime_preferences(void) {
                     hd_pack_io_add_disabled_name(value);
                     continue;
                 }
+                /* Passo 6d: trilhas .ogg e registro das musicas */
+                if (strcmp(key, "music.enabled") == 0) {
+                    music_replace_set_enabled(strcmp(value, "0") != 0);
+                    continue;
+                }
+                if (strcmp(key, "music.volume_percent") == 0) {
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 0 && parsed <= 200) {
+                        music_replace_set_volume((float)parsed / 100.0f);
+                    }
+                    continue;
+                }
+                if (strcmp(key, "music.log") == 0) {
+                    g_music_log = (strcmp(value, "0") != 0);
+                    music_replace_set_log(g_music_log);
+                    continue;
+                }
                 if (strcmp(key, "display.hd_tiles") == 0) {
                     ppu_native_hd_set_tiles_enabled(strcmp(value, "0") != 0);
                     continue;
@@ -1457,6 +1493,9 @@ static void save_runtime_preferences(void) {
     for (int i = 0; i < hd_pack_io_disabled_count(); ++i) {
         fprintf(file, "mods.disabled=%s\n", hd_pack_io_disabled_name(i));
     }
+    fprintf(file, "music.enabled=%d\n", music_replace_get_enabled() ? 1 : 0);   /* passo 6d */
+    fprintf(file, "music.volume_percent=%d\n", (int)(music_replace_get_volume() * 100.0f + 0.5f));
+    fprintf(file, "music.log=%d\n", g_music_log ? 1 : 0);
 
     for (int action = 0; action < GB_INPUT_ACTION_COUNT; action++) {
         for (int slot = 0; slot < 2; slot++) {
@@ -2868,6 +2907,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
             /* Passo 6b: musicas vistas (mais nova em cima). */
             if (ImGui::TreeNode("Musicas vistas")) {
+                if (ImGui::Checkbox("Registrar no terminal ([Musica] ...)", &g_music_log)) {
+                    music_replace_set_log(g_music_log);
+                    save_runtime_preferences();
+                }
                 ImGui::TextDisabled("Tocando: %s%02X   ($A61D; pedido em $A61C)",
                                     g_music_current < 0 ? "-- " : "",
                                     (unsigned)(g_music_current < 0 ? 0 : g_music_current));
@@ -2915,10 +2958,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 }
                 /* Passo 6c.2: silenciar a musica do GB deixando os efeitos. */
                 ImGui::Separator();
-                bool gate = gb_audio_get_gate_enabled();
+                bool gate = g_audio_lab_gate;
                 if (ImGui::Checkbox("Silenciar musica do GB (deixar so efeitos)", &gate)) {
-                    gb_audio_set_gate_enabled(gate);
+                    g_audio_lab_gate = gate;
                 }
+                if (music_replace_active()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(ligado pela trilha .ogg)");
+                }
+                gate = gb_audio_get_gate_enabled();
                 {
                     static const char* kGateModes[3] = {"tocar sempre", "mudo", "so com efeito"};
                     const uint8_t open_mask = gb_audio_get_gate_open_mask();
@@ -3033,6 +3081,28 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 g_renderer_reset_pending = true;
             }
             ImGui::TextDisabled("%s", hd_pack_io_pack_status());
+            {   /* Passo 6c: trilhas .ogg */
+                bool music_on = music_replace_get_enabled();
+                if (ImGui::Checkbox("Trilhas .ogg", &music_on)) {
+                    music_replace_set_enabled(music_on);
+                    save_runtime_preferences();
+                }
+                ImGui::SameLine();
+                float music_vol = music_replace_get_volume() * 100.0f;
+                ImGui::SetNextItemWidth(140.0f);
+                if (ImGui::SliderFloat("Volume##trilhas", &music_vol, 0.0f, 200.0f, "%.0f%%")) {
+                    music_replace_set_volume(music_vol / 100.0f);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    save_runtime_preferences();
+                }
+                if (music_replace_track_count() > 0) {
+                    ImGui::TextDisabled("%d trilha(s): %s", music_replace_track_count(),
+                                        music_replace_track_list());
+                } else {
+                    ImGui::TextDisabled("Nenhuma trilha (mods/music/XX.ogg ou music/ dentro de um .o2r)");
+                }
+            }
             if (hd_tiles && ppu_native_hd_tile_count() > 0 && g_internal_res_scale < 2) {
                 ImGui::TextDisabled("Escolha Internal Resolution 2x ou mais para ver os tiles HD.");
             }
@@ -3447,9 +3517,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     ImGui::Text("Mixer: copia direta");
                 }
                 if (g_music_current >= 0) {
-                    ImGui::Text("Musica: %02X  (ultimo pedido %02X)",
+                    ImGui::Text("Musica: %02X  (ultimo pedido %02X)%s",
                                 (unsigned)g_music_current,
-                                (unsigned)(g_music_request_seen < 0 ? 0 : g_music_request_seen));
+                                (unsigned)(g_music_request_seen < 0 ? 0 : g_music_request_seen),
+                                music_replace_active() ? "  [ogg]" : "");
                 } else {
                     ImGui::Text("Musica: --");
                 }
@@ -3968,7 +4039,15 @@ static inline int16_t audio_apply_volume(int32_t sample, bool muted, uint32_t vo
 static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
     if (!g_audio_rate_control.load(std::memory_order_relaxed)) {
         g_audio_rate_ppm.store(0, std::memory_order_relaxed);
+        const bool gb_running = audio_ring_fill_samples() > 0; /* passo 6c */
         sdl_audio_callback_direct(userdata, stream, len);
+        if (gb_running) {
+            const float master = g_audio_muted.load(std::memory_order_relaxed)
+                ? 0.0f : (float)g_audio_volume_percent.load(std::memory_order_relaxed) / 100.0f;
+            music_replace_mix((int16_t*)stream, (uint32_t)(len / 4),
+                              g_audio_device_sample_rate ? g_audio_device_sample_rate : AUDIO_SAMPLE_RATE,
+                              master);
+        }
         return;
     }
     (void)userdata;
@@ -4043,6 +4122,12 @@ static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
     if (underruns > 0) {
         memset(out + produced * 2, 0, (size_t)underruns * 2u * sizeof(int16_t));
         g_audio_underruns.fetch_add(underruns, std::memory_order_relaxed);
+    }
+
+    /* Passo 6c: trilhas .ogg. So andam enquanto o jogo gera audio (pausado,
+     * a trilha pausa junto). */
+    if (produced > 0) {
+        music_replace_mix(out, frames, device_rate, muted ? 0.0f : (float)volume_percent / 100.0f);
     }
 
     g_audio_read_pos.store(read_pos, std::memory_order_release);

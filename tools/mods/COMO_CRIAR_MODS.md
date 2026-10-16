@@ -1,6 +1,6 @@
 # Bigodão: como criar e aplicar mods HD
 
-Este guia mostra como trocar os gráficos do jogo por versões em alta resolução, pintadas por você, sem mexer na ROM.
+Este guia mostra como trocar os gráficos do jogo por versões em alta resolução, pintadas por você, sem mexer na ROM. A seção 6 mostra como trocar as músicas por trilhas `.ogg`.
 
 A ideia é esta: o jogo grava uma "foto" da cena e você pinta por cima dela. Um script corta a pintura em tiles. Os tiles ficam num arquivo `.o2r`, que o jogo carrega pelo menu.
 
@@ -195,3 +195,101 @@ meu_mod.o2r  (ZIP)
 
 - **Despejar tiles (PNG)**: grava cada tile novo que aparece na tela em `mods/dump`, em 8×8 e no tamanho original. Serve para explorar, mas para pintar o fluxo por cena (F9) é bem mais prático.
 - **Conferir amostragem HD** / **Usar frame HD na tela**: ferramentas de teste do renderizador. Deixe como estão.
+
+---
+
+## 6. Trilhas de música (.ogg)
+
+Um mod também pode trocar as músicas do jogo por gravações em `.ogg`. A trilha toca no lugar da música do Game Boy, e os efeitos sonoros (moeda, pulo, passos…) continuam saindo do GB. Música sem trilha continua tocando no GB.
+
+### 6.1 Nomes dos arquivos
+
+Cada trilha fica numa pasta `music` (a pasta `mods/music/` ou uma pasta `music/` dentro de um `.o2r`), com o **número da música em hexadecimal** no começo do nome. Depois do número pode vir `_`, `-` ou espaço e o que você quiser:
+
+```
+music/04.ogg
+music/04_rice_beach.ogg
+music/2B - entrada da fase.ogg
+```
+
+Para descobrir o número de uma música, jogue até ela tocar e veja:
+- o overlay, que mostra `Musica: XX` (com `[ogg]` quando a trilha está tocando);
+- **Menu > Desenvolvedor > Musicas vistas**, com as últimas 16 trocas;
+- o terminal, se você marcar **Registrar no terminal** nessa mesma seção. Sai uma linha `[Musica] frame N: musica XX (modo de jogo YY)` a cada troca, o que facilita anotar uma sessão inteira de jogo.
+
+**Números já confirmados no jogo:**
+
+| Número | Onde toca |
+|---|---|
+| 20 | Abertura |
+| 26 | Escolha do slot |
+| 02 | Mapa geral (escolha de região) |
+| 15 | Mapa de fases de Rice Beach |
+| 2B | Jingle de entrada na fase (curto) |
+| 04 | Fase 1 de Rice Beach |
+| 08 | Wario morre (jingle) |
+
+`00` e `FF` não são músicas (silêncio e parada).
+
+**Ainda a descobrir.** Não há uma lista pública com os números das músicas do Wario Land. Pela RAM do jogo, os pedidos vão de 01 a 30 (hexa). A MarioWiki lista estas faixas da trilha sonora; vá preenchendo a coluna do número conforme for jogando:
+
+| Faixa | Onde toca | Número |
+|---|---|---|
+| Ripple Course | primeira fase (Rice Beach 1) | 04 |
+| Results | resultado da fase | ? |
+| Boss | luta contra chefe | ? |
+| Boss Course | fases de chefe | ? |
+| Underwater theme | fases debaixo d'água | ? |
+| Underground theme | fases subterrâneas | ? |
+| WL Ice Theme | fases de Sherbet Land | ? |
+| Train Course | fases do trem | ? |
+| Syrup Castle | mapa do Syrup Castle | ? |
+| Final Boss | chefe final | ? |
+| Overworld Theme 2 / 3 | outros mapas | ? |
+
+Faltam também invencibilidade, game over, bônus e final, que não estão nessa lista.
+
+### 6.2 Loop
+
+Sem configuração, a trilha **repete do começo ao fim**. Para escolher o ponto de loop, use uma destas opções:
+
+- **Tags no próprio .ogg:** `LOOPSTART` e `LOOPLENGTH` (ou `LOOPEND`), em amostras. É o padrão de muitos pacotes de trilhas remasterizadas.
+- **`music/music.json`:**
+  ```json
+  {
+    "04": { "loop_start": 123456, "loop_end": 0 },
+    "2B": { "loop": false },
+    "08": { "loop": false, "volume": 0.8 }
+  }
+  ```
+  - `loop_start` / `loop_end`: em amostras do `.ogg` (a 44100 Hz, 1 segundo = 44100). `loop_end` 0 = fim do arquivo.
+  - `"loop": false`: toca uma vez só. Use nos **jingles** (2B, 08…) para não repetirem.
+  - `volume`: ajuste desta trilha (1.0 = normal).
+  - O `music.json` vale sobre as tags do `.ogg`.
+
+### 6.3 Empacotar
+
+Para testar sem empacotar, ponha os `.ogg` (e o `music.json`, se tiver) direto em **`mods/music/`** e clique em **Recarregar**. Na lista de Mods ela aparece como `music/ (pasta)`, por último, então vale sobre os `.o2r`.
+
+Para distribuir, coloque os arquivos numa pasta e rode:
+
+```
+python3 tools/musica_empacotar.py ~/minhas_trilhas <pasta do jogo>/mods/trilhas.o2r
+```
+
+O script põe tudo em `music/` dentro do `.o2r`, sem compressão (o `.ogg` já é comprimido). Sem o script: um ZIP comum com a pasta `music/` e a extensão trocada para `.o2r`.
+
+Um mesmo `.o2r` pode ter tiles HD e trilhas. Na lista, um mod só de música aparece com "0 tiles", o que é normal.
+
+### 6.4 No jogo
+
+Em **Menu > Mods**:
+- **Trilhas .ogg** liga e desliga as trilhas (desligado, volta a música do GB);
+- **Volume** ajusta só as trilhas (o volume geral do jogo também vale);
+- a linha de baixo lista as músicas que têm trilha.
+
+As duas escolhas ficam salvas para a próxima vez.
+
+Se a mesma música tiver trilha em mais de um mod, vale a do mod mais embaixo na lista, como nos tiles.
+
+**Formato:** OGG Vorbis (não Opus), mono ou estéreo, em qualquer taxa (44100 ou 48000 Hz são as mais comuns). Até 256 MB por arquivo.
