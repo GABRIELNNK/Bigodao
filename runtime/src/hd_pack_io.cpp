@@ -193,8 +193,9 @@ int hd_pack_io_write_scene(const PPUNativeScene* scene) {
             break;
         }
     }
-    const int w = GB_SCREEN_WIDTH;
-    const int h = GB_SCREEN_HEIGHT;
+    /* Passo 5d: 256 de largura quando a captura incluiu as laterais. */
+    const int w = scene->width ? scene->width : GB_SCREEN_WIDTH;
+    const int h = scene->height ? scene->height : GB_SCREEN_HEIGHT;
     bool ok = true;
     ok = write_rgba_png(dir / (std::string(base) + "_bg.png"), scene->bg_rgba, w, h, 1) && ok;
     ok = write_rgba_png(dir / (std::string(base) + "_obj.png"), scene->obj_rgba, w, h, 1) && ok;

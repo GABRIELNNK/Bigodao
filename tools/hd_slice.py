@@ -9,7 +9,8 @@ Fluxo:
                    scene_NNN.json                            (origem de cada pixel)
   2. Pinte por cima de scene_NNN_bg_4x.png (fundo) e/ou scene_NNN_obj_4x.png
      (sprites, com transparencia). Pode pintar em qualquer escala inteira:
-     a largura precisa ser 160*N e a altura 144*N.
+     o tamanho precisa ser o da cena vezes N (160x144, ou 256x144 quando a
+     captura foi feita com o widescreen ligado, laterais incluidas).
   3. Rode:
        python3 tools/hd_slice.py mods/scenes/scene_001.json \\
            --bg pintado_bg.png --obj pintado_obj.png
@@ -203,12 +204,14 @@ def save_conflict_map(painted, hot, path):
     img.save(path)
 
 
-def load_painted(path, n_expected=None):
+def load_painted(path, base_w, base_h, n_expected=None):
+    """A pintura tem o tamanho da cena (160x144, ou 256x144 com widescreen) vezes N."""
     img = Image.open(path).convert("RGBA")
     w, h = img.size
-    if w % 160 or h % 144 or w // 160 != h // 144:
-        raise SystemExit(f"{path}: tamanho {w}x{h} nao e 160N x 144N")
-    n = w // 160
+    if w % base_w or h % base_h or w // base_w != h // base_h:
+        raise SystemExit(f"{path}: tamanho {w}x{h} nao e {base_w}N x {base_h}N "
+                         f"(a cena tem {base_w}x{base_h})")
+    n = w // base_w
     if n_expected and n != n_expected:
         raise SystemExit(f"{path}: escala {n}x diferente da outra camada ({n_expected}x)")
     return img, n
@@ -217,8 +220,8 @@ def load_painted(path, n_expected=None):
 def main():
     ap = argparse.ArgumentParser(description="Fatia uma cena pintada em tiles HD.")
     ap.add_argument("scene", help="scene_NNN.json gravado pelo jogo")
-    ap.add_argument("--bg", help="pintura do fundo (160N x 144N)")
-    ap.add_argument("--obj", help="pintura dos sprites (160N x 144N, com alfa)")
+    ap.add_argument("--bg", help="pintura do fundo (tamanho da cena x N)")
+    ap.add_argument("--obj", help="pintura dos sprites (tamanho da cena x N, com alfa)")
     ap.add_argument("--out", help="pasta dos tiles HD (padrao: mods/hd ao lado de mods/scenes)")
     ap.add_argument("--substituir", action="store_true",
                     help="nao aproveita o PNG HD que ja existe (recria o tile inteiro)")
@@ -240,11 +243,12 @@ def main():
 
     n = None
     layers = []
+    base_w, base_h = scene["width"], scene["height"]
     if args.bg:
-        img, n = load_painted(args.bg)
+        img, n = load_painted(args.bg, base_w, base_h)
         layers.append(("bg", img))
     if args.obj:
-        img, n = load_painted(args.obj, n)
+        img, n = load_painted(args.obj, base_w, base_h, n)
         layers.append(("obj", img))
     size = 8 * n
 

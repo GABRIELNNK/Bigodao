@@ -1330,6 +1330,9 @@ typedef struct {
     uint8_t palette;
     bool priority;
     uint32_t rgba;
+    /* Passo 5d: origem do pixel, para as laterais em HD */
+    uint16_t tile_ref;  /* 1 + banco * 384 + tile (cache do ppu_native); 0 = sem tile */
+    uint8_t uvf;        /* coluna | linha << 3 | 0x40 flip X | 0x80 flip Y */
 } WidescreenBackgroundPixel;
 
 typedef struct {
@@ -1339,7 +1342,20 @@ typedef struct {
     bool behind_bg;
     int screen_x;
     uint8_t oam_index;
+    uint16_t tile_ref;  /* passo 5d */
+    uint8_t uvf;
 } WidescreenObjectPixel;
+
+/* Passo 5d: coluna/linha no espaço da tela (antes do flip) + flips. */
+static inline uint8_t ws_uvf(unsigned u, unsigned v, uint8_t flags) {
+    return (uint8_t)((u & 7u) | ((v & 7u) << 3) |
+                     ((flags & OAM_FLIP_X) ? 0x40u : 0u) |
+                     ((flags & OAM_FLIP_Y) ? 0x80u : 0u));
+}
+
+static inline uint16_t ws_tile_ref(uint8_t bank, uint16_t tile_addr) {
+    return (uint16_t)(1u + (unsigned)bank * 384u + (unsigned)((tile_addr - 0x8000u) >> 4));
+}
 
 #define WIDESCREEN_ATTRIBUTE_CACHE_CAPACITY (32u * 32u)
 
@@ -1519,6 +1535,8 @@ static bool ppu_fetch_warioland_world_pixel(
     pixel->raw_color = (uint8_t)(((lo >> bit) & 1u) | (((hi >> bit) & 1u) << 1u));
     pixel->rgba = rgb555_to_rgba(
         resolve_bg_color(ppu, ctx, pixel->palette, pixel->raw_color, ppu->latched_bgp));
+    pixel->tile_ref = ws_tile_ref(tile_bank, tile_addr);
+    pixel->uvf = ws_uvf((unsigned)world_x & 7u, (unsigned)world_y & 7u, attr);
     return true;
 }
 
@@ -1537,7 +1555,7 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     const GBContext* ctx,
     int extended_x,
     const WidescreenBlockAttributeCache* attribute_cache) {
-    WidescreenBackgroundPixel pixel = {0, 0, false, 0};
+    WidescreenBackgroundPixel pixel = {0, 0, false, 0, 0, 0};
     const uint8_t lcdc = ppu->latched_lcdc;
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
     const bool bg_visible = cgb_mode ? true : ((lcdc & LCDC_BG_ENABLE) != 0);
@@ -1609,9 +1627,11 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     uint8_t palette_number = 0;
     uint8_t tile_bank = 0;
     bool flip_x = false;
+    uint8_t ws_flags = 0;
 
     if (cgb_mode) {
         const uint8_t attr = vram_read_bank(ctx, 1, map_entry);
+        ws_flags = attr;
         palette_number = attr & OAM_CGB_PALETTE;
         tile_bank = (attr & OAM_CGB_BANK) ? 1u : 0u;
         pixel.priority = (attr & OAM_PRIORITY) != 0;
@@ -1633,6 +1653,8 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     pixel.palette = palette_number;
     pixel.rgba = rgb555_to_rgba(
         resolve_bg_color(ppu, ctx, palette_number, pixel.raw_color, ppu->latched_bgp));
+    pixel.tile_ref = ws_tile_ref(tile_bank, tile_addr);
+    pixel.uvf = ws_uvf((uint32_t)source_x & 7u, (uint32_t)source_y & 7u, ws_flags);
     return pixel;
 }
 
@@ -1883,7 +1905,16 @@ typedef struct {
     uint8_t palette;
     uint8_t lo;
     uint8_t hi;
+    uint16_t tile_ref;  /* passo 5d: tile 8x8 desta linha do sprite */
+    uint8_t screen_v;   /* linha dentro do tile, espaço da tela */
 } WsLineSprite;
+
+/* Passo 5d: sprite cuja caixa 8x8 cobre o pixel onde nenhum sprite tem cor. */
+typedef struct {
+    uint16_t tile_ref;  /* 0 = nenhum */
+    uint8_t uvf;
+    uint8_t palette;
+} WsSpriteBox;
 
 static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
                                        const GBContext* ctx,
@@ -1950,6 +1981,8 @@ static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
             : ((current_flags & OAM_PALETTE) ? 1 : 0);
         s->lo = vram_read_bank(ctx, bank, tile_addr);
         s->hi = vram_read_bank(ctx, bank, (uint16_t)(tile_addr + 1u));
+        s->tile_ref = (uint16_t)(1u + (unsigned)bank * 384u + (unsigned)tile + ((unsigned)line >> 3));
+        s->screen_v = (uint8_t)(((int)ppu->ly - screen_y) & 7);
     }
     return count;
 }
@@ -1957,10 +1990,14 @@ static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
 static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
                                                  int count,
                                                  bool dmg_priority,
-                                                 int extended_x) {
-    WidescreenObjectPixel chosen = {false, 0, 0, false, 0, 0};
+                                                 int extended_x,
+                                                 WsSpriteBox* box) {
+    WidescreenObjectPixel chosen = {false, 0, 0, false, 0, 0, 0, 0};
     int chosen_x = 256;
     int chosen_index = 256;
+    if (box) {
+        box->tile_ref = 0;
+    }
 
     for (int i = 0; i < count; ++i) {
         const WsLineSprite* s = &sprites[i];
@@ -1972,6 +2009,11 @@ static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
         const uint8_t raw = (uint8_t)(((s->lo >> bit) & 1u) |
                                       (((s->hi >> bit) & 1u) << 1u));
         if (raw == 0) {
+            if (box && !box->tile_ref) {
+                box->tile_ref = s->tile_ref;
+                box->uvf = ws_uvf((unsigned)sprite_pixel, s->screen_v, s->flags);
+                box->palette = s->palette;
+            }
             continue;
         }
 
@@ -1994,6 +2036,8 @@ static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
         chosen.behind_bg = (s->flags & OAM_PRIORITY) != 0;
         chosen.screen_x = s->screen_x;
         chosen.oam_index = s->oam_index;
+        chosen.tile_ref = s->tile_ref;
+        chosen.uvf = ws_uvf((unsigned)sprite_pixel, s->screen_v, s->flags);
         chosen_x = s->screen_x;
         chosen_index = s->oam_index;
     }
@@ -2170,6 +2214,17 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
     const int sprite_count = ppu_ws_collect_line_sprites(ppu, ctx, sprites);
     const bool dmg_priority = !ppu_is_cgb_mode(ctx) || ppu->opri != 0;
 
+    /* Passo 5d: origem de cada pixel das laterais, para o HD e a captura. */
+    PPUNativeMarginPixel ws_rec[PPU_NATIVE_MARGIN_PIXELS];
+    const bool want_rec = ppu_native_margins_wanted();
+    if (want_rec) {
+        memset(ws_rec, 0, sizeof(ws_rec));
+        for (int m = 0; m < PPU_NATIVE_MARGIN_PIXELS; ++m) {
+            ws_rec[m].rgba = 0xFF000000u;
+            ws_rec[m].bg_rgba = 0xFF000000u;
+        }
+    }
+
     for (int extended_x = -GB_WIDESCREEN_MARGIN;
          extended_x < GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN;
          extended_x++) {
@@ -2200,11 +2255,13 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
         if (margin) {
             bg.priority = false;
         }
+        WsSpriteBox box;
         WidescreenObjectPixel obj =
-            ppu_ws_object_pixel(sprites, sprite_count, dmg_priority, extended_x);
+            ppu_ws_object_pixel(sprites, sprite_count, dmg_priority, extended_x, &box);
         if (margin) {
             obj.behind_bg = false;
         }
+        const uint32_t bg_unfaded = bg.rgba;
 
         if (extended_x < 0) {
             const double left_edge_t = (double)(-extended_x) / (double)GB_WIDESCREEN_MARGIN;
@@ -2215,6 +2272,49 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
         }
 
         out_row[dest_x] = ppu_composite_widescreen_pixel(ppu, ctx, &bg, &obj);
+
+        if (want_rec && margin) {
+            PPUNativeMarginPixel* r = &ws_rec[extended_x < 0
+                ? extended_x + GB_WIDESCREEN_MARGIN
+                : extended_x - GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN];
+            r->rgba = out_row[dest_x];
+            r->bg_rgba = bg_unfaded;
+            r->bg_tile = bg.tile_ref;
+            r->bg_uvf = bg.uvf;
+            r->bg_raw = bg.raw_color;
+            r->bg_pal = bg.palette;
+            /* Mesma conta de fade_widescreen_edge(). */
+            const double edge_t = extended_x < 0
+                ? (double)(-extended_x) / (double)GB_WIDESCREEN_MARGIN
+                : (double)(extended_x - GB_SCREEN_WIDTH + 1) / (double)GB_WIDESCREEN_MARGIN;
+            if (ppu->widescreen_fade_enabled && edge_t > 0.0) {
+                double clamped_amount = ppu->widescreen_fade_amount;
+                if (clamped_amount < 0.0f) clamped_amount = 0.0f;
+                if (clamped_amount > 1.0f) clamped_amount = 1.0f;
+                r->fade = true;
+                r->keep = 1.0 - ((edge_t > 1.0 ? 1.0 : edge_t) * clamped_amount);
+            }
+            if (obj.present) {
+                r->obj_tile = obj.tile_ref;
+                r->obj_uvf = obj.uvf;
+                r->obj_raw = obj.raw_color;
+                r->obj_pal = obj.palette;
+                r->obj_rgba = rgb555_to_rgba(resolve_obj_color(
+                    ppu, ctx, obj.palette, obj.raw_color,
+                    obj.palette ? ppu->latched_obp1 : ppu->latched_obp0));
+            } else if (box.tile_ref) {
+                r->obj_tile = box.tile_ref;
+                r->obj_uvf = box.uvf;
+                r->obj_raw = 0;
+                r->obj_pal = box.palette;
+                r->obj_rgba = rgb555_to_rgba(resolve_obj_color(
+                    ppu, ctx, box.palette, 0,
+                    box.palette ? ppu->latched_obp1 : ppu->latched_obp0));
+            }
+        }
+    }
+    if (want_rec) {
+        ppu_native_margin_line(ppu, ctx, ws_rec);
     }
 }
 

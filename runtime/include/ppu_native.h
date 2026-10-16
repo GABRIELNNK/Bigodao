@@ -148,7 +148,7 @@ void ppu_native_reset_tile_dump(void);
 /* ----------------------------------------------------------------------------
  * Captura de cena (passo 5a.2)
  *
- * Grava um frame inteiro (centro de 160x144) separado em duas camadas e, para
+ * Grava um frame inteiro (160x144, ou 256x144 com widescreen) separado em duas camadas e, para
  * cada pixel, de qual tile e de qual ponto do tile ele veio. É isso que deixa
  * pintar a cena inteira em alta resolução e depois fatiar em tiles.
  *   *_uvf: bits 0-2 = coluna no tile, 3-5 = linha (espaço da tela, antes do
@@ -159,13 +159,20 @@ void ppu_native_reset_tile_dump(void);
 #define PPU_NATIVE_SCENE_MAX_TILES 4096
 #define PPU_NATIVE_SCENE_NO_TILE 0xFFFFu
 
+/* Passo 5d: com o widescreen ligado a cena tem 256 px de largura (laterais
+ * incluídas, sem o escurecimento da borda); sem ele, 160. Os arrays têm
+ * width * height entradas válidas, linha a linha. */
+#define PPU_NATIVE_SCENE_MAX_W GB_WIDESCREEN_WIDTH
+
 typedef struct {
-    uint32_t bg_rgba[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];   /* só fundo/window */
-    uint32_t obj_rgba[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];  /* só sprites, 0 = vazio */
-    uint16_t bg_tile[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];   /* índice em tiles[] */
-    uint16_t obj_tile[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];
-    uint8_t bg_uvf[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];
-    uint8_t obj_uvf[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];
+    uint16_t width;
+    uint16_t height;
+    uint32_t bg_rgba[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];   /* só fundo/window */
+    uint32_t obj_rgba[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];  /* só sprites, 0 = vazio */
+    uint16_t bg_tile[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];   /* índice em tiles[] */
+    uint16_t obj_tile[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];
+    uint8_t bg_uvf[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];
+    uint8_t obj_uvf[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];
     uint32_t tile_count;
     PPUNativeTileDump tiles[PPU_NATIVE_SCENE_MAX_TILES];
 } PPUNativeScene;
@@ -197,6 +204,49 @@ void ppu_native_hd_clear_tiles(void);
 uint32_t ppu_native_hd_tile_count(void);
 void ppu_native_hd_set_tiles_enabled(bool enabled);
 bool ppu_native_hd_get_tiles_enabled(void);
+
+/* ----------------------------------------------------------------------------
+ * Laterais do widescreen em HD (passo 5d)
+ *
+ * As laterais (48 px de cada lado) continuam sendo calculadas por ppu.c, com
+ * a lógica das paredes de sala e dos atributos aprendidos. Para cada pixel
+ * de lateral, ppu.c informa aqui de onde ele veio (tile, ponto no tile,
+ * espelhamento) e as cores que usou; o ppu_native desenha a versão HD com os
+ * mesmos tiles e a mesma recoloração do centro e grava as laterais na
+ * captura de cena.
+ *
+ * Nas laterais o sprite sempre fica na frente do fundo (é assim em ppu.c).
+ * -------------------------------------------------------------------------- */
+#define PPU_NATIVE_MARGIN_PIXELS (2 * GB_WIDESCREEN_MARGIN)  /* 48 esq. + 48 dir. */
+
+typedef struct {
+    uint32_t rgba;      /* cor final 1x, a mesma que foi para o framebuffer */
+    uint32_t bg_rgba;   /* cor do fundo sem o escurecimento da borda (preto nas
+                         * áreas pretas das paredes de sala) */
+    uint32_t obj_rgba;  /* cor do índice obj_raw do sprite (vencedor ou caixa) */
+    double keep;        /* escurecimento da borda: canal * keep (se fade) */
+    uint16_t bg_tile;   /* 1 + banco * 384 + tile; 0 = sem tile (preto, LCD off) */
+    uint16_t obj_tile;  /* sprite com cor neste pixel (obj_raw != 0) ou, se não
+                         * houver, sprite cuja caixa 8x8 cobre o pixel; 0 = nenhum */
+    uint8_t bg_uvf;     /* bits 0-2 coluna, 3-5 linha, 0x40 flip X, 0x80 flip Y */
+    uint8_t bg_raw;
+    uint8_t bg_pal;
+    uint8_t obj_uvf;
+    uint8_t obj_raw;    /* 0 quando obj_tile veio da caixa */
+    uint8_t obj_pal;
+    bool fade;
+} PPUNativeMarginPixel;
+
+/* ppu.c pergunta antes de montar os registros (só gasta tempo quando há HD,
+ * conferência ou captura). */
+bool ppu_native_margins_wanted(void);
+/* Uma linha (ppu->ly) de laterais: PPU_NATIVE_MARGIN_PIXELS registros, os 48
+ * da esquerda e depois os 48 da direita. Chamado no fim do modo 3. */
+void ppu_native_margin_line(const GBPPU* ppu, const GBContext* ctx,
+                            const PPUNativeMarginPixel* px);
+/* Laterais HD do último frame completo: (96*N) x (144*N), cada linha com os
+ * 48*N pixels da esquerda e depois os 48*N da direita. NULL se não houver. */
+const uint32_t* ppu_native_hd_margin_frame(int* out_scale);
 
 #ifdef __cplusplus
 }

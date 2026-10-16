@@ -2561,6 +2561,17 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
         const int hd_dst_x = (base_width == GB_WIDESCREEN_WIDTH) ? GB_WIDESCREEN_MARGIN * scale : 0;
+        /* Passo 5d: laterais em alta resolucao (widescreen ligado e tela com
+         * laterais; nas telas com laterais pretas fica o preto). */
+        int hd_m_scale = 0;
+        const uint32_t* hd_margins = NULL;
+        if (hd_frame && base_width == GB_WIDESCREEN_WIDTH && src_is_wide &&
+            !black_fill_non_side_scrolling) {
+            hd_margins = ppu_native_hd_margin_frame(&hd_m_scale);
+            if (hd_m_scale != scale) {
+                hd_margins = NULL;
+            }
+        }
 
         for (int y = 0; y < base_height; y++) {
             if (base_width == GB_WIDESCREEN_WIDTH) {
@@ -2608,6 +2619,16 @@ static void render_frame_internal(const uint32_t* framebuffer,
                                (size_t)hd_dst_x * sizeof(uint32_t),
                            hd_frame + ((size_t)y * scale + k) * hd_stride,
                            hd_stride * sizeof(uint32_t));
+                }
+            }
+            if (hd_margins) {
+                const size_t m_w = (size_t)GB_WIDESCREEN_MARGIN * (size_t)scale;
+                const size_t right_x = (size_t)(GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) * (size_t)scale;
+                for (int k = 0; k < scale; k++) {
+                    uint32_t* dst = (uint32_t*)((uint8_t*)pixels + (size_t)(y * scale + k) * pitch);
+                    const uint32_t* m_src = hd_margins + ((size_t)y * scale + k) * 2u * m_w;
+                    memcpy(dst, m_src, m_w * sizeof(uint32_t));
+                    memcpy(dst + right_x, m_src + m_w, m_w * sizeof(uint32_t));
                 }
             }
         }
@@ -3185,7 +3206,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 {
                     int hd_scale = 0;
                     ppu_native_hd_frame(&hd_scale);
-                    ImGui::Text("HD: %dx%s", hd_scale,
+                    int hd_m_scale = 0;
+                    ppu_native_hd_margin_frame(&hd_m_scale);
+                    ImGui::Text("HD: %dx%s%s", hd_scale,
+                                hd_m_scale > 1 ? " + laterais" : "",
                                 ppu_native_get_hd_check() ? " (conferindo)" : "");
                     if (ppu_native_get_hd_check()) {
                         const PPUNativeHdStats* hs = ppu_native_hd_stats();

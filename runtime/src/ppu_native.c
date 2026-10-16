@@ -108,6 +108,14 @@ static bool g_hd_tiles_enabled = true;
 static uint32_t g_hd_generation = 1;               /* muda quando o pacote muda */
 /* Cache por tile da VRAM: [tipo 0=b 1=o][banco*384 + tile] */
 static const HdTile* g_hd_for[2][2 * NATIVE_TILES];
+
+/* Passo 5d: laterais do widescreen em HD e na captura */
+#define MARGIN_W PPU_NATIVE_MARGIN_PIXELS
+static uint32_t g_hd_m[(MARGIN_W * HD_MAX) * (NATIVE_H * HD_MAX)];
+static uint32_t g_margin_lines = 0;      /* linhas de lateral HD neste frame */
+static int g_hd_m_valid_scale = 0;       /* escala das laterais do último frame completo */
+static unsigned g_scene_w = NATIVE_W;    /* largura da cena em captura */
+static unsigned g_scene_off = 0;         /* coluna da cena onde começa o centro */
 static uint32_t g_hd_for_gen[2][2 * NATIVE_TILES];
 
 /* ============================================================================
@@ -566,7 +574,7 @@ static void scene_fill_sprite_boxes(const GBContext* ctx, bool cgb,
             if (x < 0 || x >= GB_SCREEN_WIDTH) {
                 continue;
             }
-            const size_t i = (size_t)y * NATIVE_W + (size_t)x;
+            const size_t i = (size_t)y * g_scene_w + g_scene_off + (size_t)x;
             if (g_scene.obj_tile[i] != PPU_NATIVE_SCENE_NO_TILE) {
                 continue;
             }
@@ -747,7 +755,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
         }
 
         if (capturing) {
-            const size_t i = (size_t)y * NATIVE_W + (size_t)x;
+            const size_t i = (size_t)y * g_scene_w + g_scene_off + (size_t)x;
             g_scene.bg_rgba[i] = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
             if (bg.tile) {
                 const uint8_t pi = cgb ? (bg.palette & 7u) : 0u;
@@ -915,6 +923,7 @@ static void begin_frame(const GBContext* ctx, uint8_t first_line) {
     g_hd_cur_mismatch = 0;
     g_hd_cur_x = -1;
     g_hd_cur_y = -1;
+    g_margin_lines = 0;
     g_cur_mismatch = 0;
     g_cur_first_x = -1;
     g_cur_first_y = -1;
@@ -936,6 +945,21 @@ void ppu_native_begin_line(GBPPU* ppu, const GBContext* ctx) {
     }
     if (y == 0 || !g_frame_open) {
         begin_frame(ctx, y);
+        if (y == 0 && g_scene_state == SCENE_CAPTURING) {
+            /* Passo 5d: com widescreen a cena inclui as laterais. */
+            const bool wide = ppu->widescreen_enabled && ppu->widescreen_framebuffer;
+            g_scene_w = wide ? (unsigned)GB_WIDESCREEN_WIDTH : (unsigned)NATIVE_W;
+            g_scene_off = wide ? (unsigned)GB_WIDESCREEN_MARGIN : 0u;
+            g_scene.width = (uint16_t)g_scene_w;
+            g_scene.height = (uint16_t)NATIVE_H;
+            const size_t count = (size_t)g_scene_w * NATIVE_H;
+            memset(g_scene.bg_rgba, 0, count * sizeof(g_scene.bg_rgba[0]));
+            memset(g_scene.obj_rgba, 0, count * sizeof(g_scene.obj_rgba[0]));
+            memset(g_scene.bg_tile, 0xFF, count * sizeof(g_scene.bg_tile[0]));
+            memset(g_scene.obj_tile, 0xFF, count * sizeof(g_scene.obj_tile[0]));
+            memset(g_scene.bg_uvf, 0, count);
+            memset(g_scene.obj_uvf, 0, count);
+        }
     }
 
     const bool cgb = is_cgb(ctx);
@@ -1036,6 +1060,8 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
         }
     }
     g_hd_valid_scale = (g_frame_open && g_hd_frame_full && g_hd_scale > 1) ? g_hd_scale : 0;
+    g_hd_m_valid_scale = (g_hd_valid_scale > 1 && g_margin_lines == (uint32_t)NATIVE_H)
+        ? g_hd_valid_scale : 0;
     if (g_scene_state == SCENE_CAPTURING) {
         g_scene_state = (g_frame_open && g_hd_frame_full) ? SCENE_READY : SCENE_REQUESTED;
     }
@@ -1219,4 +1245,191 @@ void ppu_native_hd_set_tiles_enabled(bool enabled) {
 
 bool ppu_native_hd_get_tiles_enabled(void) {
     return g_hd_tiles_enabled;
+}
+
+/* ============================================================================
+ * Laterais do widescreen (passo 5d)
+ * ========================================================================== */
+
+static inline const uint8_t* tile_from_ref(const GBContext* ctx, uint16_t ref) {
+    const unsigned gi = (unsigned)ref - 1u;
+    return tile_pixels(ctx, gi / NATIVE_TILES, gi % NATIVE_TILES);
+}
+
+/* O escurecimento só depende da coluna (e da força escolhida no menu): uma
+ * tabela de 256 valores por coluna, refeita quando o keep da coluna muda.
+ * Dá exatamente (uint8_t)(canal * keep). */
+static uint8_t g_fade_lut[MARGIN_W][256];
+static double g_fade_key[MARGIN_W];
+static bool g_fade_key_ready = false;
+
+static inline const uint8_t* margin_fade_lut(int m, double keep) {
+    if (!g_fade_key_ready) {
+        for (int i = 0; i < MARGIN_W; ++i) g_fade_key[i] = -1.0;
+        g_fade_key_ready = true;
+    }
+    if (g_fade_key[m] != keep) {
+        for (unsigned v = 0; v < 256u; ++v) {
+            g_fade_lut[m][v] = (uint8_t)(v * keep);
+        }
+        g_fade_key[m] = keep;
+    }
+    return g_fade_lut[m];
+}
+
+static inline uint32_t fade_with(const uint8_t* lut, uint32_t color) {
+    if (!lut) {
+        return color;
+    }
+    return (color & 0xFF000000u) |
+           ((uint32_t)lut[(color >> 16) & 0xFFu] << 16) |
+           ((uint32_t)lut[(color >> 8) & 0xFFu] << 8) |
+           (uint32_t)lut[color & 0xFFu];
+}
+
+static inline bool margin_hd_active(void) {
+    return g_hd_scale > 1 && ((g_hd_tiles_enabled && g_hd_tile_count > 0) || g_hd_check);
+}
+
+bool ppu_native_margins_wanted(void) {
+    return g_mode != PPU_RENDERER_EMULATED && g_frame_open &&
+           (margin_hd_active() ||
+            (g_scene_state == SCENE_CAPTURING && g_scene_w == (unsigned)GB_WIDESCREEN_WIDTH));
+}
+
+static void margin_capture(const GBPPU* ppu, const GBContext* ctx, int y,
+                           const PPUNativeMarginPixel* px) {
+    const bool cgb = is_cgb(ctx);
+    const bool compat = is_compat(ctx);
+    uint16_t bg_cols[8][4];
+    uint16_t obj_cols[8][4];
+    const unsigned count = cgb ? 8u : 2u;
+    for (unsigned p = 0; p < count; ++p) {
+        line_palette_colors(ppu, cgb, compat, false, (uint8_t)p, ppu->latched_bgp, bg_cols[p]);
+        line_palette_colors(ppu, cgb, compat, true, (uint8_t)p,
+                            p ? ppu->latched_obp1 : ppu->latched_obp0, obj_cols[p]);
+    }
+    for (int m = 0; m < MARGIN_W; ++m) {
+        const PPUNativeMarginPixel* r = &px[m];
+        const unsigned sx = (m < GB_WIDESCREEN_MARGIN) ? (unsigned)m : (unsigned)(m + GB_SCREEN_WIDTH);
+        const size_t i = (size_t)y * g_scene_w + sx;
+        g_scene.bg_rgba[i] = r->bg_rgba;
+        if (r->bg_tile) {
+            const uint8_t pi = cgb ? (r->bg_pal & 7u) : 0u;
+            g_scene.bg_tile[i] = scene_tile_id('b', tile_from_ref(ctx, r->bg_tile), bg_cols[pi]);
+            g_scene.bg_uvf[i] = r->bg_uvf;
+        }
+        if (r->obj_tile) {
+            const uint8_t pi = r->obj_pal & 7u;
+            g_scene.obj_tile[i] = scene_tile_id('o', tile_from_ref(ctx, r->obj_tile), obj_cols[pi]);
+            g_scene.obj_uvf[i] = r->obj_uvf;
+            g_scene.obj_rgba[i] = r->obj_raw ? r->obj_rgba : 0u;
+        }
+    }
+}
+
+static void margin_hd(const GBContext* ctx, int y, const PPUNativeMarginPixel* px) {
+    const unsigned n = (unsigned)g_hd_scale;
+    const size_t stride = (size_t)MARGIN_W * n;
+    const bool hd_tiles = g_hd_tiles_enabled && g_hd_tile_count > 0;
+    for (int m = 0; m < MARGIN_W; ++m) {
+        const PPUNativeMarginPixel* r = &px[m];
+        uint32_t* hd = g_hd_m + (size_t)y * n * stride + (size_t)m * n;
+        const uint8_t* bt = r->bg_tile ? tile_from_ref(ctx, r->bg_tile) : NULL;
+        const uint8_t* ot = r->obj_tile ? tile_from_ref(ctx, r->obj_tile) : NULL;
+        const HdTile* bg_hd = (hd_tiles && bt) ? hd_lookup('b', bt) : NULL;
+        const HdTile* obj_hd = (hd_tiles && ot) ? hd_lookup('o', ot) : NULL;
+        if (!r->obj_raw && !obj_hd) {
+            ot = NULL;            /* caixa sem HD: não muda nada */
+        }
+        if (!bg_hd && !obj_hd && !g_hd_check) {
+            for (unsigned sy = 0; sy < n; ++sy) {
+                uint32_t* d = hd + sy * stride;
+                for (unsigned sx = 0; sx < n; ++sx) d[sx] = r->rgba;
+            }
+            continue;
+        }
+        const uint8_t bu = r->bg_uvf & 7u, bv = (r->bg_uvf >> 3) & 7u;
+        const uint8_t bf = (uint8_t)(((r->bg_uvf & 0x40u) ? OAM_FLIP_X : 0u) |
+                                     ((r->bg_uvf & 0x80u) ? OAM_FLIP_Y : 0u));
+        const uint8_t ou = r->obj_uvf & 7u, ov = (r->obj_uvf >> 3) & 7u;
+        const uint8_t of = (uint8_t)(((r->obj_uvf & 0x40u) ? OAM_FLIP_X : 0u) |
+                                     ((r->obj_uvf & 0x80u) ? OAM_FLIP_Y : 0u));
+        const uint8_t* lut = r->fade ? margin_fade_lut(m, r->keep) : NULL;
+        const uint32_t bg_fin = fade_with(lut, r->bg_rgba);
+        HdRecolor bg_rc = {false, {0, 0, 0}, {0, 0, 0}};
+        HdRecolor obj_rc = {false, {0, 0, 0}, {0, 0, 0}};
+        if (bg_hd) {
+            hd_recolor_setup(&bg_rc, bg_hd, r->bg_raw, r->bg_rgba);
+        }
+        if (obj_hd) {
+            hd_recolor_setup(&obj_rc, obj_hd, r->obj_raw, r->obj_rgba);
+        }
+        const bool verify = g_hd_check && !bg_hd && !obj_hd;
+        for (unsigned sy = 0; sy < n; ++sy) {
+            uint32_t* d = hd + sy * stride;
+            for (unsigned sx = 0; sx < n; ++sx) {
+                uint32_t c = bg_fin;
+                if (bg_hd) {
+                    const uint32_t h = sample_hd_sub(bg_hd, bu, bv, bf, sx, sy, n);
+                    if (h >> 24) {
+                        c = fade_with(lut, hd_recolor_apply(&bg_rc, h));
+                    }
+                }
+                if (ot) {
+                    if (obj_hd) {
+                        const uint32_t h = sample_hd_sub(obj_hd, ou, ov, of, sx, sy, n);
+                        if ((h >> 24) >= 128u) {
+                            c = hd_recolor_apply(&obj_rc, h);
+                        }
+                    } else {
+                        c = r->obj_rgba;
+                    }
+                }
+                d[sx] = c;
+                if (verify) {
+                    /* Confere a origem: o subpixel tem que cair no mesmo índice
+                     * de cor do pixel original, no tile informado por ppu.c. */
+                    bool bad = (c != r->rgba);
+                    if (bt && sample_tile_sub(bt, bu, bv, bf, sx, sy, n) != r->bg_raw) bad = true;
+                    if (ot && r->obj_raw &&
+                        sample_tile_sub(ot, ou, ov, of, sx, sy, n) != r->obj_raw) bad = true;
+                    if (bad) {
+                        if (g_hd_cur_mismatch == 0) {
+                            const int ex = (m < GB_WIDESCREEN_MARGIN) ? m - GB_WIDESCREEN_MARGIN
+                                                                      : m + GB_SCREEN_WIDTH - GB_WIDESCREEN_MARGIN;
+                            g_hd_cur_x = (int16_t)(ex * (int)n + (int)sx);
+                            g_hd_cur_y = (int16_t)(y * (int)n + (int)sy);
+                        }
+                        g_hd_cur_mismatch++;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void ppu_native_margin_line(const GBPPU* ppu, const GBContext* ctx,
+                            const PPUNativeMarginPixel* px) {
+    if (g_mode == PPU_RENDERER_EMULATED || !g_frame_open || !ppu || !ctx || !px) {
+        return;
+    }
+    const int y = ppu->ly;
+    if (y >= NATIVE_H) {
+        return;
+    }
+    if (g_scene_state == SCENE_CAPTURING && g_scene_w == (unsigned)GB_WIDESCREEN_WIDTH) {
+        margin_capture(ppu, ctx, y, px);
+    }
+    if (margin_hd_active()) {
+        margin_hd(ctx, y, px);
+        g_margin_lines++;
+    }
+}
+
+const uint32_t* ppu_native_hd_margin_frame(int* out_scale) {
+    if (out_scale) {
+        *out_scale = g_hd_m_valid_scale;
+    }
+    return g_hd_m_valid_scale > 1 ? g_hd_m : NULL;
 }
