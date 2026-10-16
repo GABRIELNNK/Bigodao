@@ -10,6 +10,7 @@
 #include "ppu_native.h"
 #include "hd_pack_io.h"
 #include "audio_stats.h"
+#include "audio.h" /* passo 6c.1 */
 #include "gbrt_debug.h"
 #include "post_processing.h"
 
@@ -253,6 +254,93 @@ static int effective_internal_scale(void) {
 
 static GBPPU* active_ppu(void) {
     return g_registered_ctx ? (GBPPU*)g_registered_ctx->ppu : NULL;
+}
+
+/* Passo 6b: qual musica o jogo pediu ao driver de som.
+ * RAM map do Wario Land (Data Crystal): $A61C = pedido de musica (01..30),
+ * $A61D = musica tocando. Ficam na RAM do cartucho, como o sGameMode ($A8C3).
+ * Lido uma vez por frame, sem mexer no jogo. */
+#define WL_MUSIC_REQUEST_ADDR 0xA61C
+#define WL_MUSIC_CURRENT_ADDR 0xA61D
+#define WL_GAME_MODE_ADDR 0xA8C3
+#define MUSIC_HISTORY_MAX 16
+
+struct MusicHistoryEntry {
+    uint32_t frame;
+    uint8_t song;
+    uint8_t game_mode;
+};
+
+static MusicHistoryEntry g_music_history[MUSIC_HISTORY_MAX];
+static uint32_t g_music_history_total = 0;   /* trocas vistas (o vetor guarda as ultimas) */
+static int g_music_current = -1;             /* -1 = ainda nao lido */
+static int g_music_request_seen = -1;        /* ultimo pedido diferente de zero visto */
+static uint32_t g_music_monitor_frames = 0;
+
+/* Passo 6c.1: vigia de 64 bytes da RAM do cartucho (padrao $A600, onde
+ * ficam os gatilhos de efeito e a musica). Guarda quando cada byte mudou
+ * para destacar o que esta mexendo. */
+#define AUDIO_LAB_BYTES 64
+static uint16_t g_audio_lab_base = 0xA600;
+static uint16_t g_audio_lab_base_seen = 0;
+static int g_audio_lab_value[AUDIO_LAB_BYTES];
+static uint32_t g_audio_lab_changed_at[AUDIO_LAB_BYTES];
+static uint32_t g_audio_lab_change_count[AUDIO_LAB_BYTES];
+static uint32_t g_audio_lab_frames = 0;
+
+static int read_cart_ram_byte(uint16_t addr);
+
+static void audio_lab_update(void) {
+    g_audio_lab_frames++;
+    const bool rebase = (g_audio_lab_base != g_audio_lab_base_seen);
+    for (int i = 0; i < AUDIO_LAB_BYTES; i++) {
+        const int v = read_cart_ram_byte((uint16_t)(g_audio_lab_base + i));
+        if (rebase) {
+            g_audio_lab_value[i] = v;
+            g_audio_lab_changed_at[i] = 0;
+            g_audio_lab_change_count[i] = 0;
+        } else if (v != g_audio_lab_value[i]) {
+            g_audio_lab_value[i] = v;
+            g_audio_lab_changed_at[i] = g_audio_lab_frames;
+            g_audio_lab_change_count[i]++;
+        }
+    }
+    g_audio_lab_base_seen = g_audio_lab_base;
+}
+
+static int read_cart_ram_byte(uint16_t addr) {
+    const GBContext* ctx = g_registered_ctx;
+    if (!ctx || !ctx->eram || addr < 0xA000) {
+        return -1;
+    }
+    const size_t offset = (size_t)(addr - 0xA000);
+    if (offset >= ctx->eram_size) {
+        return -1;
+    }
+    return ctx->eram[offset];
+}
+
+static void music_monitor_update(void) {
+    g_music_monitor_frames++;
+    audio_lab_update(); /* passo 6c.1 */
+    const int request = read_cart_ram_byte(WL_MUSIC_REQUEST_ADDR);
+    if (request > 0) {
+        g_music_request_seen = request;
+    }
+    const int current = read_cart_ram_byte(WL_MUSIC_CURRENT_ADDR);
+    if (current < 0 || current == g_music_current) {
+        return;
+    }
+    g_music_current = current;
+    const int mode = read_cart_ram_byte(WL_GAME_MODE_ADDR);
+    MusicHistoryEntry& e = g_music_history[g_music_history_total % MUSIC_HISTORY_MAX];
+    e.frame = g_music_monitor_frames;
+    e.song = (uint8_t)current;
+    e.game_mode = (uint8_t)(mode < 0 ? 0 : mode);
+    g_music_history_total++;
+    printf("[Musica] frame %u: musica %02X (modo de jogo %02X)\n",
+           e.frame, (unsigned)e.song, (unsigned)e.game_mode);
+    fflush(stdout);
 }
 
 /* sGameMode ($A8C3, wl disassembly bank01.asm CheckMode) - only the actual
@@ -2778,6 +2866,133 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (ImGui::Checkbox("Audio: controle de taxa (mixer)", &rate_control)) {
                 g_audio_rate_control.store(rate_control, std::memory_order_relaxed);
             }
+            /* Passo 6b: musicas vistas (mais nova em cima). */
+            if (ImGui::TreeNode("Musicas vistas")) {
+                ImGui::TextDisabled("Tocando: %s%02X   ($A61D; pedido em $A61C)",
+                                    g_music_current < 0 ? "-- " : "",
+                                    (unsigned)(g_music_current < 0 ? 0 : g_music_current));
+                const uint32_t shown = g_music_history_total < MUSIC_HISTORY_MAX
+                    ? g_music_history_total : MUSIC_HISTORY_MAX;
+                for (uint32_t i = 0; i < shown; i++) {
+                    const MusicHistoryEntry& e =
+                        g_music_history[(g_music_history_total - 1u - i) % MUSIC_HISTORY_MAX];
+                    ImGui::Text("%02X   modo %02X   frame %u",
+                                (unsigned)e.song, (unsigned)e.game_mode, e.frame);
+                }
+                if (shown == 0) {
+                    ImGui::TextDisabled("(nenhuma ainda)");
+                }
+                if (ImGui::Button("Limpar lista")) {
+                    g_music_history_total = 0;
+                }
+                ImGui::TreePop();
+            }
+            /* Passo 6c.1: laboratorio de audio. */
+            if (ImGui::TreeNode("Laboratorio de audio")) {
+                static const char* kChannelNames[4] = {"CH1 pulso", "CH2 pulso", "CH3 onda", "CH4 ruido"};
+                uint8_t mute = gb_audio_get_channel_mute_mask();
+                for (int ch = 0; ch < 4; ch++) {
+                    bool m = (mute >> ch) & 1;
+                    char label[32];
+                    snprintf(label, sizeof(label), "Mudo %d", ch + 1);
+                    if (ch > 0) ImGui::SameLine();
+                    if (ImGui::Checkbox(label, &m)) {
+                        mute = (uint8_t)(m ? (mute | (1u << ch)) : (mute & ~(1u << ch)));
+                        gb_audio_set_channel_mute_mask(mute);
+                    }
+                }
+                GBAudioChannelInfo info[4];
+                gb_audio_get_channel_info(g_registered_ctx ? g_registered_ctx->apu : NULL, info);
+                for (int ch = 0; ch < 4; ch++) {
+                    const char* pan = info[ch].panning == 3 ? "E+D" : info[ch].panning == 2 ? "E" :
+                                      info[ch].panning == 1 ? "D" : "-";
+                    ImGui::TextColored(info[ch].enabled ? ImVec4(0.6f, 1.0f, 0.6f, 1.0f)
+                                                         : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                                       "%s  %s  vol %2d  %s %04X  saida %-3s  disparos %u",
+                                       kChannelNames[ch], info[ch].enabled ? "ON " : "off",
+                                       info[ch].volume, ch == 3 ? "nr43" : "freq",
+                                       (unsigned)info[ch].freq, pan, info[ch].triggers);
+                }
+                /* Passo 6c.2: silenciar a musica do GB deixando os efeitos. */
+                ImGui::Separator();
+                bool gate = gb_audio_get_gate_enabled();
+                if (ImGui::Checkbox("Silenciar musica do GB (deixar so efeitos)", &gate)) {
+                    gb_audio_set_gate_enabled(gate);
+                }
+                {
+                    static const char* kGateModes[3] = {"tocar sempre", "mudo", "so com efeito"};
+                    const uint8_t open_mask = gb_audio_get_gate_open_mask();
+                    for (int ch = 0; ch < 4; ch++) {
+                        int mode = 0;
+                        uint16_t addr = 0;
+                        gb_audio_get_channel_gate(ch, &mode, &addr);
+                        ImGui::PushID(1000 + ch);
+                        ImGui::Text("CH%d", ch + 1);
+                        ImGui::SameLine();
+                        ImGui::SetNextItemWidth(130.0f);
+                        bool changed = ImGui::Combo("##modo", &mode, kGateModes, 3);
+                        if (mode == 2) {
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(70.0f);
+                            changed |= ImGui::InputScalar("##addr", ImGuiDataType_U16, &addr, NULL, NULL,
+                                                          "%04X", ImGuiInputTextFlags_CharsHexadecimal);
+                            const int v = read_cart_ram_byte(addr);
+                            ImGui::SameLine();
+                            ImGui::Text("= %02X", (unsigned)(v < 0 ? 0 : v));
+                        }
+                        if (gate) {
+                            ImGui::SameLine();
+                            const bool open = (open_mask >> ch) & 1;
+                            ImGui::TextColored(open ? ImVec4(0.6f, 1.0f, 0.6f, 1.0f)
+                                                    : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                                               open ? "[passa]" : "[fechado]");
+                        }
+                        if (changed) {
+                            gb_audio_set_channel_gate(ch, mode, addr);
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::Separator();
+                uint16_t base = g_audio_lab_base;
+                const uint16_t step = 0x40, step_fast = 0x100;
+                ImGui::SetNextItemWidth(120.0f);
+                if (ImGui::InputScalar("Inicio (hex)", ImGuiDataType_U16, &base, &step, &step_fast,
+                                       "%04X", ImGuiInputTextFlags_CharsHexadecimal)) {
+                    if (base < 0xA000) base = 0xA000;
+                    if (base > 0xBFFF - AUDIO_LAB_BYTES + 1) base = (uint16_t)(0xBFFF - AUDIO_LAB_BYTES + 1);
+                    g_audio_lab_base = base;
+                }
+                ImGui::TextDisabled("Amarelo = mudou agora; laranja = no ultimo segundo.");
+                for (int row = 0; row < AUDIO_LAB_BYTES / 16; row++) {
+                    ImGui::Text("%04X:", (unsigned)(g_audio_lab_base + row * 16));
+                    for (int col = 0; col < 16; col++) {
+                        const int i = row * 16 + col;
+                        ImGui::SameLine(0.0f, col == 8 ? 10.0f : 4.0f);
+                        const uint32_t age = g_audio_lab_changed_at[i] == 0
+                            ? 0xFFFFFFFFu : g_audio_lab_frames - g_audio_lab_changed_at[i];
+                        ImVec4 color = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+                        if (age < 8) color = ImVec4(1.0f, 1.0f, 0.2f, 1.0f);
+                        else if (age < 60) color = ImVec4(1.0f, 0.6f, 0.2f, 1.0f);
+                        else if (g_audio_lab_change_count[i] == 0) color = ImVec4(0.45f, 0.45f, 0.45f, 1.0f);
+                        if (g_audio_lab_value[i] < 0) {
+                            ImGui::TextColored(color, "--");
+                        } else {
+                            ImGui::TextColored(color, "%02X", (unsigned)g_audio_lab_value[i]);
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("$%04X = %02X  (mudou %u vezes)",
+                                              (unsigned)(g_audio_lab_base + i),
+                                              (unsigned)(g_audio_lab_value[i] < 0 ? 0 : g_audio_lab_value[i]),
+                                              g_audio_lab_change_count[i]);
+                        }
+                    }
+                }
+                if (ImGui::Button("Zerar contagens")) {
+                    g_audio_lab_base_seen = 0; /* forca releitura sem destaque */
+                }
+                ImGui::TreePop();
+            }
             bool tile_dump = ppu_native_get_tile_dump();
             if (ImGui::Checkbox("Despejar tiles (PNG)", &tile_dump)) {
                 ppu_native_set_tile_dump(tile_dump);
@@ -3230,6 +3445,13 @@ static void render_frame_internal(const uint32_t* framebuffer,
                                 g_audio_target_fill.load(std::memory_order_relaxed));
                 } else {
                     ImGui::Text("Mixer: copia direta");
+                }
+                if (g_music_current >= 0) {
+                    ImGui::Text("Musica: %02X  (ultimo pedido %02X)",
+                                (unsigned)g_music_current,
+                                (unsigned)(g_music_request_seen < 0 ? 0 : g_music_request_seen));
+                } else {
+                    ImGui::Text("Musica: --");
                 }
                 ImGui::Text("Renderer: %s", ppu_native_mode_name(ppu_native_get_mode()));
                 {
@@ -4445,6 +4667,7 @@ void gb_platform_submit_port_frame(void* user, const GBPortFrame* frame) {
 
 void gb_platform_render_frame(const uint32_t* framebuffer) {
     ppu_native_set_hd_scale(effective_internal_scale()); /* passo 4b: segue a textura */
+    music_monitor_update(); /* passo 6b */
     hd_pack_io_flush_dumps(128); /* passo 5a */
     {
         const PPUNativeScene* scene = ppu_native_take_scene(); /* passo 5a.2 */

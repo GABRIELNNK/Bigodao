@@ -135,6 +135,42 @@ void gb_audio_set_debug_capture_seconds(uint32_t seconds);
  */
 void gb_audio_set_debug_trace(bool enabled);
 
+/* Passo 6c.1: laboratorio de audio (so para investigar; nao muda o jogo). */
+typedef struct {
+    bool enabled;       /* canal ligado (NR52) */
+    int volume;         /* volume atual (CH3: nivel 0..3) */
+    uint16_t freq;      /* frequencia bruta (0..2047); CH4: NR43 */
+    uint8_t panning;    /* bits do NR51 deste canal: 1 = direita, 2 = esquerda */
+    uint32_t triggers;  /* quantas vezes o canal foi disparado (NRx4 bit 7) */
+} GBAudioChannelInfo;
+
+/**
+ * @brief Silencia canais na saida (bit 0 = CH1 ... bit 3 = CH4).
+ * O som continua sendo emulado; so nao entra na mistura.
+ */
+void gb_audio_set_channel_mute_mask(uint8_t mask);
+uint8_t gb_audio_get_channel_mute_mask(void);
+
+/**
+ * @brief Estado atual dos 4 canais (out[0] = CH1 ... out[3] = CH4).
+ */
+void gb_audio_get_channel_info(const void* apu, GBAudioChannelInfo out[4]);
+
+/* Passo 6c.2: "silenciar musica do GB". Com o portao ligado, cada canal
+ * segue um modo: tocar sempre, mudo, ou so quando um byte da RAM do
+ * cartucho (o "efeito tocando neste canal" do driver de som) for != 0. */
+enum {
+    GB_AUDIO_GATE_ALWAYS = 0,
+    GB_AUDIO_GATE_MUTE = 1,
+    GB_AUDIO_GATE_ON_BYTE = 2
+};
+void gb_audio_set_gate_enabled(bool enabled);
+bool gb_audio_get_gate_enabled(void);
+void gb_audio_set_channel_gate(int channel, int mode, uint16_t addr);
+void gb_audio_get_channel_gate(int channel, int* mode, uint16_t* addr);
+/** Canais que o portao esta deixando passar agora (bit 0 = CH1). */
+uint8_t gb_audio_get_gate_open_mask(void);
+
 #ifdef __cplusplus
 }
 #endif

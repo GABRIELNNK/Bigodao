@@ -32,6 +32,76 @@ static uint32_t g_debug_trace_window_nonzero = 0;
 static uint32_t g_debug_trace_window_channel_nonzero[4] = {0};
 static int32_t g_debug_trace_window_peak = 0;
 static bool g_debug_trace_first_nonzero_logged = false;
+/* Passo 6c.1: mudo por canal e contagem de disparos (fora do GBAudio para
+ * nao mudar o tamanho do save state). */
+static volatile uint8_t g_audio_channel_mute_mask = 0;
+static uint32_t g_audio_channel_triggers[4] = {0, 0, 0, 0};
+
+void gb_audio_set_channel_mute_mask(uint8_t mask) {
+    g_audio_channel_mute_mask = (uint8_t)(mask & 0x0F);
+}
+
+uint8_t gb_audio_get_channel_mute_mask(void) {
+    return g_audio_channel_mute_mask;
+}
+
+/* Passo 6c.2: portao por canal (veja audio.h). Padrao: CH1 e CH4 so com
+ * efeito ($A601 / $A616), CH2 e CH3 mudos. Ajustavel no laboratorio. */
+static volatile bool g_audio_gate_enabled = false;
+static int g_audio_gate_mode[4] = {
+    GB_AUDIO_GATE_ON_BYTE, GB_AUDIO_GATE_MUTE, GB_AUDIO_GATE_MUTE, GB_AUDIO_GATE_ON_BYTE
+};
+static uint16_t g_audio_gate_addr[4] = {0xA601, 0xA601, 0xA601, 0xA616};
+static volatile uint8_t g_audio_gate_open_mask = 0x0F;
+
+void gb_audio_set_gate_enabled(bool enabled) {
+    g_audio_gate_enabled = enabled;
+}
+
+bool gb_audio_get_gate_enabled(void) {
+    return g_audio_gate_enabled;
+}
+
+void gb_audio_set_channel_gate(int channel, int mode, uint16_t addr) {
+    if (channel < 0 || channel > 3) return;
+    if (mode < GB_AUDIO_GATE_ALWAYS || mode > GB_AUDIO_GATE_ON_BYTE) mode = GB_AUDIO_GATE_ALWAYS;
+    g_audio_gate_mode[channel] = mode;
+    g_audio_gate_addr[channel] = addr;
+}
+
+void gb_audio_get_channel_gate(int channel, int* mode, uint16_t* addr) {
+    if (channel < 0 || channel > 3) return;
+    if (mode) *mode = g_audio_gate_mode[channel];
+    if (addr) *addr = g_audio_gate_addr[channel];
+}
+
+uint8_t gb_audio_get_gate_open_mask(void) {
+    return g_audio_gate_enabled ? g_audio_gate_open_mask : 0x0F;
+}
+
+/* Bits dos canais que o portao fecha agora. */
+static uint8_t audio_gate_closed_mask(const GBContext* ctx) {
+    if (!g_audio_gate_enabled) {
+        return 0;
+    }
+    uint8_t closed = 0;
+    for (int ch = 0; ch < 4; ch++) {
+        const int mode = g_audio_gate_mode[ch];
+        if (mode == GB_AUDIO_GATE_MUTE) {
+            closed |= (uint8_t)(1u << ch);
+        } else if (mode == GB_AUDIO_GATE_ON_BYTE) {
+            const uint16_t addr = g_audio_gate_addr[ch];
+            bool open = false;
+            if (ctx && ctx->eram && addr >= 0xA000) {
+                const size_t offset = (size_t)(addr - 0xA000);
+                open = offset < ctx->eram_size && ctx->eram[offset] != 0;
+            }
+            if (!open) closed |= (uint8_t)(1u << ch);
+        }
+    }
+    g_audio_gate_open_mask = (uint8_t)(~closed & 0x0F);
+    return closed;
+}
 
 static void audio_debug_trace_log(const char* fmt, ...) {
     if (!g_audio_debug_trace_enabled) return;
@@ -506,6 +576,33 @@ uint8_t gb_audio_read_pcm34(void* audio) {
     return (uint8_t)((audio_channel4_pcm(apu) << 4) | audio_channel3_pcm(apu));
 }
 
+void gb_audio_get_channel_info(const void* audio, GBAudioChannelInfo out[4]) {
+    const GBAudio* apu = (const GBAudio*)audio;
+    memset(out, 0, sizeof(GBAudioChannelInfo) * 4);
+    for (int i = 0; i < 4; i++) {
+        out[i].triggers = g_audio_channel_triggers[i];
+    }
+    if (!apu) {
+        return;
+    }
+    const bool on = (apu->nr52 & 0x80) != 0;
+    out[0].enabled = on && apu->ch1.enabled;
+    out[0].volume = apu->ch1.volume;
+    out[0].freq = (uint16_t)(apu->ch1.nr13 | ((apu->ch1.nr14 & 0x07) << 8));
+    out[1].enabled = on && apu->ch2.enabled;
+    out[1].volume = apu->ch2.volume;
+    out[1].freq = (uint16_t)(apu->ch2.nr23 | ((apu->ch2.nr24 & 0x07) << 8));
+    out[2].enabled = on && apu->ch3.enabled;
+    out[2].volume = (apu->ch3.nr32 >> 5) & 0x03;
+    out[2].freq = (uint16_t)(apu->ch3.nr33 | ((apu->ch3.nr34 & 0x07) << 8));
+    out[3].enabled = on && apu->ch4.enabled;
+    out[3].volume = apu->ch4.volume;
+    out[3].freq = apu->ch4.nr43;
+    for (int i = 0; i < 4; i++) {
+        out[i].panning = (uint8_t)(((apu->nr51 >> i) & 1) | (((apu->nr51 >> (i + 4)) & 1) << 1));
+    }
+}
+
 size_t gb_audio_state_size(void) {
     return sizeof(GBAudio);
 }
@@ -658,6 +755,7 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             if (value & 0x80) {
                 /* Trigger Event */
                 apu->ch1.enabled = (apu->ch1.nr12 & 0xF8) != 0;
+                g_audio_channel_triggers[0]++; /* passo 6c.1 */
                 if (apu->ch1.length_counter == 0) apu->ch1.length_counter = 64;
                 apu->ch1.timer = 0;
                 apu->ch1.wave_pos = 0;
@@ -695,6 +793,7 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch2.length_enabled = (value & 0x40) != 0;
             if (value & 0x80) {
                 apu->ch2.enabled = (apu->ch2.nr22 & 0xF8) != 0;
+                g_audio_channel_triggers[1]++; /* passo 6c.1 */
                 if (apu->ch2.length_counter == 0) apu->ch2.length_counter = 64;
                 apu->ch2.timer = 0;
                 apu->ch2.wave_pos = 0;
@@ -723,6 +822,7 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch3.length_enabled = (value & 0x40) != 0;
             if (value & 0x80) {
                 apu->ch3.enabled = (apu->ch3.nr30 & 0x80) != 0;
+                g_audio_channel_triggers[2]++; /* passo 6c.1 */
                 if (apu->ch3.length_counter == 0) apu->ch3.length_counter = 256;
                 apu->ch3.timer = 0;
                 apu->ch3.wave_pos = 0;
@@ -745,6 +845,7 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch4.length_enabled = (value & 0x40) != 0;
             if (value & 0x80) {
                 apu->ch4.enabled = (apu->ch4.nr42 & 0xF8) != 0;
+                g_audio_channel_triggers[3]++; /* passo 6c.1 */
                 if (apu->ch4.length_counter == 0) apu->ch4.length_counter = 64;
                 apu->ch4.accum = 0;
                 
@@ -846,7 +947,10 @@ static void audio_emit_sample(GBContext* ctx, GBAudio* apu) {
     int ch3_mix = 0;
     int ch4_mix = 0;
 
-    if (apu->ch1.enabled && (apu->ch1.nr12 & 0xF0)) {
+    const uint8_t mute_mask = (uint8_t)(g_audio_channel_mute_mask |
+                                        audio_gate_closed_mask(ctx)); /* passos 6c.1 e 6c.2 */
+
+    if (apu->ch1.enabled && (apu->ch1.nr12 & 0xF0) && !(mute_mask & 0x01)) {
         int duty = (apu->ch1.nr11 >> 6) & 3;
         int output = DUTY_CYCLES[duty][apu->ch1.wave_pos] ? 1 : -1;
         ch1_mix = apu->ch1.volume * output;
@@ -854,7 +958,7 @@ static void audio_emit_sample(GBContext* ctx, GBAudio* apu) {
         if (apu->nr51 & 0x10) left += ch1_mix;
     }
 
-    if (apu->ch2.enabled && (apu->ch2.nr22 & 0xF0)) {
+    if (apu->ch2.enabled && (apu->ch2.nr22 & 0xF0) && !(mute_mask & 0x02)) {
         int duty = (apu->ch2.nr21 >> 6) & 3;
         int output = DUTY_CYCLES[duty][apu->ch2.wave_pos] ? 1 : -1;
         ch2_mix = apu->ch2.volume * output;
@@ -862,7 +966,7 @@ static void audio_emit_sample(GBContext* ctx, GBAudio* apu) {
         if (apu->nr51 & 0x20) left += ch2_mix;
     }
 
-    if (apu->ch3.enabled && (apu->ch3.nr30 & 0x80)) {
+    if (apu->ch3.enabled && (apu->ch3.nr30 & 0x80) && !(mute_mask & 0x04)) {
         uint8_t byte = apu->ch3.wave_ram[apu->ch3.wave_pos / 2];
         uint8_t sample = (apu->ch3.wave_pos & 1) ? (byte & 0x0F) : (byte >> 4);
         switch ((apu->ch3.nr32 >> 5) & 3) {
@@ -876,7 +980,7 @@ static void audio_emit_sample(GBContext* ctx, GBAudio* apu) {
         if (apu->nr51 & 0x40) left += ch3_mix;
     }
 
-    if (apu->ch4.enabled && (apu->ch4.nr42 & 0xF0)) {
+    if (apu->ch4.enabled && (apu->ch4.nr42 & 0xF0) && !(mute_mask & 0x08)) {
         int output = !(apu->ch4.lfsr & 1) ? 1 : -1;
         ch4_mix = apu->ch4.volume * output;
         if (apu->nr51 & 0x08) right += ch4_mix;
