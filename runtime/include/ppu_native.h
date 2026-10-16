@@ -122,10 +122,11 @@ void ppu_native_reset_hd_stats(void);
 /* ----------------------------------------------------------------------------
  * Despejo de tiles (passo 5a)
  *
- * Com o despejo ligado, cada combinação nova de tile + paleta que aparece na
- * tela entra numa fila. A plataforma retira da fila e grava como PNG 8x8:
- *   b_<hash do tile>_<hash da paleta>.png  (fundo/window, opaco)
- *   o_<hash do tile>_<hash da paleta>.png  (sprite, cor 0 transparente)
+ * Com o despejo ligado, cada tile novo que aparece na tela entra numa fila
+ * (uma vez por tile, qualquer paleta; desde o passo 5a.2). A plataforma
+ * retira da fila e grava como PNG 8x8:
+ *   b_<hash do tile>.png  (fundo/window, opaco)
+ *   o_<hash do tile>.png  (sprite, cor 0 transparente)
  * Esses mesmos nomes serão os dos PNGs HD na pasta de mods (passo 5b).
  * -------------------------------------------------------------------------- */
 typedef struct {
@@ -143,6 +144,37 @@ int ppu_native_take_tile_dumps(PPUNativeTileDump* out, int max);
 /* Quantas combinações tile + paleta já foram vistas desde o último reset. */
 uint32_t ppu_native_tile_dump_seen(void);
 void ppu_native_reset_tile_dump(void);
+
+/* ----------------------------------------------------------------------------
+ * Captura de cena (passo 5a.2)
+ *
+ * Grava um frame inteiro (centro de 160x144) separado em duas camadas e, para
+ * cada pixel, de qual tile e de qual ponto do tile ele veio. É isso que deixa
+ * pintar a cena inteira em alta resolução e depois fatiar em tiles.
+ *   *_uvf: bits 0-2 = coluna no tile, 3-5 = linha (espaço da tela, antes do
+ *          flip), bit 6 = flip X, bit 7 = flip Y.
+ * Os tiles da tabela não dependem da paleta (o nome do arquivo HD será
+ * b_<tile>.png / o_<tile>.png); a paleta guardada é a da primeira aparição.
+ * -------------------------------------------------------------------------- */
+#define PPU_NATIVE_SCENE_MAX_TILES 4096
+#define PPU_NATIVE_SCENE_NO_TILE 0xFFFFu
+
+typedef struct {
+    uint32_t bg_rgba[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];   /* só fundo/window */
+    uint32_t obj_rgba[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];  /* só sprites, 0 = vazio */
+    uint16_t bg_tile[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];   /* índice em tiles[] */
+    uint16_t obj_tile[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];
+    uint8_t bg_uvf[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];
+    uint8_t obj_uvf[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];
+    uint32_t tile_count;
+    PPUNativeTileDump tiles[PPU_NATIVE_SCENE_MAX_TILES];
+} PPUNativeScene;
+
+/* Pede a captura do próximo frame completo. */
+void ppu_native_request_scene_capture(void);
+bool ppu_native_scene_capture_pending(void);
+/* Devolve a cena pronta uma única vez (NULL se não houver). */
+const PPUNativeScene* ppu_native_take_scene(void);
 
 #ifdef __cplusplus
 }

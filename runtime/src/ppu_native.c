@@ -85,6 +85,14 @@ static PPUNativeTileDump g_dump_queue[DUMP_QUEUE_CAP];
 static uint32_t g_dump_head = 0;         /* próximo a retirar */
 static uint32_t g_dump_size = 0;
 
+/* Passo 5a.2: captura de cena (fundo, sprites e origem de cada pixel). */
+enum { SCENE_IDLE = 0, SCENE_REQUESTED, SCENE_CAPTURING, SCENE_READY };
+static int g_scene_state = SCENE_IDLE;
+static PPUNativeScene g_scene;
+#define SCENE_MAP_CAP 8192u   /* potência de 2, > PPU_NATIVE_SCENE_MAX_TILES */
+static uint64_t g_scene_map_key[SCENE_MAP_CAP];   /* 0 = vazio */
+static uint16_t g_scene_map_val[SCENE_MAP_CAP];
+
 /* ============================================================================
  * Utilitários
  * ========================================================================== */
@@ -414,7 +422,7 @@ static void dump_tile(char kind, const uint8_t* tile_px, const uint16_t colors[4
     if (g_dump_size >= DUMP_QUEUE_CAP) {
         return;         /* fila cheia: tenta de novo num próximo frame */
     }
-    if (!dump_mark_seen(dump_key(kind, th, pal_hash))) {
+    if (!dump_mark_seen(dump_key(kind, th, 0u))) {
         return;
     }
     PPUNativeTileDump* d = &g_dump_queue[(g_dump_head + g_dump_size) % DUMP_QUEUE_CAP];
@@ -446,6 +454,92 @@ static void line_palette_colors(const GBPPU* ppu, bool cgb, bool compat, bool ob
     }
 }
 
+/* Índice do tile na tabela da cena (mesmo tile = mesma entrada, qualquer
+ * paleta; a paleta guardada é a da primeira vez que ele apareceu). */
+static uint16_t scene_tile_id(char kind, const uint8_t* tile_px, const uint16_t colors[4]) {
+    const unsigned gi = tile_global_index(tile_px);
+    const uint64_t th = g_tile_hash[gi / NATIVE_TILES][gi % NATIVE_TILES];
+    const uint64_t key = dump_key(kind, th, 0u);
+    uint32_t i = (uint32_t)(key ^ (key >> 31)) & (SCENE_MAP_CAP - 1u);
+    while (g_scene_map_key[i] != 0) {
+        if (g_scene_map_key[i] == key) {
+            return g_scene_map_val[i];
+        }
+        i = (i + 1u) & (SCENE_MAP_CAP - 1u);
+    }
+    if (g_scene.tile_count >= PPU_NATIVE_SCENE_MAX_TILES) {
+        return PPU_NATIVE_SCENE_NO_TILE;
+    }
+    const uint16_t id = (uint16_t)g_scene.tile_count++;
+    g_scene_map_key[i] = key;
+    g_scene_map_val[i] = id;
+    PPUNativeTileDump* t = &g_scene.tiles[id];
+    t->kind = kind;
+    t->tile_hash = th;
+    t->pal_hash = palette_hash(colors);
+    memcpy(t->index, tile_px, 64);
+    for (unsigned c = 0; c < 4u; ++c) {
+        t->rgba[c] = rgb(colors[c]);
+    }
+    if (kind == 'o') {
+        t->rgba[0] &= 0x00FFFFFFu;
+    }
+    return id;
+}
+
+static inline uint8_t scene_uvf(uint8_t u, uint8_t v, uint8_t flags) {
+    return (uint8_t)((u & 7u) | ((v & 7u) << 3) |
+                     ((flags & OAM_FLIP_X) ? 0x40u : 0u) |
+                     ((flags & OAM_FLIP_Y) ? 0x80u : 0u));
+}
+
+/* Na captura, pixels transparentes dentro da caixa 8x8 de um sprite também
+ * ganham a origem (tile e posição), para o desenho HD poder ocupar áreas que
+ * eram cor 0. A cor desses pixels na camada de sprites continua vazia. */
+static void scene_fill_sprite_boxes(const GBContext* ctx, bool cgb,
+                                    const PPUNativeLineState* st, int y,
+                                    const uint16_t obj_cols[8][4]) {
+    if (!(st->lcdc & LCDC_OBJ_ENABLE)) {
+        return;
+    }
+    const int height = (st->lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
+    for (int index = 0; index < 40; ++index) {
+        const uint8_t* oam = ctx->oam + index * 4;
+        const int sprite_y = (int)oam[0] - 16;
+        if (y < sprite_y || y >= sprite_y + height) {
+            continue;
+        }
+        const int sprite_x = (int)oam[1] - 8;
+        if (sprite_x <= -8 || sprite_x >= GB_SCREEN_WIDTH) {
+            continue;
+        }
+        const uint8_t flags = oam[3];
+        int line = y - sprite_y;
+        if (flags & OAM_FLIP_Y) {
+            line = height - 1 - line;
+        }
+        const unsigned tile = (height == 16)
+            ? (unsigned)(oam[2] & 0xFEu) + (unsigned)(line >> 3)
+            : oam[2];
+        const unsigned bank = (cgb && (flags & OAM_CGB_BANK)) ? 1u : 0u;
+        const uint8_t palette = cgb ? (flags & OAM_CGB_PALETTE) : ((flags & OAM_PALETTE) ? 1u : 0u);
+        const uint8_t* tile_px = tile_pixels(ctx, bank, tile);
+        const uint8_t screen_v = (uint8_t)((y - sprite_y) & 7);
+        for (int p = 0; p < 8; ++p) {
+            const int x = sprite_x + p;
+            if (x < 0 || x >= GB_SCREEN_WIDTH) {
+                continue;
+            }
+            const size_t i = (size_t)y * NATIVE_W + (size_t)x;
+            if (g_scene.obj_tile[i] != PPU_NATIVE_SCENE_NO_TILE) {
+                continue;
+            }
+            g_scene.obj_tile[i] = scene_tile_id('o', tile_px, obj_cols[palette & 7u]);
+            g_scene.obj_uvf[i] = scene_uvf((uint8_t)p, screen_v, flags);
+        }
+    }
+}
+
 static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     static ObjLine objects;
     const PPUNativeLineState* st = &g_lines[y];
@@ -464,7 +558,8 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     const uint8_t* last_obj_tile = NULL;
     uint8_t last_bg_pal = 0xFFu;
     uint8_t last_obj_pal = 0xFFu;
-    if (g_dump_enabled) {
+    const bool capturing = (g_scene_state == SCENE_CAPTURING);
+    if (g_dump_enabled || capturing) {
         const unsigned count = cgb ? 8u : 2u;
         for (unsigned p = 0; p < count; ++p) {
             line_palette_colors(ppu, cgb, compat, false, (uint8_t)p, st->bgp, bg_cols[p]);
@@ -525,6 +620,31 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             }
         }
 
+        if (capturing) {
+            const size_t i = (size_t)y * NATIVE_W + (size_t)x;
+            g_scene.bg_rgba[i] = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
+            if (bg.tile) {
+                const uint8_t pi = cgb ? (bg.palette & 7u) : 0u;
+                g_scene.bg_tile[i] = scene_tile_id('b', bg.tile, bg_cols[pi]);
+                g_scene.bg_uvf[i] = scene_uvf(bg.u, bg.v, bg.flags);
+            } else {
+                g_scene.bg_tile[i] = PPU_NATIVE_SCENE_NO_TILE;
+                g_scene.bg_uvf[i] = 0;
+            }
+            if (objects.raw[x]) {
+                const uint8_t obp = objects.palette[x] ? st->obp1 : st->obp0;
+                const uint8_t pi = objects.palette[x] & 7u;
+                g_scene.obj_rgba[i] = obj_color(ppu, cgb, compat, objects.palette[x],
+                                                objects.raw[x], obp);
+                g_scene.obj_tile[i] = scene_tile_id('o', objects.tile[x], obj_cols[pi]);
+                g_scene.obj_uvf[i] = scene_uvf(objects.u[x], objects.v[x], objects.flags[x]);
+            } else {
+                g_scene.obj_rgba[i] = 0u;
+                g_scene.obj_tile[i] = PPU_NATIVE_SCENE_NO_TILE;
+                g_scene.obj_uvf[i] = 0;
+            }
+        }
+
         if (g_hd_scale > 1) {
             const unsigned n = (unsigned)g_hd_scale;
             const size_t stride = (size_t)NATIVE_W * n;
@@ -575,6 +695,9 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             }
         }
     }
+    if (capturing) {
+        scene_fill_sprite_boxes(ctx, cgb, st, y, (const uint16_t (*)[4])obj_cols);
+    }
 }
 
 /* ============================================================================
@@ -609,6 +732,13 @@ static void begin_frame(const GBContext* ctx, uint8_t first_line) {
     g_frame_open = true;
     g_hd_scale = g_hd_scale_req;
     g_hd_frame_full = (first_line == 0);
+    if (g_scene_state == SCENE_REQUESTED && first_line == 0) {
+        g_scene_state = SCENE_CAPTURING;
+        g_scene.tile_count = 0;
+        memset(g_scene_map_key, 0, sizeof(g_scene_map_key));
+    } else if (g_scene_state == SCENE_CAPTURING) {
+        g_scene_state = SCENE_REQUESTED;   /* frame interrompido: tenta de novo */
+    }
     g_hd_cur_mismatch = 0;
     g_hd_cur_x = -1;
     g_hd_cur_y = -1;
@@ -733,6 +863,9 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
         }
     }
     g_hd_valid_scale = (g_frame_open && g_hd_frame_full && g_hd_scale > 1) ? g_hd_scale : 0;
+    if (g_scene_state == SCENE_CAPTURING) {
+        g_scene_state = (g_frame_open && g_hd_frame_full) ? SCENE_READY : SCENE_REQUESTED;
+    }
     g_frame_open = false;
 
     /* Publica o centro no framebuffer normal e no meio do widescreen.
@@ -831,4 +964,26 @@ void ppu_native_reset_tile_dump(void) {
     g_dump_seen_count = 0;
     g_dump_head = 0;
     g_dump_size = 0;
+}
+
+/* ============================================================================
+ * Captura de cena (passo 5a.2): API
+ * ========================================================================== */
+
+void ppu_native_request_scene_capture(void) {
+    if (g_scene_state == SCENE_IDLE || g_scene_state == SCENE_READY) {
+        g_scene_state = SCENE_REQUESTED;
+    }
+}
+
+bool ppu_native_scene_capture_pending(void) {
+    return g_scene_state == SCENE_REQUESTED || g_scene_state == SCENE_CAPTURING;
+}
+
+const PPUNativeScene* ppu_native_take_scene(void) {
+    if (g_scene_state != SCENE_READY) {
+        return NULL;
+    }
+    g_scene_state = SCENE_IDLE;
+    return &g_scene;   /* válido até a próxima captura */
 }

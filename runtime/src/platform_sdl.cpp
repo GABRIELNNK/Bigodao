@@ -2816,6 +2816,18 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     ppu_native_reset_tile_dump();
                 }
             }
+            if (ImGui::Button("Capturar cena (F9)")) {
+                ppu_native_request_scene_capture();
+            }
+            if (ppu_native_scene_capture_pending()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("capturando...");
+            }
+            if (hd_pack_io_last_scene()[0]) {
+                ImGui::TextWrapped("Ultima cena: %s", hd_pack_io_last_scene());
+            } else {
+                ImGui::TextWrapped("Cenas: %s", hd_pack_io_scene_dir());
+            }
         }
 
         int filter_mode = (int)g_render_filter_mode;
@@ -4037,6 +4049,11 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
                         gbrt_port_input(ctx, &port_event);
                     }
                     return true;
+                case SDL_SCANCODE_F9:
+                    if (pressed && event->key.repeat == 0) {
+                        ppu_native_request_scene_capture(); /* passo 5a.2 */
+                    }
+                    return true;
                 case SDL_SCANCODE_F11:
                     if (pressed && event->key.repeat == 0) {
                         set_fullscreen_enabled(!g_fullscreen);
@@ -4188,6 +4205,12 @@ void gb_platform_submit_port_frame(void* user, const GBPortFrame* frame) {
 void gb_platform_render_frame(const uint32_t* framebuffer) {
     ppu_native_set_hd_scale(effective_internal_scale()); /* passo 4b: segue a textura */
     hd_pack_io_flush_dumps(128); /* passo 5a */
+    {
+        const PPUNativeScene* scene = ppu_native_take_scene(); /* passo 5a.2 */
+        if (scene) {
+            hd_pack_io_write_scene(scene);
+        }
+    }
     //render_frame_internal(framebuffer, true, false);
     // Utilize o framebuffer gerado nativamente no VBlank
     GBPPU* ppu = active_ppu();
