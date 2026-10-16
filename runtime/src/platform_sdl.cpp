@@ -183,6 +183,14 @@ static bool g_audio_output_enabled = true;
 static std::atomic<bool> g_audio_muted{false};
 static uint32_t g_audio_latency_ms = 80;
 static std::atomic<uint32_t> g_audio_volume_percent{100};
+/* Passo 6e: volume so do som do Game Boy (efeitos e musica do GB), 0..200.
+ * O volume geral vale por cima dele e das trilhas .ogg. */
+static std::atomic<uint32_t> g_audio_gb_volume_percent{100};
+
+static inline uint32_t gb_effective_volume_percent(void) {
+    return (g_audio_volume_percent.load(std::memory_order_relaxed) *
+            g_audio_gb_volume_percent.load(std::memory_order_relaxed)) / 100u;
+}
 
 
 /* Passo 6a: mixer com controle de taxa (veja sdl_audio_callback). */
@@ -1137,6 +1145,7 @@ static void set_default_audio_preferences(void) {
     g_audio_muted.store(false, std::memory_order_relaxed);
     g_audio_latency_ms = 80;
     g_audio_volume_percent.store(100, std::memory_order_relaxed);
+    g_audio_gb_volume_percent.store(100, std::memory_order_relaxed); /* passo 6e */
     g_audio_target_device_name.clear();
 }
 
@@ -1248,6 +1257,13 @@ static void load_runtime_preferences(void) {
                     long parsed = strtol(value, NULL, 10);
                     if (parsed > 0) {
                         g_audio_latency_ms = (uint32_t)parsed;
+                    }
+                    continue;
+                }
+                if (strcmp(key, "audio.gb_volume_percent") == 0) {   /* passo 6e */
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 0 && parsed <= 200) {
+                        g_audio_gb_volume_percent.store((uint32_t)parsed, std::memory_order_relaxed);
                     }
                     continue;
                 }
@@ -1479,6 +1495,8 @@ static void save_runtime_preferences(void) {
     fprintf(file, "audio.latency_ms=%u\n", g_audio_latency_ms);
     fprintf(file, "audio.volume_percent=%u\n",
             g_audio_volume_percent.load(std::memory_order_relaxed));
+    fprintf(file, "audio.gb_volume_percent=%u\n",   /* passo 6e */
+            g_audio_gb_volume_percent.load(std::memory_order_relaxed));
     fprintf(file, "audio.device_name=%s\n", g_audio_target_device_name.c_str());
     fprintf(file, "savestate.slot=%d\n", g_savestate_slot);
     fprintf(file, "display.fullscreen=%d\n", g_fullscreen ? 1 : 0);
@@ -3097,6 +3115,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     save_runtime_preferences();
                 }
                 if (music_replace_track_count() > 0) {
+                    /* Passo 6e: volume do GB aqui tambem, para equilibrar. */
+                    int gb_vol = (int)g_audio_gb_volume_percent.load(std::memory_order_relaxed);
+                    ImGui::SetNextItemWidth(140.0f);
+                    if (ImGui::SliderInt("Volume do GB##mods", &gb_vol, 0, 200, "%d%%")) {
+                        g_audio_gb_volume_percent.store((uint32_t)gb_vol, std::memory_order_relaxed);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        save_runtime_preferences();
+                    }
                     ImGui::TextDisabled("%d trilha(s): %s", music_replace_track_count(),
                                         music_replace_track_list());
                 } else {
@@ -3284,6 +3311,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
             g_audio_volume_percent.store((uint32_t)audio_volume_percent,
                                          std::memory_order_relaxed);
             save_runtime_preferences();
+        }
+        {   /* Passo 6e */
+            int gb_volume_percent = (int)g_audio_gb_volume_percent.load(std::memory_order_relaxed);
+            if (ImGui::SliderInt("Game Boy Volume (%)", &gb_volume_percent, 0, 200)) {
+                g_audio_gb_volume_percent.store((uint32_t)gb_volume_percent, std::memory_order_relaxed);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                save_runtime_preferences();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("So o som do Game Boy (efeitos e musica do GB).\n"
+                                  "As trilhas .ogg tem o volume delas no menu Mods.");
+            }
         }
         if (ImGui::BeginCombo("Output Device", current_audio_output_device_label())) {
             bool selected_default = g_audio_target_device_name.empty();
@@ -3952,7 +3992,7 @@ static void sdl_audio_callback_direct(void* userdata, Uint8* stream, int len) {
     int16_t* out = (int16_t*)stream;
     const uint32_t samples_needed = (uint32_t)(len / 4);
     const bool muted = g_audio_muted.load(std::memory_order_relaxed);
-    const uint32_t volume_percent = g_audio_volume_percent.load(std::memory_order_relaxed);
+    const uint32_t volume_percent = gb_effective_volume_percent(); /* passo 6e */
     const uint32_t write_pos = g_audio_write_pos.load(std::memory_order_acquire);
     uint32_t read_pos = g_audio_read_pos.load(std::memory_order_relaxed);
     const uint32_t available = (write_pos >= read_pos)
@@ -4054,7 +4094,8 @@ static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
     int16_t* out = (int16_t*)stream;
     const uint32_t frames = (uint32_t)(len / 4);
     const bool muted = g_audio_muted.load(std::memory_order_relaxed);
-    const uint32_t volume_percent = g_audio_volume_percent.load(std::memory_order_relaxed);
+    const uint32_t volume_percent = gb_effective_volume_percent(); /* passo 6e: so o GB */
+    const uint32_t master_percent = g_audio_volume_percent.load(std::memory_order_relaxed);
     const uint32_t write_pos = g_audio_write_pos.load(std::memory_order_acquire);
     uint32_t read_pos = g_audio_read_pos.load(std::memory_order_relaxed);
     uint32_t available = (write_pos >= read_pos)
@@ -4127,7 +4168,7 @@ static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
     /* Passo 6c: trilhas .ogg. So andam enquanto o jogo gera audio (pausado,
      * a trilha pausa junto). */
     if (produced > 0) {
-        music_replace_mix(out, frames, device_rate, muted ? 0.0f : (float)volume_percent / 100.0f);
+        music_replace_mix(out, frames, device_rate, muted ? 0.0f : (float)master_percent / 100.0f);
     }
 
     g_audio_read_pos.store(read_pos, std::memory_order_release);
@@ -4204,7 +4245,8 @@ bool gb_platform_test_audio_concurrency(uint32_t frames,
     g_audio_muted.store(false, std::memory_order_relaxed);
     g_audio_volume_percent.store(100, std::memory_order_relaxed);
 
-    /* First prove the block-copy fast path preserves exact stereo PCM. */
+    /* First prove
+    g_audio_gb_volume_percent.store(100, std::memory_order_relaxed); /* passo 6e */ the block-copy fast path preserves exact stereo PCM. */
     enum { PCM_TEST_FRAMES = 128 };
     int16_t expected[PCM_TEST_FRAMES * 2];
     int16_t actual[PCM_TEST_FRAMES * 2];
