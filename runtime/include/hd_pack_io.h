@@ -1,7 +1,7 @@
 /**
  * @file hd_pack_io.h
  * @brief Arquivos dos tiles HD (passo 5): despejo de tiles e captura de cena.
- *        O carregamento da pasta de mods entra no passo 5b.
+ *        e carregamento do pacote HD (mods/hd).
  */
 #ifndef HD_PACK_IO_H
 #define HD_PACK_IO_H
@@ -30,6 +30,12 @@ uint32_t hd_pack_io_dumped_total(void);
 int hd_pack_io_write_scene(const PPUNativeScene* scene);
 const char* hd_pack_io_scene_dir(void);
 const char* hd_pack_io_last_scene(void);
+
+/* Passo 5b: carrega <base>/mods/hd (b_<tile>.png, o_<tile>.png e pack.json)
+ * no ppu_native, substituindo o que estava carregado. Devolve quantos tiles. */
+int hd_pack_io_load_pack(void);
+const char* hd_pack_io_pack_dir(void);
+const char* hd_pack_io_pack_status(void);
 
 #ifdef __cplusplus
 }

@@ -47,3 +47,25 @@ Se você quiser arte única por posição (um cenário pintado como uma ilustra�
 Uma pergunta: você pintou à mão ou usou algum ampliador? Se usou um ampliador, o --modo comum provavelmente resolve. Se pintou à mão, o mapa de conflitos é o melhor caminho.
 
 Quando quiser, sigo para a 5b, em que o jogo carrega esses PNGs e desenha com eles. Aí dá para ver o resultado da sua pintura rodando no jogo.
+
+
+______________________________________________________________________________
+3 parte
+
+
+Como os tiles HD entram no jogo:
+
+Fundo: o PNG troca só a cor. A prioridade em relação aos sprites continua vindo do tile original, então nada passa na frente ou atrás errado. Onde o PNG tiver alfa 0, aparece a cor original.
+Sprites: a transparência do PNG define a forma. O desenho pode ocupar a caixa 8×8 inteira de cada parte, inclusive onde o original era transparente.
+Fades e piscadas: quando a paleta muda, o tile HD é recolorido na mesma proporção, a partir da paleta de referência que o fatiador grava no pack.json. Tiles sem paleta de referência não são recoloridos.
+Menu Graphics: nova opção “Tiles HD (mods/hd)”, que fica salva, e um botão “Recarregar”. Ele relê a pasta sem fechar o jogo, então dá para pintar, fatiar e ver o resultado na hora.
+Escala: com tiles HD carregados, a textura usa a Internal Resolution pedida, mesmo com Nearest e sem pós-processamento. Para ver os tiles HD, escolha 2x ou mais. Em 1x, o menu avisa.
+
+O fatiador também mudou e vem no zip. Quando o mesmo tile aparece com paletas diferentes na cena, ele agora converte as cores para a paleta de referência, e o jogo faz a conta inversa ao desenhar. Sem isso, o pacote sem pintura saía com cores erradas nesses tiles. Por isso, fatie de novo as cenas que você já fatiou.
+
+Conferido aqui:
+
+Fluxo completo: captura, fatiamento sem pintura, carregamento e desenho em 4x. A imagem saiu idêntica ao original ampliado, inclusive com tiles em várias paletas.
+Em 40 cenas aleatórias, com tiles HD iguais ao original e depois um fade, a imagem também foi idêntica, o que confirma a recoloração.
+Com uma pintura vermelha, o vermelho apareceu no jogo. Com os tiles HD desligados, a imagem volta exatamente à original.
+Os testes anteriores continuam passando.

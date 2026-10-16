@@ -176,6 +176,28 @@ bool ppu_native_scene_capture_pending(void);
 /* Devolve a cena pronta uma única vez (NULL se não houver). */
 const PPUNativeScene* ppu_native_take_scene(void);
 
+/* ----------------------------------------------------------------------------
+ * Tiles HD (passo 5b)
+ *
+ * A plataforma carrega mods/hd/b_<tile>.png e o_<tile>.png e entrega aqui.
+ * Com escala N > 1, todo pixel cujo tile tem versão HD é desenhado a partir
+ * dela:
+ *  - fundo: o PNG só troca a cor; a prioridade vem do tile original. Alfa 0
+ *    no PNG = usa a cor original naquele ponto;
+ *  - sprite: o alfa do PNG define a forma (>= 128 = opaco) e pode ocupar a
+ *    caixa 8x8 inteira de cada parte do sprite;
+ *  - com paleta de referência (pack.json), fades e piscadas recolorem o tile
+ *    na proporção da paleta atual.
+ * -------------------------------------------------------------------------- */
+/* size x size pixels (múltiplo de 8), 0xAARRGGBB. ref_palette: 4 cores ou NULL.
+ * Copia os dados. Substitui um tile com o mesmo tipo e hash. */
+bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
+                            const uint32_t* argb, const uint32_t* ref_palette);
+void ppu_native_hd_clear_tiles(void);
+uint32_t ppu_native_hd_tile_count(void);
+void ppu_native_hd_set_tiles_enabled(bool enabled);
+bool ppu_native_hd_get_tiles_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif

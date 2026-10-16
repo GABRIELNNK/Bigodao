@@ -93,6 +93,23 @@ static PPUNativeScene g_scene;
 static uint64_t g_scene_map_key[SCENE_MAP_CAP];   /* 0 = vazio */
 static uint16_t g_scene_map_val[SCENE_MAP_CAP];
 
+/* Passo 5b: tiles HD carregados da pasta de mods. */
+typedef struct {
+    uint64_t key;        /* dump_key(tipo, hash do tile, 0); 0 = vazio */
+    uint32_t* px;        /* size x size, 0xAARRGGBB */
+    uint16_t size;
+    bool has_ref;
+    uint32_t ref[4];     /* paleta em que o tile foi pintado (pack.json) */
+} HdTile;
+#define HD_TABLE_CAP 16384u   /* potência de 2 */
+static HdTile g_hd_tiles[HD_TABLE_CAP];
+static uint32_t g_hd_tile_count = 0;
+static bool g_hd_tiles_enabled = true;
+static uint32_t g_hd_generation = 1;               /* muda quando o pacote muda */
+/* Cache por tile da VRAM: [tipo 0=b 1=o][banco*384 + tile] */
+static const HdTile* g_hd_for[2][2 * NATIVE_TILES];
+static uint32_t g_hd_for_gen[2][2 * NATIVE_TILES];
+
 /* ============================================================================
  * Utilitários
  * ========================================================================== */
@@ -178,6 +195,8 @@ static void decode_tile(const GBContext* ctx, unsigned bank, unsigned tile) {
         }
         g_tile_hash[bank][tile] = h;
     }
+    g_hd_for_gen[0][bank * NATIVE_TILES + tile] = 0;
+    g_hd_for_gen[1][bank * NATIVE_TILES + tile] = 0;
     g_tile_dirty[bank][tile] = false;
 }
 
@@ -299,6 +318,14 @@ typedef struct {
     uint8_t u[NATIVE_W];      /* coluna no sprite, espaço da tela */
     uint8_t v[NATIVE_W];      /* linha no tile de 8, espaço da tela */
     uint8_t flags[NATIVE_W];  /* OAM_FLIP_X / OAM_FLIP_Y */
+    /* Passo 5b: sprite cuja caixa 8x8 cobre o pixel onde nenhum sprite tem
+     * cor (o desenho HD pode ocupar essas áreas). */
+    const uint8_t* box_tile[NATIVE_W];
+    uint8_t box_u[NATIVE_W];
+    uint8_t box_v[NATIVE_W];
+    uint8_t box_flags[NATIVE_W];
+    uint8_t box_palette[NATIVE_W];
+    uint8_t box_behind[NATIVE_W];
 } ObjLine;
 
 /* Rasteriza todos os sprites da linha num buffer, com a mesma regra de
@@ -307,6 +334,7 @@ typedef struct {
 static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
                               const PPUNativeLineState* st, int y, ObjLine* out) {
     memset(out->raw, 0, sizeof(out->raw));
+    memset(out->box_tile, 0, sizeof(out->box_tile));
     if (!(st->lcdc & LCDC_OBJ_ENABLE)) {
         return;
     }
@@ -345,6 +373,14 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
             }
             const uint8_t raw = row[(flags & OAM_FLIP_X) ? 7 - p : p];
             if (raw == 0) {
+                if (!out->box_tile[x]) {
+                    out->box_tile[x] = tile_px;
+                    out->box_u[x] = (uint8_t)p;
+                    out->box_v[x] = screen_v;
+                    out->box_flags[x] = flags & (OAM_FLIP_X | OAM_FLIP_Y);
+                    out->box_palette[x] = palette;
+                    out->box_behind[x] = (flags & OAM_PRIORITY) ? 1u : 0u;
+                }
                 continue;
             }
             if (out->raw[x]) {
@@ -540,6 +576,95 @@ static void scene_fill_sprite_boxes(const GBContext* ctx, bool cgb,
     }
 }
 
+/* ============================================================================
+ * Tiles HD (passo 5b)
+ * ========================================================================== */
+
+static const HdTile* hd_find(uint64_t key) {
+    uint32_t i = (uint32_t)(key ^ (key >> 33)) & (HD_TABLE_CAP - 1u);
+    while (g_hd_tiles[i].key != 0) {
+        if (g_hd_tiles[i].key == key) {
+            return &g_hd_tiles[i];
+        }
+        i = (i + 1u) & (HD_TABLE_CAP - 1u);
+    }
+    return NULL;
+}
+
+/* Tile HD de um tile do cache (NULL se não houver), com cache por tile. */
+static inline const HdTile* hd_lookup(char kind, const uint8_t* tile_px) {
+    const unsigned gi = tile_global_index(tile_px);
+    const unsigned k = (kind == 'o') ? 1u : 0u;
+    if (g_hd_for_gen[k][gi] != g_hd_generation) {
+        const uint64_t th = g_tile_hash[gi / NATIVE_TILES][gi % NATIVE_TILES];
+        g_hd_for[k][gi] = hd_find(dump_key(kind, th, 0u));
+        g_hd_for_gen[k][gi] = g_hd_generation;
+    }
+    return g_hd_for[k][gi];
+}
+
+/* Mesmo mapeamento de sample_tile_sub(), lendo a imagem HD (qualquer tamanho). */
+static inline uint32_t sample_hd_sub(const HdTile* t, unsigned u, unsigned v, uint8_t flags,
+                                     unsigned sx, unsigned sy, unsigned n) {
+    const unsigned span = 8u * n;
+    unsigned cs = u * n + sx;
+    unsigned rs = v * n + sy;
+    if (flags & OAM_FLIP_X) cs = span - 1u - cs;
+    if (flags & OAM_FLIP_Y) rs = span - 1u - rs;
+    if (t->size == span) {
+        return t->px[rs * span + cs];
+    }
+    const unsigned hx = cs * t->size / span;
+    const unsigned hy = rs * t->size / span;
+    return t->px[hy * t->size + hx];
+}
+
+/* Recoloração proporcional: se a paleta atual difere da paleta em que o tile
+ * foi pintado (fades, piscadas), cada canal é escalado pela razão entre as
+ * duas cores do mesmo índice do tile original. Calculado uma vez por pixel. */
+typedef struct {
+    bool active;
+    uint32_t mul[3];   /* 16.16, arredondado para cima: ref * mul >> 16 == atual */
+    uint32_t add[3];   /* usado quando o canal de referência é 0 */
+} HdRecolor;
+
+static inline void hd_recolor_setup(HdRecolor* r, const HdTile* t, uint8_t idx, uint32_t cur) {
+    r->active = false;
+    if (!t->has_ref) {
+        return;
+    }
+    const uint32_t ref = t->ref[idx & 3u];
+    if (((ref ^ cur) & 0x00FFFFFFu) == 0) {
+        return;
+    }
+    r->active = true;
+    for (unsigned ch = 0; ch < 3u; ++ch) {
+        const uint32_t rc = (ref >> (ch * 8u)) & 0xFFu;
+        const uint32_t kc = (cur >> (ch * 8u)) & 0xFFu;
+        if (rc) {
+            r->mul[ch] = ((kc << 16) + rc - 1u) / rc;
+            r->add[ch] = 0;
+        } else {
+            r->mul[ch] = 1u << 16;
+            r->add[ch] = kc;
+        }
+    }
+}
+
+static inline uint32_t hd_recolor_apply(const HdRecolor* r, uint32_t c) {
+    if (!r->active) {
+        return c | 0xFF000000u;
+    }
+    uint32_t out = 0xFF000000u;
+    for (unsigned ch = 0; ch < 3u; ++ch) {
+        const uint32_t hc = (c >> (ch * 8u)) & 0xFFu;
+        uint32_t v = ((hc * r->mul[ch]) >> 16) + r->add[ch];
+        if (v > 255u) v = 255u;
+        out |= v << (ch * 8u);
+    }
+    return out;
+}
+
 static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     static ObjLine objects;
     const PPUNativeLineState* st = &g_lines[y];
@@ -559,7 +684,8 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     uint8_t last_bg_pal = 0xFFu;
     uint8_t last_obj_pal = 0xFFu;
     const bool capturing = (g_scene_state == SCENE_CAPTURING);
-    if (g_dump_enabled || capturing) {
+    const bool hd_tiles = g_hd_scale > 1 && g_hd_tiles_enabled && g_hd_tile_count > 0;
+    if (g_dump_enabled || capturing || hd_tiles) {
         const unsigned count = cgb ? 8u : 2u;
         for (unsigned p = 0; p < count; ++p) {
             line_palette_colors(ppu, cgb, compat, false, (uint8_t)p, st->bgp, bg_cols[p]);
@@ -649,41 +775,88 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             const unsigned n = (unsigned)g_hd_scale;
             const size_t stride = (size_t)NATIVE_W * n;
             uint32_t* hd = g_hd + (size_t)y * n * stride + (size_t)x * n;
-            if (!g_hd_check) {
-                /* Sem tiles HD: bloco N x N com a cor do pixel. */
+            /* Sprite candidato: o vencedor do pixel ou, se nenhum sprite tem
+             * cor aqui, um sprite cuja caixa cobre o pixel e que tenha HD. */
+            const uint8_t* ot = NULL;
+            uint8_t ou = 0, ov = 0, of = 0, opal = 0, obehind = 0;
+            const HdTile* obj_hd = NULL;
+            if (objects.raw[x]) {
+                ot = objects.tile[x];
+                ou = objects.u[x];
+                ov = objects.v[x];
+                of = objects.flags[x];
+                opal = objects.palette[x];
+                obehind = objects.behind[x];
+                obj_hd = hd_tiles ? hd_lookup('o', ot) : NULL;
+            } else if (hd_tiles && objects.box_tile[x]) {
+                obj_hd = hd_lookup('o', objects.box_tile[x]);
+                if (obj_hd) {
+                    ot = objects.box_tile[x];
+                    ou = objects.box_u[x];
+                    ov = objects.box_v[x];
+                    of = objects.box_flags[x];
+                    opal = objects.box_palette[x];
+                    obehind = objects.box_behind[x];
+                }
+            }
+            const HdTile* bg_hd = (hd_tiles && bg.tile) ? hd_lookup('b', bg.tile) : NULL;
+
+            if (!bg_hd && !obj_hd && !g_hd_check) {
+                /* Sem tile HD neste pixel: bloco N x N com a cor do pixel. */
                 for (unsigned sy = 0; sy < n; ++sy) {
                     uint32_t* d = hd + sy * stride;
                     for (unsigned sx = 0; sx < n; ++sx) d[sx] = row[x];
                 }
             } else {
-                /* Caminho de amostragem por subpixel (o dos PNGs), com as
-                 * mesmas regras de prioridade, conferido contra row[x]. */
-                const uint8_t obp = objects.palette[x] ? st->obp1 : st->obp0;
+                /* Todos os subpixels de um pixel caem no mesmo pixel do tile
+                 * original, então índice de cor, prioridade e cores originais
+                 * são calculados uma vez por pixel. Por subpixel só se lê o PNG.
+                 * Fundo: prioridade pelo tile original, alfa 0 no PNG = cor
+                 * original. Sprite: forma pelo alfa do PNG (>= 128). */
+                const uint8_t obp = opal ? st->obp1 : st->obp0;
+                const uint32_t bg_orig = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
+                const uint8_t obj_raw = objects.raw[x];      /* 0 quando veio da caixa */
+                const uint32_t obj_orig = obj_raw
+                    ? obj_color(ppu, cgb, compat, opal, obj_raw, obp) : 0u;
+                bool obj_blocked = false;
+                if (bg.raw != 0) {
+                    obj_blocked = cgb
+                        ? ((st->lcdc & LCDC_BG_ENABLE) && (bg.priority || obehind))
+                        : (obehind != 0);
+                }
+                const bool obj_can_win = ot && !obj_blocked;
+                HdRecolor bg_rc = {false, {0, 0, 0}, {0, 0, 0}};
+                HdRecolor obj_rc = {false, {0, 0, 0}, {0, 0, 0}};
+                if (bg_hd) {
+                    hd_recolor_setup(&bg_rc, bg_hd, bg.raw,
+                                     rgb(bg_cols[cgb ? (bg.palette & 7u) : 0u][bg.raw]));
+                }
+                if (obj_hd && obj_can_win) {
+                    hd_recolor_setup(&obj_rc, obj_hd, obj_raw, rgb(obj_cols[opal & 7u][obj_raw]));
+                }
+                const bool verify = g_hd_check && !bg_hd && !obj_hd;
                 for (unsigned sy = 0; sy < n; ++sy) {
                     uint32_t* d = hd + sy * stride;
                     for (unsigned sx = 0; sx < n; ++sx) {
-                        const uint8_t bg_raw = bg.tile
-                            ? sample_tile_sub(bg.tile, bg.u, bg.v, bg.flags, sx, sy, n)
-                            : 0u;
-                        const uint8_t obj_raw = objects.raw[x]
-                            ? sample_tile_sub(objects.tile[x], objects.u[x], objects.v[x],
-                                              objects.flags[x], sx, sy, n)
-                            : 0u;
-                        bool obj_wins = obj_raw != 0;
-                        if (obj_wins && bg_raw != 0) {
-                            if (cgb) {
-                                if ((st->lcdc & LCDC_BG_ENABLE) && (bg.priority || objects.behind[x])) {
-                                    obj_wins = false;
-                                }
-                            } else if (objects.behind[x]) {
-                                obj_wins = false;
+                        uint32_t c = bg_orig;
+                        if (bg_hd) {
+                            const uint32_t h = sample_hd_sub(bg_hd, bg.u, bg.v, bg.flags, sx, sy, n);
+                            if (h >> 24) {
+                                c = hd_recolor_apply(&bg_rc, h);
                             }
                         }
-                        const uint32_t c = obj_wins
-                            ? obj_color(ppu, cgb, compat, objects.palette[x], obj_raw, obp)
-                            : bg_color(ppu, cgb, compat, bg.palette, bg_raw, st->bgp);
+                        if (obj_can_win) {
+                            if (obj_hd) {
+                                const uint32_t h = sample_hd_sub(obj_hd, ou, ov, of, sx, sy, n);
+                                if ((h >> 24) >= 128u) {
+                                    c = hd_recolor_apply(&obj_rc, h);
+                                }
+                            } else if (obj_raw) {
+                                c = obj_orig;
+                            }
+                        }
                         d[sx] = c;
-                        if (c != row[x]) {
+                        if (verify && c != row[x]) {
                             if (g_hd_cur_mismatch == 0) {
                                 g_hd_cur_x = (int16_t)(x * (int)n + (int)sx);
                                 g_hd_cur_y = (int16_t)(y * (int)n + (int)sy);
@@ -986,4 +1159,64 @@ const PPUNativeScene* ppu_native_take_scene(void) {
     }
     g_scene_state = SCENE_IDLE;
     return &g_scene;   /* válido até a próxima captura */
+}
+
+/* ============================================================================
+ * Tiles HD (passo 5b): API
+ * ========================================================================== */
+
+bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
+                            const uint32_t* argb, const uint32_t* ref_palette) {
+    if ((kind != 'b' && kind != 'o') || !argb || size < 8 || size > 512 || (size % 8) != 0) {
+        return false;
+    }
+    if (g_hd_tile_count >= HD_TABLE_CAP / 2u) {
+        return false;
+    }
+    const uint64_t key = dump_key(kind, tile_hash, 0u);
+    uint32_t i = (uint32_t)(key ^ (key >> 33)) & (HD_TABLE_CAP - 1u);
+    while (g_hd_tiles[i].key != 0 && g_hd_tiles[i].key != key) {
+        i = (i + 1u) & (HD_TABLE_CAP - 1u);
+    }
+    HdTile* t = &g_hd_tiles[i];
+    uint32_t* px = (uint32_t*)malloc((size_t)size * (size_t)size * sizeof(uint32_t));
+    if (!px) {
+        return false;
+    }
+    memcpy(px, argb, (size_t)size * (size_t)size * sizeof(uint32_t));
+    if (t->key == 0) {
+        g_hd_tile_count++;
+    } else {
+        free(t->px);
+    }
+    t->key = key;
+    t->px = px;
+    t->size = (uint16_t)size;
+    t->has_ref = ref_palette != NULL;
+    for (unsigned c = 0; c < 4u; ++c) {
+        t->ref[c] = ref_palette ? ref_palette[c] : 0u;
+    }
+    g_hd_generation++;
+    return true;
+}
+
+void ppu_native_hd_clear_tiles(void) {
+    for (uint32_t i = 0; i < HD_TABLE_CAP; ++i) {
+        free(g_hd_tiles[i].px);
+    }
+    memset(g_hd_tiles, 0, sizeof(g_hd_tiles));
+    g_hd_tile_count = 0;
+    g_hd_generation++;
+}
+
+uint32_t ppu_native_hd_tile_count(void) {
+    return g_hd_tile_count;
+}
+
+void ppu_native_hd_set_tiles_enabled(bool enabled) {
+    g_hd_tiles_enabled = enabled;
+}
+
+bool ppu_native_hd_get_tiles_enabled(void) {
+    return g_hd_tiles_enabled;
 }

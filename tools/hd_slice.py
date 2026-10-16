@@ -17,15 +17,22 @@ Fluxo:
      e mods/hd/pack.json guarda a paleta de referencia de cada tile.
 
 Regras:
-  - O mesmo tile pode aparecer varias vezes na cena. Vale a primeira vez que
-    ele aparece (de cima para baixo, da esquerda para a direita); se outra
-    ocorrencia foi pintada diferente, o script avisa (conflitos).
+  - O mesmo tile pode aparecer varias vezes na cena, mas so existe um PNG por
+    tile. Se as ocorrencias foram pintadas diferente, o script avisa
+    (conflitos) e escolhe conforme --modo:
+        primeira  a primeira ocorrencia (de cima para baixo, esq. para dir.)
+        comum     a cor mais frequente em cada subpixel
+        media     a media das cores de cada subpixel
+    --mapa-conflitos grava uma imagem com os pontos em conflito em vermelho.
   - Partes do tile que nao aparecem na tela sao mantidas do PNG HD que ja
     existir; se nao existir, recebem o desenho original ampliado.
   - Sprites: o canal alfa da pintura define a forma (alfa < 128 = vazio).
     Pode pintar dentro da caixa 8x8 de cada parte do sprite, mesmo onde o
     original era transparente.
   - Fundo: a pintura e opaca (o alfa e ignorado).
+  - Se o mesmo tile aparece com paletas diferentes na cena, as cores sao
+    convertidas para a paleta de referencia (usa scene_NNN_bg.png e
+    scene_NNN_obj.png, ao lado do .json). O jogo recolore ao desenhar.
 
 Precisa do Pillow:  pip install pillow   (ou: sudo apt install python3-pil)
 """
@@ -65,15 +72,57 @@ def original_tile(tile, n):
     return px
 
 
-def slice_layer(scene, layer, painted, n, kind_label):
-    """Devolve {tile_id: (pixels, covered, conflitos)}."""
+def _resolve(samples, mode, is_obj):
+    """Escolhe a cor final de um subpixel a partir de todas as ocorrencias."""
+    if len(samples) == 1 or mode == "primeira":
+        return samples[0]
+    if mode == "comum":
+        counts = {}
+        for c in samples:
+            counts[c] = counts.get(c, 0) + 1
+        best = max(counts.values())
+        for c in samples:            # empate: vale a primeira
+            if counts[c] == best:
+                return c
+    # media
+    opaque = [c for c in samples if c[3] >= 128]
+    if is_obj and len(opaque) * 2 < len(samples):
+        return (0, 0, 0, 0)
+    pool = opaque if opaque else samples
+    k = len(pool)
+    return (sum(c[0] for c in pool) // k, sum(c[1] for c in pool) // k,
+            sum(c[2] for c in pool) // k, 255)
+
+
+def _normalize(color, orig, ref):
+    """Leva a cor pintada para a paleta de referencia do tile.
+
+    Se este ponto da cena foi desenhado com outra paleta (o mesmo tile aparece
+    com cores diferentes), a cor pintada e escalada por ref/original, canal a
+    canal. O jogo faz a conta inversa ao desenhar com a paleta da vez."""
+    if color[3] == 0 or orig[:3] == ref[:3]:
+        return color
+    out = []
+    for c, o, r in zip(color[:3], orig[:3], ref[:3]):
+        if o:
+            v = (c * r + o // 2) // o
+        else:
+            v = r if r else c
+        out.append(max(0, min(255, v)))
+    return (out[0], out[1], out[2], color[3])
+
+
+def slice_layer(scene, layer, painted, n, mode, reference=None):
+    """Devolve ({tile_id: (pixels, covered, conflitos)}, pontos_em_conflito)."""
     w, h = scene["width"], scene["height"]
     tiles_of = scene[layer + "_tile"]
     uvf_of = scene[layer + "_uvf"]
+    tiles = scene["tiles"]
+    ref_px = reference.load() if reference is not None else None
     src = painted.load()
     size = 8 * n
-    out = {}
     is_obj = layer == "obj"
+    samples = {}      # tid -> lista de 'size*size' listas de (cor, (x, y) na pintura)
     for y in range(h):
         for x in range(w):
             i = y * w + x
@@ -83,11 +132,20 @@ def slice_layer(scene, layer, painted, n, kind_label):
             uvf = uvf_of[i]
             u, v = uvf & 7, (uvf >> 3) & 7
             fx, fy = bool(uvf & 0x40), bool(uvf & 0x80)
-            entry = out.get(tid)
-            if entry is None:
-                entry = [[None] * (size * size), [False] * (size * size), 0]
-                out[tid] = entry
-            pixels, covered = entry[0], entry[1]
+            slots = samples.get(tid)
+            if slots is None:
+                slots = [None] * (size * size)
+                samples[tid] = slots
+            orig = ref_color = None
+            if ref_px is not None:
+                tile = tiles[tid]
+                tu = 7 - u if fx else u
+                tv = 7 - v if fy else v
+                idx = int(tile["index"][tv * 8 + tu])
+                orig = ref_px[x, y]
+                ref_color = argb_to_rgba(tile["palette"][idx])
+                if is_obj and idx == 0:
+                    orig = None          # ponto transparente no original
             for sy in range(n):
                 rs = v * n + sy
                 if fy:
@@ -96,18 +154,53 @@ def slice_layer(scene, layer, painted, n, kind_label):
                     cs = u * n + sx
                     if fx:
                         cs = size - 1 - cs
-                    r, g, b, a = src[x * n + sx, y * n + sy]
+                    px, py = x * n + sx, y * n + sy
+                    r, g, b, a = src[px, py]
                     if is_obj:
                         color = (r, g, b, 255) if a >= 128 else (0, 0, 0, 0)
                     else:
                         color = (r, g, b, 255)
+                    if orig is not None:
+                        color = _normalize(color, orig, ref_color)
                     k = rs * size + cs
-                    if not covered[k]:
-                        pixels[k] = color
-                        covered[k] = True
-                    elif pixels[k] != color:
-                        entry[2] += 1
-    return out
+                    if slots[k] is None:
+                        slots[k] = []
+                    slots[k].append((color, (px, py)))
+
+    out = {}
+    hot = []
+    for tid, slots in samples.items():
+        pixels = [None] * (size * size)
+        covered = [False] * (size * size)
+        conflicts = 0
+        for k, lst in enumerate(slots):
+            if not lst:
+                continue
+            colors = [c for c, _ in lst]
+            final = _resolve(colors, mode, is_obj)
+            pixels[k] = final
+            covered[k] = True
+            for c, pos in lst:
+                if c != final:
+                    conflicts += 1
+                    hot.append(pos)
+        out[tid] = (pixels, covered, conflicts)
+    return out, hot
+
+
+def save_conflict_map(painted, hot, path):
+    """Pintura esmaecida com os pontos em conflito em vermelho."""
+    img = painted.convert("RGBA").copy()
+    px = img.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            gray = (r + g + b) // 6 + 40
+            px[x, y] = (gray, gray, gray, 255)
+    for x, y in hot:
+        px[x, y] = (255, 0, 0, 255)
+    img.save(path)
 
 
 def load_painted(path, n_expected=None):
@@ -129,6 +222,12 @@ def main():
     ap.add_argument("--out", help="pasta dos tiles HD (padrao: mods/hd ao lado de mods/scenes)")
     ap.add_argument("--substituir", action="store_true",
                     help="nao aproveita o PNG HD que ja existe (recria o tile inteiro)")
+    ap.add_argument("--modo", choices=["primeira", "comum", "media"], default="primeira",
+                    help="tile repetido pintado diferente: primeira ocorrencia (padrao), "
+                         "cor mais comum entre as ocorrencias, ou media das cores")
+    ap.add_argument("--mapa-conflitos", action="store_true",
+                    help="grava conflitos_bg.png / conflitos_obj.png mostrando em vermelho "
+                         "onde a pintura difere do que ficou no tile")
     args = ap.parse_args()
     if not args.bg and not args.obj:
         ap.error("informe --bg e/ou --obj")
@@ -160,7 +259,16 @@ def main():
     written = 0
     conflicts = []
     for layer, img in layers:
-        result = slice_layer(scene, layer, img, n, layer)
+        ref_path = scene_path.with_name(scene_path.stem + f"_{layer}.png")
+        reference = Image.open(ref_path).convert("RGBA") if ref_path.exists() else None
+        if reference is None:
+            print(f"aviso: {ref_path.name} nao encontrado; tiles que aparecem com mais de "
+                  f"uma paleta podem sair com cor errada")
+        result, hot = slice_layer(scene, layer, img, n, args.modo, reference)
+        if args.mapa_conflitos:
+            map_path = out_dir / f"conflitos_{layer}.png"
+            save_conflict_map(img, hot, map_path)
+            print(f"mapa de conflitos: {map_path}")
         for tid, (pixels, covered, nconf) in result.items():
             tile = tiles[tid]
             name = tile["name"]
@@ -188,8 +296,11 @@ def main():
     print(f"{written} tiles gravados em {out_dir} (escala {n}x, {size}x{size} px)")
     if conflicts:
         conflicts.sort(reverse=True)
+        regra = {"primeira": "vale a primeira ocorrencia",
+                 "comum": "vale a cor mais comum",
+                 "media": "vale a media"}[args.modo]
         print(f"{len(conflicts)} tiles pintados diferente em lugares diferentes "
-              f"(vale a primeira ocorrencia). Os maiores:")
+              f"({regra}). Os maiores:")
         for nconf, name in conflicts[:10]:
             print(f"  {name}: {nconf} subpixels diferentes")
 

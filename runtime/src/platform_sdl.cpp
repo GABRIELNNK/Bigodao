@@ -231,6 +231,9 @@ static GBPostFilterMode g_post_filter_mode = GB_POST_FILTER_NONE;
 static bool g_use_hd_frame = true;
 
 static int effective_internal_scale(void) {
+    if (ppu_native_hd_get_tiles_enabled() && ppu_native_hd_tile_count() > 0) {
+        return g_internal_res_scale < 1 ? 1 : g_internal_res_scale; /* passo 5b */
+    }
     if (g_post_filter_mode == GB_POST_FILTER_NONE &&
         g_render_filter_mode == GB_RENDER_FILTER_NEAREST) {
         return 1;
@@ -1189,6 +1192,10 @@ static void load_runtime_preferences(void) {
                     }
                     continue;
                 }                
+                if (strcmp(key, "display.hd_tiles") == 0) {
+                    ppu_native_hd_set_tiles_enabled(strcmp(value, "0") != 0);
+                    continue;
+                }
                 if (strcmp(key, "display.renderer") == 0) {
                     long parsed = strtol(value, NULL, 10);
                     if (parsed >= 0 && parsed < PPU_RENDERER_COUNT) {
@@ -1343,6 +1350,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
+    fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
 
     for (int action = 0; action < GB_INPUT_ACTION_COUNT; action++) {
         for (int slot = 0; slot < 2; slot++) {
@@ -2726,6 +2734,24 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
         if (effective_internal_scale() == 1 && g_internal_res_scale > 1) {
             ImGui::TextDisabled("Sem efeito com filtro Nearest e sem pos-processamento: a GPU ja amplia.");
+        }
+
+        {
+            bool hd_tiles = ppu_native_hd_get_tiles_enabled();
+            if (ImGui::Checkbox("Tiles HD (mods/hd)", &hd_tiles)) {
+                ppu_native_hd_set_tiles_enabled(hd_tiles);
+                g_renderer_reset_pending = true;
+                save_runtime_preferences();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Recarregar")) {
+                hd_pack_io_load_pack();
+                g_renderer_reset_pending = true;
+            }
+            ImGui::TextDisabled("%s", hd_pack_io_pack_status());
+            if (hd_tiles && ppu_native_hd_tile_count() > 0 && g_internal_res_scale < 2) {
+                ImGui::TextDisabled("Escolha Internal Resolution 2x ou mais para ver os tiles HD.");
+            }
         }        
 
         bool fullscreen = g_fullscreen;
@@ -3765,6 +3791,7 @@ bool gb_platform_init(int scale) {
         if (hd_base) {
             SDL_free(hd_base);
         }
+        hd_pack_io_load_pack(); /* passo 5b */
     }
 
 #if defined(__ANDROID__)
