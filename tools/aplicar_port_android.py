@@ -472,6 +472,28 @@ PLATFORM_EDITS_V6 = [
 
 
 # ---------------------------------------------------------------------------
+# v7: pasta de saves também no PC (<pasta do executável>/saves).
+# O main() passa a chamar android_bridge::prepare_storage() em todas as
+# plataformas; no PC ela só cria a pasta saves ao lado do executável.
+# ---------------------------------------------------------------------------
+MARKER_V7 = "[fix-v7]"
+
+MAIN_EDITS_V7 = [
+    (
+        "int main(int argc, char* argv[]) {\n"
+        "#ifdef __ANDROID__\n"
+        "    // Pasta de trabalho, manifesto do patch (assets do APK) e log em arquivo.\n"
+        "    android_bridge::prepare_storage();\n"
+        "#endif\n",
+        "int main(int argc, char* argv[]) {\n"
+        "    /* [fix-v7] Android: pasta de trabalho, manifesto, log e saves.\n"
+        "     *          PC: pasta saves ao lado do executável. */\n"
+        "    android_bridge::prepare_storage();\n",
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # Desfazer as tentativas de correção de áudio (v2 áudio, v3 diagnóstico, v4, v5).
 # O problema de som do Android era o driver AAudio do SDL 2.30.0, resolvido
 # no android_bridge.cpp; o código de áudio/ritmo do platform_sdl.cpp volta a
@@ -555,6 +577,7 @@ def main():
         (root / "main.cpp", [
             ("android", MARKER, MAIN_EDITS, MAIN_APPEND),
             ("ícone da janela", MARKER_V3, MAIN_EDITS_V3, ""),
+            ("pasta de saves", MARKER_V7, MAIN_EDITS_V7, ""),
         ]),
         (root / "runtime" / "src" / "platform_sdl.cpp", [
             ("android", MARKER, PLATFORM_EDITS, ""),

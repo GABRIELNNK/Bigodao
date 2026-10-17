@@ -1138,10 +1138,9 @@ static int game_main(int argc, char* argv[]) {   /* [android-port] corpo origina
 }
 /* [android-port] */
 int main(int argc, char* argv[]) {
-#ifdef __ANDROID__
-    // Pasta de trabalho, manifesto do patch (assets do APK) e log em arquivo.
+    /* [fix-v7] Android: pasta de trabalho, manifesto, log e saves.
+     *          PC: pasta saves ao lado do executável. */
     android_bridge::prepare_storage();
-#endif
     const int rc = game_main(argc, argv);
 #ifdef __ANDROID__
     // No Android a .so continua carregada depois que o SDL_main retorna; se o

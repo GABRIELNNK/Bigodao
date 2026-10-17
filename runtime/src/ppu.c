@@ -1931,7 +1931,7 @@ static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
         const uint8_t current_tile = ctx->oam[oam_offset + 2u];
         const uint8_t current_flags = ctx->oam[oam_offset + 3u];
 
-        if (current_y == 0 || current_x == 0 || current_y >= 160) {
+        if (current_y == 0 /*|| current_x == 0 */|| current_y >= 160) {
             continue;
         }
 

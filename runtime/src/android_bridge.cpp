@@ -6,6 +6,8 @@
 
 #if defined(__ANDROID__)
 
+#include "platform_sdl.h"   /* gb_platform_set_persistence_dir */
+
 #include <SDL.h>
 #include <SDL_system.h>
 #include <jni.h>
@@ -14,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -129,6 +132,66 @@ static std::string resolve_bigodao_folder() {
     return call_static_string("userFolderPath");   /* cria Bigodao/mods e Bigodao/log */
 }
 
+static bool file_exists(const std::string& path) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static bool copy_file(const std::string& from, const std::string& to) {
+    FILE* in = fopen(from.c_str(), "rb");
+    if (!in) return false;
+    const std::string tmp = to + ".tmp-copy";
+    FILE* out = fopen(tmp.c_str(), "wb");
+    if (!out) {
+        fclose(in);
+        return false;
+    }
+    char buffer[16384];
+    size_t n;
+    bool ok = true;
+    while ((n = fread(buffer, 1, sizeof(buffer), in)) > 0) {
+        if (fwrite(buffer, 1, n, out) != n) { ok = false; break; }
+    }
+    fclose(in);
+    if (fclose(out) != 0) ok = false;
+    if (ok) ok = rename(tmp.c_str(), to.c_str()) == 0;
+    if (!ok) remove(tmp.c_str());
+    return ok;
+}
+
+/* Arquivos de save do runtime: <nome>.sav, <nome>.rtc, <nome>.state1 ... .state10 */
+static bool is_save_file(const char* name) {
+    const size_t len = strlen(name);
+    auto ends_with = [&](const char* suffix) {
+        const size_t sl = strlen(suffix);
+        return len > sl && strcmp(name + len - sl, suffix) == 0;
+    };
+    return ends_with(".sav") || ends_with(".rtc") || strstr(name, ".state") != nullptr;
+}
+
+/*
+ * Versões anteriores gravavam os saves no armazenamento interno do app.
+ * Copia esses arquivos para a pasta nova (só os que ainda não existem lá).
+ * Os originais ficam onde estavam, por segurança.
+ */
+static int migrate_old_saves(const std::string& saves_dir) {
+    const char* internal = SDL_AndroidGetInternalStoragePath();
+    if (!internal) return 0;
+    DIR* dir = opendir(internal);
+    if (!dir) return 0;
+    int copied = 0;
+    while (struct dirent* entry = readdir(dir)) {
+        if (entry->d_name[0] == '.' || !is_save_file(entry->d_name)) continue;
+        if (strstr(entry->d_name, ".tmp")) continue;   /* gravação interrompida */
+        const std::string from = std::string(internal) + "/" + entry->d_name;
+        const std::string to = saves_dir + entry->d_name;
+        if (!file_exists(from) || file_exists(to)) continue;
+        if (copy_file(from, to)) copied++;
+    }
+    closedir(dir);
+    return copied;
+}
+
 static std::string app_files_dir() {
     const char* ext = SDL_AndroidGetExternalStoragePath();
     if (ext && ext[0]) return std::string(ext) + "/";
@@ -192,6 +255,22 @@ void prepare_storage() {
         printf("[Android] Sem acesso à pasta Bigodao do usuário (permissão negada); usando a pasta do app.\n");
     }
     printf("[Android] Pasta do usuário (mods e log): %s\n", udir.c_str());
+
+    /* 5. Saves e savestates em Bigodao/saves, para levar a outro aparelho ou sistema.
+     *    Sem acesso à pasta do usuário, continuam no armazenamento interno (como antes). */
+    if (!folder.empty()) {
+        const std::string saves_dir = folder + "/saves/";
+        ensure_dir(saves_dir);
+        const int migrated = migrate_old_saves(saves_dir);
+        if (gb_platform_set_persistence_dir(saves_dir.c_str())) {
+            printf("[Android] Saves: %s\n", saves_dir.c_str());
+            if (migrated > 0) {
+                printf("[Android] %d save(s) antigo(s) copiado(s) do armazenamento interno.\n", migrated);
+            }
+        } else {
+            printf("[Android] Não foi possível usar %s; saves no armazenamento interno.\n", saves_dir.c_str());
+        }
+    }
 }
 
 bool request_file_pick(PickKind kind) {
@@ -224,10 +303,99 @@ bool poll_picked_file(int& kind, std::string& path) {
 
 } // namespace android_bridge
 
-#else  /* !__ANDROID__ */
+#else  /* !__ANDROID__ : Linux / Windows */
+
+/*
+ * No PC, os saves e savestates ficam na pasta "saves" ao lado do executável,
+ * em qualquer pasta onde o jogo for extraído:
+ *   <pasta do jogo>/saves/wario_land_sm3_dx_v12.sav, .state1 ... .state10
+ * Mesma organização do Android (Bigodao/saves): para trocar de máquina ou de
+ * sistema, basta copiar o conteúdo da pasta saves.
+ */
+#include "platform_sdl.h"   /* gb_platform_set_persistence_dir */
+
+#include <SDL.h>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <system_error>
 
 namespace android_bridge {
-void prepare_storage() {}
+
+namespace fs = std::filesystem;
+
+static fs::path path_from_utf8(const std::string& s) {
+#if defined(__cpp_char8_t)
+    return fs::path(std::u8string(s.begin(), s.end()));
+#else
+    return fs::u8path(s);
+#endif
+}
+
+static std::string path_to_utf8(const fs::path& p) {
+    auto s = p.u8string();
+    return std::string(s.begin(), s.end());
+}
+
+/* <nome>.sav, <nome>.rtc, <nome>.state1 ... .state10 */
+static bool is_save_file(const std::string& name) {
+    auto ends_with = [&](const char* suffix) {
+        const size_t sl = strlen(suffix);
+        return name.size() > sl && name.compare(name.size() - sl, sl, suffix) == 0;
+    };
+    if (name.find(".tmp") != std::string::npos) return false;   /* gravação interrompida */
+    return ends_with(".sav") || ends_with(".rtc") || name.find(".state") != std::string::npos;
+}
+
+/*
+ * Versões anteriores gravavam os saves soltos ao lado do executável. Copia
+ * esses arquivos para a pasta saves (só os que ainda não existem lá); os
+ * originais ficam onde estavam, por segurança.
+ */
+static int migrate_old_saves(const fs::path& exe_dir, const fs::path& saves_dir) {
+    std::error_code ec;
+    int copied = 0;
+    for (const auto& entry : fs::directory_iterator(exe_dir, ec)) {
+        std::error_code e2;
+        if (!entry.is_regular_file(e2)) continue;
+        const fs::path name = entry.path().filename();
+        if (!is_save_file(path_to_utf8(name))) continue;
+        const fs::path dest = saves_dir / name;
+        if (fs::exists(dest, e2)) continue;
+        if (fs::copy_file(entry.path(), dest, fs::copy_options::skip_existing, e2) && !e2) copied++;
+    }
+    return copied;
+}
+
+void prepare_storage() {
+    char* base = SDL_GetBasePath();   /* pasta do executável, termina com separador */
+    if (!base) {
+        fprintf(stderr, "[Saves] Pasta do executável desconhecida; usando o padrão do runtime.\n");
+        return;
+    }
+    const fs::path exe_dir = path_from_utf8(base);
+    SDL_free(base);
+
+    const fs::path saves_dir = exe_dir / "saves";
+    std::error_code ec;
+    fs::create_directories(saves_dir, ec);
+    if (ec || !fs::is_directory(saves_dir, ec)) {
+        fprintf(stderr, "[Saves] Não foi possível criar %s; saves ao lado do executável.\n",
+                path_to_utf8(saves_dir).c_str());
+        return;
+    }
+    const int migrated = migrate_old_saves(exe_dir, saves_dir);
+    const std::string saves_utf8 = path_to_utf8(saves_dir);
+    if (!gb_platform_set_persistence_dir(saves_utf8.c_str())) {
+        fprintf(stderr, "[Saves] Não foi possível usar %s; saves ao lado do executável.\n", saves_utf8.c_str());
+        return;
+    }
+    printf("[Saves] %s\n", saves_utf8.c_str());
+    if (migrated > 0) {
+        printf("[Saves] %d save(s) antigo(s) copiado(s) para a pasta saves.\n", migrated);
+    }
+}
+
 std::string user_dir() { return std::string(); }
 bool request_file_pick(PickKind) { return false; }
 bool poll_picked_file(int&, std::string&) { return false; }
