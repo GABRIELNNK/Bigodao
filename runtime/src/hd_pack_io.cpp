@@ -176,6 +176,104 @@ static void write_byte_array(FILE* f, const char* name, const uint8_t* v, int co
     fprintf(f, "]%s\n", last ? "" : ",");
 }
 
+/* ----------------------------------------------------------------------------
+ * Passo 7d: grade de referência (só para ajudar a pintar).
+ * PNG transparente do tamanho do _4x.png, para pôr como camada por cima:
+ * uma caixa em volta de cada tile, na posição real dele (segue a rolagem),
+ * com o número do tile no .json. Amarelo = o tile aparece mais de uma vez
+ * nesta camada; azul = só uma vez. "x"/"y" = esta ocorrência está espelhada.
+ * O mesmo tile com outra paleta tem o mesmo número (o da primeira entrada
+ * com aquele nome no .json).
+ * -------------------------------------------------------------------------- */
+static const uint8_t kGradeGlyph[12][5] = {
+    {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1},
+    {7, 4, 7, 1, 7}, {7, 4, 7, 5, 7}, {7, 1, 2, 2, 2}, {7, 5, 7, 5, 7}, {7, 5, 7, 1, 7},
+    {0, 5, 2, 5, 0},   /* x */
+    {0, 5, 2, 2, 0},   /* y */
+};
+
+static void grade_fill(std::vector<uint32_t>& img, int W, int H, int x0, int y0, int x1, int y1,
+                       uint32_t c) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) img[(size_t)y * W + x] = c;
+    }
+}
+
+static void grade_text(std::vector<uint32_t>& img, int W, int H, int x, int y, const char* s) {
+    const int z = 2;
+    for (int pass = 0; pass < 2; ++pass) {          /* contorno escuro, depois branco */
+        int cx = x;
+        for (const char* p = s; *p; ++p) {
+            int g = (*p >= '0' && *p <= '9') ? (*p - '0') : (*p == 'x' ? 10 : (*p == 'y' ? 11 : -1));
+            if (g >= 0) {
+                for (int r = 0; r < 5; ++r) {
+                    for (int c = 0; c < 3; ++c) {
+                        if (!((kGradeGlyph[g][r] >> (2 - c)) & 1)) continue;
+                        const int px = cx + c * z, py = y + r * z;
+                        if (pass == 0) grade_fill(img, W, H, px - 1, py - 1, px + z + 1, py + z + 1, 0xC8000000u);
+                        else grade_fill(img, W, H, px, py, px + z, py + z, 0xFFFFFFFFu);
+                    }
+                }
+            }
+            cx += 4 * z;
+        }
+    }
+}
+
+static bool write_grade_png(const fs::path& path, int w, int h, const uint16_t* tile,
+                            const uint8_t* uvf, const PPUNativeTileDump* tiles, uint32_t tile_count) {
+    const int S = 4;
+    const int W = w * S, H = h * S;
+    std::vector<uint32_t> img((size_t)W * H, 0u);
+    /* Número de cada entrada = a primeira entrada com o mesmo nome. */
+    std::vector<int> canon(tile_count);
+    std::unordered_map<uint64_t, int> first;
+    for (uint32_t t = 0; t < tile_count; ++t) {
+        const uint64_t key = tiles[t].tile_hash ^ ((uint64_t)(unsigned char)tiles[t].kind << 56);
+        auto it = first.find(key);
+        canon[t] = (it == first.end()) ? (first[key] = (int)t) : it->second;
+    }
+    /* Uma caixa por ocorrência: canto (x - u, y - v) + tile. */
+    struct GradeBox { int bx, by, num; uint8_t flags; };
+    std::vector<GradeBox> boxes;
+    std::unordered_set<uint64_t> seen;
+    std::unordered_map<int, int> count;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const size_t i = (size_t)y * w + x;
+            if (tile[i] == PPU_NATIVE_SCENE_NO_TILE || tile[i] >= tile_count) continue;
+            const uint8_t f = uvf[i];
+            const int bx = x - (int)(f & 7u), by = y - (int)((f >> 3) & 7u);
+            const int num = canon[tile[i]];
+            const uint64_t key = ((uint64_t)(uint16_t)(bx + 64) << 32) |
+                                 ((uint64_t)(uint16_t)(by + 64) << 16) | (uint64_t)(uint16_t)num;
+            if (!seen.insert(key).second) continue;
+            boxes.push_back({bx, by, num, (uint8_t)(f & 0xC0u)});
+            count[num]++;
+        }
+    }
+    for (const GradeBox& b : boxes) {            /* contornos */
+        const uint32_t c = count[b.num] > 1 ? 0xE6FFD200u : 0xE600DCFFu;
+        const int x0 = b.bx * S, y0 = b.by * S, x1 = x0 + 8 * S, y1 = y0 + 8 * S;
+        grade_fill(img, W, H, x0, y0, x1, y0 + 1, c);
+        grade_fill(img, W, H, x0, y1 - 1, x1, y1, c);
+        grade_fill(img, W, H, x0, y0, x0 + 1, y1, c);
+        grade_fill(img, W, H, x1 - 1, y0, x1, y1, c);
+    }
+    for (const GradeBox& b : boxes) {            /* números por cima */
+        char label[16];
+        snprintf(label, sizeof(label), "%d%s%s", b.num, (b.flags & 0x40u) ? "x" : "",
+                 (b.flags & 0x80u) ? "y" : "");
+        grade_text(img, W, H, std::max(b.bx * S, 0) + 2, std::max(b.by * S, 0) + 2, label);
+    }
+    return write_rgba_png(path, img.data(), W, H, 1);
+}
+
+
 int hd_pack_io_write_scene(const PPUNativeScene* scene) {
     if (!scene) {
         return -1;
@@ -203,6 +301,11 @@ int hd_pack_io_write_scene(const PPUNativeScene* scene) {
     ok = write_rgba_png(dir / (std::string(base) + "_obj.png"), scene->obj_rgba, w, h, 1) && ok;
     ok = write_rgba_png(dir / (std::string(base) + "_bg_4x.png"), scene->bg_rgba, w, h, 4) && ok;
     ok = write_rgba_png(dir / (std::string(base) + "_obj_4x.png"), scene->obj_rgba, w, h, 4) && ok;
+    /* Passo 7d: grades de referencia */
+    ok = write_grade_png(dir / (std::string(base) + "_bg_grade_4x.png"), w, h, scene->bg_tile,
+                         scene->bg_uvf, scene->tiles, scene->tile_count) && ok;
+    ok = write_grade_png(dir / (std::string(base) + "_obj_grade_4x.png"), w, h, scene->obj_tile,
+                         scene->obj_uvf, scene->tiles, scene->tile_count) && ok;
 
     const fs::path json_path = dir / (std::string(base) + ".json");
     FILE* f = fopen(json_path.string().c_str(), "w");
@@ -1073,6 +1176,8 @@ int hd_pack_io_sprite_rec_stop(void) {
     bool ok = true;
     ok = write_rgba_png(dir / (std::string(base) + "_obj.png"), rgba.data(), sheet_w, sheet_h, 1) && ok;
     ok = write_rgba_png(dir / (std::string(base) + "_obj_4x.png"), rgba.data(), sheet_w, sheet_h, 4) && ok;
+    ok = write_grade_png(dir / (std::string(base) + "_grade_4x.png"), sheet_w, sheet_h, tile.data(),
+                         uvf.data(), g_rec_tiles.data(), (uint32_t)g_rec_tiles.size()) && ok;   /* passo 7d */
     const fs::path json_path = dir / (std::string(base) + ".json");
     FILE* f = fopen(json_path.string().c_str(), "w");
     if (!f) {

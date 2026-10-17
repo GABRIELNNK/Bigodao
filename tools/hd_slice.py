@@ -28,6 +28,10 @@ Regras:
   - (passo 7b) O que foi pintado vence o que ficou igual ao original: basta
     pintar uma ocorrencia de cada tile (ex.: so o Wario olhando para um lado).
     --todas-votam volta ao comportamento antigo.
+  - (passo 7c) Pintura vazia nao estraga nada: um tile sem nenhum ponto
+    pintado (100% transparente em todas as ocorrencias) nao e gravado, e no
+    fundo os pontos transparentes ficam como estavam. Para esconder de
+    proposito um pedaco de sprite com um tile transparente: --manter-vazios.
   - Partes do tile que nao aparecem na tela sao mantidas do PNG HD que ja
     existir; se nao existir, recebem o desenho original ampliado.
   - Sprites: o canal alfa da pintura define a forma (alfa < 128 = vazio).
@@ -121,8 +125,10 @@ def _normalize(color, orig, ref):
     return (out[0], out[1], out[2], color[3])
 
 
-def slice_layer(scene, layer, painted, n, mode, reference=None, prefer_painted=True):
-    """Devolve ({tile_id: (pixels, covered, conflitos)}, pontos_em_conflito)."""
+def slice_layer(scene, layer, painted, n, mode, reference=None, prefer_painted=True,
+                keep_empty=False):
+    """Devolve ({tile_id: (pixels, covered, conflitos)}, pontos_em_conflito,
+    tiles_sem_pintura)."""
     w, h = scene["width"], scene["height"]
     tiles_of = scene[layer + "_tile"]
     uvf_of = scene[layer + "_uvf"]
@@ -132,6 +138,30 @@ def slice_layer(scene, layer, painted, n, mode, reference=None, prefer_painted=T
     size = 8 * n
     is_obj = layer == "obj"
     samples = {}      # tid -> lista de 'size*size' listas de (cor, (x, y) na pintura)
+    # Passo 7c: uma ocorrencia (caixa 8x8 na tela) sem nenhum ponto pintado
+    # (alfa < 128 em tudo) nao conta: o tile fica como estava.
+    alpha = painted.getchannel("A").load()
+    box_paint = {}
+    seen_tiles = set()
+    for y in range(h):
+        for x in range(w):
+            tid = tiles_of[y * w + x]
+            if tid < 0:
+                continue
+            seen_tiles.add(tid)
+            uvf = uvf_of[y * w + x]
+            key = (x - (uvf & 7), y - ((uvf >> 3) & 7), tid)
+            if box_paint.get(key):
+                continue
+            hit = False
+            for sy in range(n):
+                for sx in range(n):
+                    if alpha[x * n + sx, y * n + sy] >= 128:
+                        hit = True
+                        break
+                if hit:
+                    break
+            box_paint[key] = hit
     for y in range(h):
         for x in range(w):
             i = y * w + x
@@ -141,6 +171,8 @@ def slice_layer(scene, layer, painted, n, mode, reference=None, prefer_painted=T
             uvf = uvf_of[i]
             u, v = uvf & 7, (uvf >> 3) & 7
             fx, fy = bool(uvf & 0x40), bool(uvf & 0x80)
+            if not keep_empty and not box_paint.get((x - u, y - v, tid)):
+                continue          # passo 7c: caixa vazia na pintura
             slots = samples.get(tid)
             if slots is None:
                 slots = [None] * (size * size)
@@ -165,6 +197,8 @@ def slice_layer(scene, layer, painted, n, mode, reference=None, prefer_painted=T
                         cs = size - 1 - cs
                     px, py = x * n + sx, y * n + sy
                     r, g, b, a = src[px, py]
+                    if not is_obj and a < 128:
+                        continue      # passo 7c: fundo transparente = fica como estava
                     if is_obj:
                         color = (r, g, b, 255) if a >= 128 else (0, 0, 0, 0)
                     else:
@@ -204,8 +238,10 @@ def slice_layer(scene, layer, painted, n, mode, reference=None, prefer_painted=T
                 if c != final:
                     conflicts += 1
                     hot.append(pos)
-        out[tid] = (pixels, covered, conflicts)
-    return out, hot
+        if any(covered):
+            out[tid] = (pixels, covered, conflicts)
+    skipped = sorted(seen_tiles - set(out))
+    return out, hot, skipped
 
 
 def save_conflict_map(painted, hot, path):
@@ -253,6 +289,10 @@ def main():
     ap.add_argument("--todas-votam", action="store_true",
                     help="(passo 7b) ocorrencias deixadas como o original tambem contam; "
                          "por padrao, o que foi pintado vence o que ficou igual ao original")
+    ap.add_argument("--manter-vazios", action="store_true",
+                    help="(passo 7c) sprite totalmente transparente na pintura vira tile "
+                         "HD transparente (esconde o pedaco no jogo); por padrao, tile sem "
+                         "nenhuma pintura nao e gravado e fica como estava")
     args = ap.parse_args()
     if not args.bg and not args.obj:
         ap.error("informe --bg e/ou --obj")
@@ -284,14 +324,18 @@ def main():
 
     written = 0
     conflicts = []
+    empty_total = []   # passo 7c: (camada, tiles sem pintura)
     for layer, img in layers:
         ref_path = scene_path.with_name(scene_path.stem + f"_{layer}.png")
         reference = Image.open(ref_path).convert("RGBA") if ref_path.exists() else None
         if reference is None:
             print(f"aviso: {ref_path.name} nao encontrado; tiles que aparecem com mais de "
                   f"uma paleta podem sair com cor errada")
-        result, hot = slice_layer(scene, layer, img, n, args.modo, reference,
-                                  prefer_painted=not args.todas_votam)
+        result, hot, skipped = slice_layer(scene, layer, img, n, args.modo, reference,
+                                           prefer_painted=not args.todas_votam,
+                                           keep_empty=args.manter_vazios)
+        if skipped:
+            empty_total.append((layer, len(skipped)))
         if args.mapa_conflitos:
             map_path = out_dir / f"conflitos_{layer}.png"
             save_conflict_map(img, hot, map_path)
@@ -321,6 +365,9 @@ def main():
 
     pack_path.write_text(json.dumps(pack, indent=1, sort_keys=True), encoding="utf-8")
     print(f"{written} tiles gravados em {out_dir} (escala {n}x, {size}x{size} px)")
+    for layer, count in empty_total:
+        nome = "fundo" if layer == "bg" else "sprites"
+        print(f"{count} tiles de {nome} sem pintura: nao gravados (ficam como estavam)")
     if conflicts:
         conflicts.sort(reverse=True)
         regra = {"primeira": "vale a primeira ocorrencia",

@@ -65,8 +65,17 @@ A captura vai para `mods/scenes`. Com o **widescreen ligado**, a cena sai com 25
 | `scene_001_obj_4x.png` | **Sprites** (Wario, inimigos, itens), ampliados 4x, com fundo transparente. É sobre ele que você pinta. |
 | `scene_001_bg.png` / `scene_001_obj.png` | As mesmas imagens em 1x. Servem de referência, e o fatiador também usa. Não edite. |
 | `scene_001.json` | Diz de qual tile veio cada pixel. Não edite. |
+| `scene_001_bg_grade_4x.png` / `scene_001_obj_grade_4x.png` | **Grade de referência** (veja abaixo). Só para ajudar a pintar; não edite nem entregue ao fatiador. |
 
 O número aumenta a cada captura: 001, 002…
+
+**Grade de referência.** Ponha o `_grade_4x.png` como uma camada por cima do desenho (com a camada travada ou só visível). Ele tem:
+- uma caixa em volta de cada tile, na posição real dele (acompanha a rolagem do cenário);
+- o **número do tile** no `.json`, o mesmo em todo lugar onde o tile se repete;
+- caixa **amarela** = o tile aparece mais de uma vez nesta camada (pintou um, pintou todos); caixa **azul** = aparece só uma vez;
+- **`x`** ou **`y`** depois do número = aquela ocorrência está espelhada na horizontal ou na vertical (é o mesmo desenho, virado).
+
+O mesmo tile com outra paleta tem o mesmo número. No fundo e nos sprites a contagem é separada, mas o número é o mesmo da lista `tiles` do `.json`.
 
 > Dica: o fundo e os sprites saem separados. Por isso, os sprites não atrapalham a pintura do fundo, e o fundo não atrapalha a dos sprites.
 
@@ -97,6 +106,8 @@ Abra o `_bg_4x.png` e/ou o `_obj_4x.png` e pinte **por cima**, sem mudar o taman
 - Quando o jogo muda a paleta (escurecer, piscar, transição de fase), o tile HD é recolorido na mesma proporção. Isso usa a paleta de referência que o fatiador grava no `pack.json`.
 - Evite capturar no meio de um fade: a cena escura vira a referência.
 
+**Pode pintar numa camada separada.** O que ficar 100% transparente na pintura não conta: um tile sem nenhum ponto pintado não é gravado (fica como estava) e, no fundo, os pontos transparentes também ficam como estavam. Então dá para exportar só a camada da sua pintura, sem o original por baixo. (Para esconder de propósito um pedaço de sprite com um tile transparente, use `--manter-vazios`.)
+
 Salve como **PNG**, com transparência no caso dos sprites. O nome pode ser qualquer um, por exemplo `pintado_bg.png` e `pintado_obj.png`.
 
 ### 2.3 Fatiar
@@ -122,6 +133,7 @@ python3 tools/hd_slice.py <pasta do jogo>/mods/scenes/scene_001.json \
 | `--modo primeira` | (padrão) Tile repetido pintado diferente em mais de um lugar: vale a primeira ocorrência, de cima para baixo e da esquerda para a direita. |
 | `--modo comum` | Vale a cor mais frequente em cada ponto. |
 | `--modo media` | Vale a média das cores. |
+| `--manter-vazios` | Sprite 100% transparente na pintura vira tile transparente (esconde o pedaço no jogo). Por padrão, tile sem pintura não é gravado. |
 | `--todas-votam` | Ocorrências deixadas iguais ao original também contam. Por padrão, o que foi pintado vence. |
 | `--mapa-conflitos` | Grava `conflitos_bg.png` / `conflitos_obj.png`, com a pintura apagada e, em vermelho, os pontos onde ela diferiu do que ficou no tile. |
 
@@ -142,6 +154,7 @@ Sai em `mods/scenes`:
 | `sprites_001_obj_4x.png` | A folha com todas as poses, ampliada 4x. É sobre ela que você pinta. |
 | `sprites_001_obj.png` | A mesma folha em 1x (referência do fatiador). Não edite. |
 | `sprites_001.json` | De qual tile veio cada pixel, e a paleta de cada tile. Não edite. |
+| `sprites_001_grade_4x.png` | Grade de referência das poses (caixas e números dos tiles). |
 
 - Cada pose aparece uma vez só, na ordem em que surgiu no jogo. A mesma pose espelhada (virado para o outro lado) conta como a mesma.
 - Os pedaços de sprite que se encostam viram uma pose. Se dois personagens se encostaram dentro do retângulo, eles saem juntos numa pose a mais. Não tem problema: pinte ou ignore.
@@ -176,6 +189,7 @@ python3 tools/hd_empacotar.py <pasta do jogo>/mods/hd <pasta do jogo>/mods/meu_m
 ```
 
 - Entram os `b_*.png` / `o_*.png` e o `pack.json`. Os mapas de conflito e o resto ficam de fora.
+- Um `o_*.png` 100% transparente fica de fora, com aviso (`--manter-vazios` para incluir).
 - Depois de empacotar, **apague ou renomeie a pasta `mods/hd`**, por exemplo para `hd_trabalho`. Se ela ficar, continua aparecendo no fim da lista e sobrepondo o `.o2r`.
 
 **Sem o script:** o `.o2r` é um ZIP comum com outra extensão. Compacte os PNGs e o `pack.json` no 7-Zip, WinRAR, Ark ou `zip` e troque a extensão de `.zip` para `.o2r`. Os arquivos podem ficar em subpastas dentro do ZIP. Não use senha, e não passe de 4 GB (ZIP64 não é suportado).

@@ -25,10 +25,24 @@ from pathlib import Path
 TILE = re.compile(r"^[bo]_[0-9a-fA-F]{16}\.png$")
 
 
+def tile_vazio(path):
+    """Passo 7c: PNG sem nenhum ponto visivel (alfa 0 em tudo)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return False   # sem Pillow nao confere
+    with Image.open(path) as img:
+        if "A" not in img.convert("RGBA").getbands():
+            return False
+        return img.convert("RGBA").getchannel("A").getextrema()[1] == 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Empacota tiles HD num mod .o2r")
     ap.add_argument("pasta", help="pasta com os tiles (ex.: mods/hd)")
     ap.add_argument("saida", help="arquivo .o2r (ex.: mods/meu_mod.o2r)")
+    ap.add_argument("--manter-vazios", action="store_true",
+                    help="inclui o_*.png 100%% transparentes (escondem o pedaco do sprite)")
     args = ap.parse_args()
 
     src = Path(args.pasta)
@@ -38,15 +52,21 @@ def main():
     if out.suffix.lower() != ".o2r":
         sys.exit("a saida precisa terminar em .o2r")
 
-    tiles, packs = [], []
+    tiles, packs, vazios = [], [], []
     for p in sorted(src.rglob("*")):
         if not p.is_file():
             continue
         if TILE.match(p.name):
+            if p.name.lower().startswith("o_") and not args.manter_vazios and tile_vazio(p):
+                vazios.append(p)   # passo 7c
+                continue
             tiles.append(p)
         elif p.name.lower() == "pack.json":
             packs.append(p)
     if not tiles:
+        if vazios:
+            sys.exit(f"todos os {len(vazios)} tiles de {src} sao sprites 100% transparentes "
+                     f"(use --manter-vazios se for de proposito)")
         sys.exit(f"nenhum b_<tile>.png / o_<tile>.png em {src}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +78,11 @@ def main():
             z.write(p, p.relative_to(src).as_posix(), compress_type=zipfile.ZIP_STORED)
     tmp.replace(out)
     print(f"{out}: {len(tiles)} tiles, {len(packs)} pack.json")
+    if vazios:
+        print(f"{len(vazios)} sprite(s) 100% transparente(s) ficaram de fora "
+              f"(use --manter-vazios para incluir):")
+        for p in vazios[:10]:
+            print(f"  {p.relative_to(src).as_posix()}")
 
 
 if __name__ == "__main__":
