@@ -19,6 +19,8 @@
 #include "ppu.h"
 #include "wl_sm3_patch.hpp"
 #include "gbrt.h"
+#include "android_bridge.h"   /* [android-port] */
+#include "app_icon.h"         /* [fix-v3] */
 
 #include <SDL2/SDL.h>
 #ifdef _WIN32
@@ -284,6 +286,17 @@ static fs::path open_file_dialog(SDL_Window* owner, const DialogSpec& spec) {
 }
 
 namespace launcher {
+
+/* [android-port] textos que mudam por plataforma */
+#ifdef __ANDROID__
+#define LAUNCHER_HINT_EMPTY "Tap the button to choose the file."
+#define LAUNCHER_HINT_READY "Tap LOAD & PLAY."
+#define LAUNCHER_HINT_TIP   "The files are copied into the app's own storage."
+#else
+#define LAUNCHER_HINT_EMPTY "Or drag the file into this window."
+#define LAUNCHER_HINT_READY "Click LOAD & PLAY or press Enter."
+#define LAUNCHER_HINT_TIP   "Tip: drag the ROM and the patch straight into this window."
+#endif
 
 // ---- Paleta (mesmas cores do launcher em HTML) ------------------------------
 constexpr ImU32 COL_BG          = IM_COL32( 13,  15,  23, 255);
@@ -630,6 +643,7 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
         return false;
     }
 
+    app_icon_apply(window);   /* [fix-v3] ícone da janela do launcher */
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
     if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);   // fallback: renderer por software
     if (!renderer) {
@@ -658,7 +672,7 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
         "Original ROM  \xE2\x80\xA2  Super Mario Land 3  \xE2\x80\xA2  .gb",
         EXPECTED_ROM_SHA256.c_str(),
         "Browse ROM",
-        "Or drag the file into this window.",
+        LAUNCHER_HINT_EMPTY,
         "SHA-256 mismatch. Please select the original ROM.",
     };
     const CardSpec patch_card = {
@@ -667,7 +681,7 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
         "IPS patch  \xE2\x80\xA2  author: korxo  \xE2\x80\xA2  version 1.2",
         EXPECTED_PATCH_SHA256.c_str(),
         "Browse Patch",
-        "Or drag the file into this window.",
+        LAUNCHER_HINT_EMPTY,
         "SHA-256 mismatch. This is not the DX v1.2 patch.",
     };
     const DialogSpec rom_dialog = {
@@ -686,6 +700,10 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
     };
 
     FileSlot rom, patch;
+#ifdef __ANDROID__   /* [android-port] */
+    int logical_w = 0, logical_h = 0;
+    (void)rom_dialog; (void)patch_dialog;
+#endif
     std::string modal_msg;
     bool ready_to_launch = false;
     bool done = false;
@@ -740,8 +758,42 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
         }
         if (done) break;
 
+#ifdef __ANDROID__   /* [android-port] */
+        {
+            // Resposta do seletor de arquivos: decide ROM/patch pelo hash, como no drag-and-drop.
+            int picked_kind = 0;
+            std::string picked;
+            if (android_bridge::poll_picked_file(picked_kind, picked) && !picked.empty() && modal_msg.empty())
+                handle_drop(path_from_utf8(picked));
+
+            // O layout foi feito para 960x760. Renderiza nessa escala lógica (altura fixa,
+            // largura acompanha a proporção da tela) e o SDL amplia; toques são convertidos.
+            int out_w = 0, out_h = 0;
+            SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
+            if (out_w > 0 && out_h > 0) {
+                int lw = (int)((float)WINDOW_H * (float)out_w / (float)out_h);
+                int lh = WINDOW_H;
+                if (lw < WINDOW_W) {   // tela em retrato: cresce na altura
+                    lw = WINDOW_W;
+                    lh = (int)((float)WINDOW_W * (float)out_h / (float)out_w);
+                }
+                if (lw != logical_w || lh != logical_h) {
+                    logical_w = lw;
+                    logical_h = lh;
+                    SDL_RenderSetLogicalSize(renderer, logical_w, logical_h);
+                }
+            }
+        }
+#endif
+
         ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
+#ifdef __ANDROID__   /* [android-port] */
+        if (logical_w > 0) {
+            io.DisplaySize = ImVec2((float)logical_w, (float)logical_h);
+            io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+        }
+#endif
         ImGui::NewFrame();
 
         const float t = now();
@@ -779,12 +831,20 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
         const float card_w = (W - MARGIN * 2.0f - GAP) * 0.5f;
         const ImVec2 card_size(card_w, CARD_H);
         if (draw_card(dl, ImVec2(MARGIN, CARDS_Y + slide), card_size, rom_card, rom, fonts, interactive, t)) {
+#ifdef __ANDROID__   /* [android-port] */
+            android_bridge::request_file_pick(android_bridge::PICK_ROM);
+#else
             const fs::path p = open_file_dialog(window, rom_dialog);
             if (!p.empty()) rom.set(p, EXPECTED_ROM_SHA256, now());
+#endif
         }
         if (draw_card(dl, ImVec2(MARGIN + card_w + GAP, CARDS_Y + slide), card_size, patch_card, patch, fonts, interactive, t)) {
+#ifdef __ANDROID__   /* [android-port] */
+            android_bridge::request_file_pick(android_bridge::PICK_PATCH);
+#else
             const fs::path p = open_file_dialog(window, patch_dialog);
             if (!p.empty()) patch.set(p, EXPECTED_PATCH_SHA256, now());
+#endif
         }
 
         // ---- Rodapé ----------------------------------------------------------
@@ -808,8 +868,8 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
         dl->AddCircleFilled(dot, 4.0f, status_col, 16);
         dl->AddText(fonts.body, FS_BODY, ImVec2(MARGIN + 18.0f, sy), status_col, status);
         dl->AddText(fonts.small, FS_SMALL, ImVec2(MARGIN + 18.0f, sy + 20.0f), COL_DIM,
-                    can_play ? "Click LOAD & PLAY or press Enter."
-                             : "Tip: drag the ROM and the patch straight into this window.");
+                    can_play ? LAUNCHER_HINT_READY
+                             : LAUNCHER_HINT_TIP);
 
         // Botão LOAD & PLAY
         {
@@ -884,7 +944,9 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
 
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+#ifndef __ANDROID__   /* [android-port] no Android o SDL segue vivo até o fim do app */
     SDL_Quit();
+#endif
 
     return ready_to_launch;
 }
@@ -905,7 +967,7 @@ static fs::path resolve_o2r_path() {
     return beside_exe;   // onde será criado
 }
 
-int main(int argc, char* argv[]) {
+static int game_main(int argc, char* argv[]) {   /* [android-port] corpo original do main() */
     // ---------------------------------------------------------------------
     // 1. Fast path: assets already extracted (wario.o2r)
     //    The package holds the patched ROM, so no ROM, IPS or manifest is needed.
@@ -1073,4 +1135,21 @@ int main(int argc, char* argv[]) {
 #endif
     gb_context_destroy(ctx);
     return 0;
+}
+/* [android-port] */
+int main(int argc, char* argv[]) {
+#ifdef __ANDROID__
+    // Pasta de trabalho, manifesto do patch (assets do APK) e log em arquivo.
+    android_bridge::prepare_storage();
+#endif
+    const int rc = game_main(argc, argv);
+#ifdef __ANDROID__
+    // No Android a .so continua carregada depois que o SDL_main retorna; se o
+    // usuário reabrir o app no mesmo processo, todos os "static" estariam sujos.
+    // Encerrar o processo garante um início limpo.
+    fflush(stdout);
+    fflush(stderr);
+    std::exit(rc);
+#endif
+    return rc;
 }

@@ -29,8 +29,10 @@ ground_truth.trace
 # ==============================================================================
 
 # Pastas de build locais geradas pelo CMake e Ninja
+# Só PASTAS que começam com "build" (build/, build-win/...).
+# Atenção: "build*" sem a barra também escondia os arquivos build.gradle do Android.
 build/
-build*
+build*/
 .cmake/
 CMakeCache.txt
 CMakeFiles/
@@ -66,3 +68,44 @@ Thumbs.db
 .idea/
 *.suo
 *.user
+
+# Backups criados pelo tools/aplicar_port_android.py
+*.orig
+
+# Cache do Python
+__pycache__/
+*.pyc
+
+# ==============================================================================
+# 🤖 Android (pasta android/)
+# ==============================================================================
+
+# Gerado pelo Gradle / Android Studio
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/.idea/
+*.iml
+captures/
+
+# Caminho do Android SDK na SUA máquina (cada um tem o seu)
+local.properties
+
+# APKs e bundles gerados
+*.apk
+*.aab
+*.apks
+
+# Chaves de assinatura: NUNCA suba isso para o GitHub
+*.jks
+*.keystore
+keystore.properties
+
+# Classes Java do SDL: copiadas do código-fonte do SDL pelo android/setup_android.sh
+android/app/src/main/java/org/libsdl/
+
+# O que FICA no Git (não ignorar):
+#   android/build.gradle, android/settings.gradle, android/gradle.properties
+#   android/app/build.gradle, android/app/src/main/ (manifest, ícones, MainActivity.java)
+#   android/gradlew, android/gradlew.bat, android/gradle/wrapper/  (Gradle wrapper)

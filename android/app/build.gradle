@@ -1,0 +1,94 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Raiz do projeto C/C++ (pasta projeto/, um nível acima de android/)
+def wlRoot = file("${rootDir}/..")
+
+android {
+    namespace 'com.bigodao.warioland'
+    compileSdk 34
+    // Descomente para fixar a versão do NDK (r25+ funciona):
+    // ndkVersion '26.3.11579264'
+
+    defaultConfig {
+        applicationId 'com.bigodao.warioland'
+        minSdk 21
+        targetSdk 34
+        versionCode 2
+        versionName '1.1'
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared',
+                          '-DANDROID_PLATFORM=android-21',
+                          "-DWL_SDL_SOURCE_DIR=${wlRoot}/compiler_src/SDL2-source"
+                cppFlags '-fexceptions', '-frtti'
+            }
+        }
+        ndk {
+            // Celulares atuais são todos arm64. Para emulador x86_64 ou aparelhos
+            // 32 bits antigos, acrescente 'x86_64' / 'armeabi-v7a' (o build fica
+            // bem mais lento: o código gerado do jogo é compilado uma vez por ABI).
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file("${wlRoot}/CMakeLists.txt")
+            version '3.22.1'
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Código recompilado em -O0 roda lento demais no celular; usa -O2 também no debug.
+            externalNativeBuild {
+                cmake {
+                    arguments '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
+                }
+            }
+        }
+        release {
+            minifyEnabled false
+            // Assinado com a chave de debug para instalar direto (troque ao publicar).
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs += ["${buildDir}/generated/wl_assets"]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+    }
+
+    // APK com o nome do jogo e a versão (ex.: Bigodao-1.0-release.apk)
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "Bigodao-${variant.versionName}-${variant.buildType.name}.apk"
+        }
+    }
+}
+
+// Coloca o manifesto do patch dentro do APK (assets/tools/...). O código nativo
+// o extrai na primeira execução, porque o launcher precisa dele como arquivo.
+tasks.register('copyWlAssets', Copy) {
+    from("${wlRoot}/tools") {
+        include 'wl_sm3_dx_v12_patch.json'
+    }
+    into("${buildDir}/generated/wl_assets/tools")
+}
+preBuild.dependsOn copyWlAssets
+
+dependencies {
+}

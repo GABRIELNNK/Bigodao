@@ -14,6 +14,9 @@
 #include "music_replace.h" /* passo 6c */
 #include "gbrt_debug.h"
 #include "post_processing.h"
+#include "touch_controls.h"   /* [android-port] */
+#include "android_bridge.h"
+#include "app_icon.h"   /* [fix-v3] */
 
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
@@ -236,7 +239,7 @@ static bool g_last_guest_framebuffer_valid = false;
 static bool g_last_guest_widescreen_framebuffer_valid = false;
 static uint64_t g_present_count = 0;
 static GBContext* g_registered_ctx = NULL;
-static bool g_widescreen_mode = false;
+static bool g_widescreen_mode = true;   /* [fix-v2] widescreen ligado por padrão */
 static bool g_widescreen_fade_enabled = true;
 static int g_widescreen_fade_percent = 65; /* mirrors GBPPU's default of 0.65f */
 static bool g_widescreen_auto_active = false; /* current effective state, gated by sGameMode */
@@ -1219,6 +1222,7 @@ static std::string runtime_preferences_path(void) {
 static void load_runtime_preferences(void) {
     set_default_audio_preferences();
     set_default_input_bindings();
+    touch_controls::set_enabled(touch_controls::enabled_by_default());   /* [android-port] */
     hd_pack_io_clear_disabled_names();
     g_savestate_slot = 0;
     g_savestate_status.clear();
@@ -1293,7 +1297,7 @@ static void load_runtime_preferences(void) {
                     g_fullscreen = (strcmp(value, "0") != 0);
                     continue;
                 }
-                if (strcmp(key, "display.widescreen") == 0) {
+                if (strcmp(key, "display.widescreen_v2") == 0) {   /* [fix-v2] */
                     g_widescreen_mode = (strcmp(value, "0") != 0);
                     continue;
                 }
@@ -1348,6 +1352,10 @@ static void load_runtime_preferences(void) {
                 if (strcmp(key, "music.log") == 0) {
                     g_music_log = (strcmp(value, "0") != 0);
                     music_replace_set_log(g_music_log);
+                    continue;
+                }
+                if (strcmp(key, "input.touch_controls") == 0) {   /* [android-port] */
+                    touch_controls::set_enabled(strcmp(value, "0") != 0);
                     continue;
                 }
                 if (strcmp(key, "display.hd_tiles") == 0) {
@@ -1503,7 +1511,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "audio.device_name=%s\n", g_audio_target_device_name.c_str());
     fprintf(file, "savestate.slot=%d\n", g_savestate_slot);
     fprintf(file, "display.fullscreen=%d\n", g_fullscreen ? 1 : 0);
-    fprintf(file, "display.widescreen=%d\n", g_widescreen_mode ? 1 : 0);
+    fprintf(file, "display.widescreen_v2=%d\n", g_widescreen_mode ? 1 : 0);   /* [fix-v2] */
     fprintf(file, "display.widescreen_fade_enabled=%d\n", g_widescreen_fade_enabled ? 1 : 0);
     fprintf(file, "display.widescreen_fade_percent=%d\n", g_widescreen_fade_percent);
     fprintf(file, "display.internal_scale=%d\n", g_internal_res_scale);
@@ -1511,6 +1519,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
+    fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
     for (int i = 0; i < hd_pack_io_disabled_count(); ++i) {
         fprintf(file, "mods.disabled=%s\n", hd_pack_io_disabled_name(i));
     }
@@ -1597,6 +1606,10 @@ static bool parse_buttons(const char* btn_str, uint8_t* dpad, uint8_t* buttons) 
 }
 
 static bool input_action_is_pressed(GBInputAction action) {
+    /* [android-port] gamepad na tela */
+    if (!g_show_menu && (int)action < GB_JOYPAD_ACTION_COUNT && touch_controls::pressed((int)action)) {
+        return true;
+    }
     for (int slot = 0; slot < 2; slot++) {
         if (g_keyboard_binding_pressed[action][slot] ||
             g_controller_button_binding_pressed[action][slot] ||
@@ -3516,6 +3529,14 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 cancel_binding_capture();
             }
         }
+        {   /* [android-port] */
+            bool touch_on = touch_controls::enabled();
+            if (ImGui::Checkbox("Touch Controls (on-screen gamepad)", &touch_on)) {
+                touch_controls::set_enabled(touch_on);
+                update_effective_joypad_state();
+                save_runtime_preferences();
+            }
+        }
         if (ImGui::Button("Reset Controls")) {
             reset_runtime_control_defaults();
         }
@@ -3692,6 +3713,13 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
             ImGui::End();
         }
+    }
+
+    if (!g_show_menu) {   /* [android-port] gamepad na tela */
+        touch_controls::draw(ImGui::GetForegroundDrawList(),
+                             imgui_io.DisplaySize.x,
+                             imgui_io.DisplaySize.y,
+                             g_controller != NULL);
     }
 
     if (g_port_frame_valid &&
@@ -4407,8 +4435,13 @@ bool gb_platform_init(int scale) {
     load_runtime_preferences();
     fprintf(stderr, "[SDL] SDL initialized.\n");
     {
+#if defined(__ANDROID__)   /* [android-port] Android/data/<pacote>/files/ */
+        char* hd_base = NULL;
+        hd_pack_io_set_base_dir(android_bridge::user_dir().c_str());
+#else
         char* hd_base = SDL_GetBasePath();
         hd_pack_io_set_base_dir(hd_base ? hd_base : "");
+#endif
         if (hd_base) {
             SDL_free(hd_base);
         }
@@ -4443,6 +4476,7 @@ bool gb_platform_init(int scale) {
         return false;
     }
     fprintf(stderr, "[SDL] Window created.\n");
+    app_icon_apply(g_window);   /* [fix-v3] ícone da janela do jogo */
     SDL_SetWindowMinimumSize(g_window, GB_SCREEN_WIDTH, GB_SCREEN_HEIGHT);
     
     fprintf(stderr, "[SDL] Creating renderer...\n");
@@ -4566,6 +4600,8 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
 
     switch (event->type) {
         case SDL_APP_WILLENTERBACKGROUND:
+            touch_controls::reset();   /* [android-port] */
+            update_effective_joypad_state();
             set_app_suspended(true);
             break;
 
@@ -4612,6 +4648,33 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
                 }
             }
             break;
+
+        case SDL_FINGERDOWN:      /* [android-port] gamepad na tela */
+        case SDL_FINGERMOTION:
+        case SDL_FINGERUP: {
+            uint8_t previous_dpad = g_joypad_dpad;
+            uint8_t previous_buttons = g_joypad_buttons;
+            if (!touch_controls::handle_event(*event, g_window, g_show_menu)) {
+                break;
+            }
+            if (touch_controls::take_menu_request()) {
+                g_show_menu = !g_show_menu;
+                touch_controls::reset();
+            }
+            update_effective_joypad_state();
+            const bool port_captured = dispatch_captured_port_input(
+                ctx, previous_dpad, previous_buttons);
+            if (ctx && !port_captured &&
+                input_transition_creates_press(previous_dpad,
+                                              previous_buttons,
+                                              g_joypad_dpad,
+                                              g_joypad_buttons,
+                                              dpad_selected,
+                                              buttons_selected)) {
+                request_joypad_interrupt(ctx);
+            }
+            break;
+        }
 
         case SDL_CONTROLLERAXISMOTION: {
             uint8_t previous_dpad = g_joypad_dpad;

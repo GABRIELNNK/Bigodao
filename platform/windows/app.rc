@@ -1,0 +1,10 @@
+// Recursos do executável Windows.
+// O manifesto liga o code page UTF-8 no processo (Windows 10 1903+), para que
+// caminhos com acento (ex.: C:\Users\João\Downloads\rom.gb) funcionem nas APIs
+// "narrow" (fopen, std::ifstream(std::string), MoveFileExA, fs::path::string()).
+#include <winuser.h>
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
+
+// Ícone do .exe (16 a 256 px). O primeiro ícone do arquivo é o que o Explorer usa.
+1 ICON "app.ico"
