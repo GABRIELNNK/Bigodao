@@ -119,12 +119,45 @@ python3 tools/hd_slice.py <pasta do jogo>/mods/scenes/scene_001.json \
 |---|---|
 | `--out PASTA` | Grava os tiles em outra pasta, em vez de `mods/hd`. |
 | `--substituir` | Ignora o PNG que já existe e refaz o tile inteiro com esta cena. |
-| `--modo primeira` | (padrão) Tile repetido pintado diferente: vale a primeira ocorrência, de cima para baixo e da esquerda para a direita. |
+| `--modo primeira` | (padrão) Tile repetido pintado diferente em mais de um lugar: vale a primeira ocorrência, de cima para baixo e da esquerda para a direita. |
 | `--modo comum` | Vale a cor mais frequente em cada ponto. |
 | `--modo media` | Vale a média das cores. |
+| `--todas-votam` | Ocorrências deixadas iguais ao original também contam. Por padrão, o que foi pintado vence. |
 | `--mapa-conflitos` | Grava `conflitos_bg.png` / `conflitos_obj.png`, com a pintura apagada e, em vermelho, os pontos onde ela diferiu do que ficou no tile. |
 
 No fim, o script diz quantos tiles gravou e lista os tiles com conflito, por exemplo `b_6d5d26b984233cbc: 4400 subpixels diferentes`. Um conflito não é erro. Ele avisa que um tile repetido foi pintado de jeitos diferentes.
+
+### 2.3b Sprites animados: gravar poses
+
+O Wario e os inimigos mudam de desenho o tempo todo, até parados. Cada quadro de animação usa tiles diferentes, e capturar todos com o F9 dá muito trabalho. Para isso existe o gravador de poses, que monta um spritesheet sozinho:
+
+1. Em **Menu > Desenvolvedor > Gravar poses de sprites**, ajuste o **retângulo vermelho** em volta de onde o personagem vai ficar. Só entram as poses com o centro dentro dele, o que evita misturar inimigos que encostam no Wario. Com **"So dentro do retangulo"** desmarcado, entram todos os sprites da tela.
+2. Clique em **Comecar a gravar**, feche o menu e jogue: ande, corra, pule, apanhe, deixe os inimigos se mexerem. No canto da tela aparece `REC poses: N`.
+3. Volte ao menu e clique em **Parar e salvar**.
+
+Sai em `mods/scenes`:
+
+| Arquivo | Para que serve |
+|---|---|
+| `sprites_001_obj_4x.png` | A folha com todas as poses, ampliada 4x. É sobre ela que você pinta. |
+| `sprites_001_obj.png` | A mesma folha em 1x (referência do fatiador). Não edite. |
+| `sprites_001.json` | De qual tile veio cada pixel, e a paleta de cada tile. Não edite. |
+
+- Cada pose aparece uma vez só, na ordem em que surgiu no jogo. A mesma pose espelhada (virado para o outro lado) conta como a mesma.
+- Os pedaços de sprite que se encostam viram uma pose. Se dois personagens se encostaram dentro do retângulo, eles saem juntos numa pose a mais. Não tem problema: pinte ou ignore.
+- O F9 fica desligado enquanto grava.
+
+Pinte por cima do `_obj_4x.png` com as mesmas regras dos sprites (seção 2.2) e fatie só com `--obj`:
+
+```
+python3 tools/hd_slice.py <pasta do jogo>/mods/scenes/sprites_001.json --obj pintado_sprites.png
+```
+
+**Você não precisa pintar todas as poses.** O jogo espelha os sprites pelo hardware: o Wario olhando para a esquerda e para a direita usa os mesmos tiles. Poses diferentes também repetem pedaços (a mesma cabeça com pernas diferentes). O fatiador junta tudo: **o que foi pintado vence o que ficou igual ao original**. Então basta pintar cada pedaço uma vez, por exemplo só as poses olhando para um lado, e deixar as outras como estão.
+
+Atenção aos pedaços que só existem num dos lados. O Wario olhando para a direita, por exemplo, tem um pedaço a mais. Esses também precisam ser pintados, na pose em que aparecem.
+
+Se pintar o mesmo pedaço de jeitos diferentes em duas poses, vale o `--modo`, como em qualquer tile repetido. A folha já leva a paleta de cada tile, então os sprites pintados a partir dela são recoloridos certo nos fades.
 
 ### 2.4 Testar no jogo
 

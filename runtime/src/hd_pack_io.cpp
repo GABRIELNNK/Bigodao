@@ -14,6 +14,8 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set> /* passo 7a */
+#include <array> /* passo 7b */
 #include <vector>
 #include <string>
 #include <system_error>
@@ -821,3 +823,287 @@ uint8_t* hd_pack_io_read_file(int source_index, const char* path, size_t* out_si
 uint32_t hd_pack_io_generation(void) {
     return g_mods_generation;
 }
+
+/* ============================================================================
+ * Passo 7a: gravador de poses de sprites
+ *
+ * Enquanto grava, a plataforma entrega uma cena por frame. Em cada uma, os
+ * pedaços de sprite que se encostam (caixas 8x8/8x16, 8 vizinhos) viram uma
+ * pose. Cada pose nova (pelos tiles e pela posição de cada um; espelhada
+ * conta como a mesma) é guardada uma vez. Ao parar, as poses são montadas
+ * numa folha gravada no formato de uma cena (mods/scenes/sprites_NNN.json +
+ * _obj.png + _obj_4x.png), para pintar e fatiar com o mesmo hd_slice.py.
+ * ========================================================================== */
+namespace {
+
+struct RecPose {
+    int w = 0;
+    int h = 0;
+    std::vector<uint32_t> rgba;
+    std::vector<uint16_t> tile;   /* índice em g_rec_tiles, ou NO_TILE */
+    std::vector<uint8_t> uvf;
+};
+
+const size_t kRecMaxPoses = 2000;
+const int kRecSheetWidth = 320;
+const int kRecGap = 4;
+
+bool g_rec_active = false;
+uint32_t g_rec_frames = 0;
+std::vector<RecPose> g_rec_poses;
+std::unordered_set<uint64_t> g_rec_sigs;
+std::vector<PPUNativeTileDump> g_rec_tiles;
+std::unordered_map<uint64_t, uint16_t> g_rec_tile_map;   /* tile_hash -> índice */
+bool g_rec_rect_on = false;
+int g_rec_rx = 40, g_rec_ry = 24, g_rec_rw = 80, g_rec_rh = 96;
+std::string g_rec_last;
+std::vector<uint8_t> g_rec_seen;    /* rascunho da busca */
+std::vector<int> g_rec_stack;
+
+inline uint64_t fnv_step(uint64_t h, uint64_t v) {
+    for (int i = 0; i < 4; ++i) {
+        h ^= (v >> (i * 16)) & 0xFFFFu;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+/* uvf da mesma posição quando a pose inteira é espelhada na horizontal. */
+inline uint8_t mirror_uvf(uint8_t uvf) {
+    const uint8_t u = uvf & 7u;
+    return (uint8_t)((uvf & 0xB8u) | (uint8_t)(7u - u) | ((uvf & 0x40u) ? 0u : 0x40u));
+}
+
+uint16_t rec_tile_index(const PPUNativeTileDump& t) {
+    auto it = g_rec_tile_map.find(t.tile_hash);
+    if (it != g_rec_tile_map.end()) return it->second;
+    if (g_rec_tiles.size() >= PPU_NATIVE_SCENE_MAX_TILES) return PPU_NATIVE_SCENE_NO_TILE;
+    const uint16_t id = (uint16_t)g_rec_tiles.size();
+    g_rec_tiles.push_back(t);
+    g_rec_tile_map.emplace(t.tile_hash, id);
+    return id;
+}
+
+}  // namespace
+
+void hd_pack_io_sprite_rec_start(void) {
+    g_rec_active = true;
+    g_rec_frames = 0;
+    g_rec_poses.clear();
+    g_rec_sigs.clear();
+    g_rec_tiles.clear();
+    g_rec_tile_map.clear();
+}
+
+bool hd_pack_io_sprite_rec_active(void) {
+    return g_rec_active;
+}
+
+uint32_t hd_pack_io_sprite_rec_pose_count(void) {
+    return (uint32_t)g_rec_poses.size();
+}
+
+uint32_t hd_pack_io_sprite_rec_frames(void) {
+    return g_rec_frames;
+}
+
+const char* hd_pack_io_sprite_rec_last(void) {
+    return g_rec_last.c_str();
+}
+
+void hd_pack_io_sprite_rec_set_rect(bool enabled, int x, int y, int w, int h) {
+    g_rec_rect_on = enabled;
+    g_rec_rx = x;
+    g_rec_ry = y;
+    g_rec_rw = w;
+    g_rec_rh = h;
+}
+
+void hd_pack_io_sprite_rec_feed(const PPUNativeScene* scene) {
+    if (!g_rec_active || !scene) return;
+    g_rec_frames++;
+    const int w = scene->width ? scene->width : GB_SCREEN_WIDTH;
+    const int h = scene->height ? scene->height : GB_SCREEN_HEIGHT;
+    const int off = (w > GB_SCREEN_WIDTH) ? (w - GB_SCREEN_WIDTH) / 2 : 0;   /* laterais */
+    const size_t count = (size_t)w * (size_t)h;
+    g_rec_seen.assign(count, 0);
+    std::vector<int> pixels;
+    for (size_t start = 0; start < count; ++start) {
+        if (g_rec_seen[start] || scene->obj_tile[start] == PPU_NATIVE_SCENE_NO_TILE) continue;
+        /* Junta os pixels de sprite encostados (8 vizinhos). */
+        pixels.clear();
+        g_rec_stack.clear();
+        g_rec_stack.push_back((int)start);
+        g_rec_seen[start] = 1;
+        int minx = w, miny = h, maxx = -1, maxy = -1;
+        bool visible = false;
+        while (!g_rec_stack.empty()) {
+            const int p = g_rec_stack.back();
+            g_rec_stack.pop_back();
+            pixels.push_back(p);
+            const int px = p % w, py = p / w;
+            minx = std::min(minx, px); maxx = std::max(maxx, px);
+            miny = std::min(miny, py); maxy = std::max(maxy, py);
+            if ((scene->obj_rgba[p] >> 24) != 0) visible = true;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int nx = px + dx, ny = py + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    const size_t q = (size_t)ny * w + nx;
+                    if (g_rec_seen[q] || scene->obj_tile[q] == PPU_NATIVE_SCENE_NO_TILE) continue;
+                    g_rec_seen[q] = 1;
+                    g_rec_stack.push_back((int)q);
+                }
+            }
+        }
+        if (!visible) continue;
+        if (g_rec_rect_on) {
+            const int cx = (minx + maxx) / 2 - off;
+            const int cy = (miny + maxy) / 2;
+            if (cx < g_rec_rx || cy < g_rec_ry ||
+                cx >= g_rec_rx + g_rec_rw || cy >= g_rec_ry + g_rec_rh) continue;
+        }
+        RecPose pose;
+        pose.w = maxx - minx + 1;
+        pose.h = maxy - miny + 1;
+        const size_t n = (size_t)pose.w * pose.h;
+        pose.rgba.assign(n, 0u);
+        pose.tile.assign(n, PPU_NATIVE_SCENE_NO_TILE);
+        pose.uvf.assign(n, 0);
+        std::vector<uint64_t> hashes(n, 0);
+        for (int p : pixels) {
+            const size_t k = (size_t)(p / w - miny) * pose.w + (size_t)(p % w - minx);
+            const uint16_t sid = scene->obj_tile[p];
+            if (sid >= scene->tile_count) continue;
+            pose.rgba[k] = scene->obj_rgba[p];
+            pose.uvf[k] = scene->obj_uvf[p];
+            hashes[k] = scene->tiles[sid].tile_hash;
+            pose.tile[k] = sid;   /* índice da cena por enquanto */
+        }
+        /* Passo 7b: assinatura pela lista de pedacos (tile, canto da caixa 8x8,
+         * espelhos). Nao depende de qual pedaco ficou por cima nas
+         * sobreposicoes (o jogo troca a ordem de desenho de um frame para
+         * outro). A da pose espelhada vira cada caixa: x' = largura - 8 - x. */
+        std::vector<std::array<uint64_t, 4>> pcs, pcm;
+        for (int y = 0; y < pose.h; ++y) {
+            for (int x = 0; x < pose.w; ++x) {
+                const size_t k = (size_t)y * pose.w + x;
+                if (pose.tile[k] == PPU_NATIVE_SCENE_NO_TILE) continue;
+                const uint8_t f = pose.uvf[k];
+                const int64_t bx = (int64_t)x - (int64_t)(f & 7u);
+                const int64_t by = (int64_t)y - (int64_t)((f >> 3) & 7u);
+                pcs.push_back({(uint64_t)bx, (uint64_t)by, hashes[k], (uint64_t)(f & 0xC0u)});
+                pcm.push_back({(uint64_t)((int64_t)pose.w - 8 - bx), (uint64_t)by, hashes[k],
+                               (uint64_t)(mirror_uvf(f) & 0xC0u)});
+            }
+        }
+        std::sort(pcs.begin(), pcs.end());
+        pcs.erase(std::unique(pcs.begin(), pcs.end()), pcs.end());
+        std::sort(pcm.begin(), pcm.end());
+        pcm.erase(std::unique(pcm.begin(), pcm.end()), pcm.end());
+        uint64_t sig = 1469598103934665603ull, mir = sig;
+        sig = fnv_step(fnv_step(sig, (uint64_t)pose.w), (uint64_t)pose.h);
+        mir = fnv_step(fnv_step(mir, (uint64_t)pose.w), (uint64_t)pose.h);
+        for (const auto& p : pcs) for (uint64_t v : p) sig = fnv_step(sig, v);
+        for (const auto& p : pcm) for (uint64_t v : p) mir = fnv_step(mir, v);
+        if (g_rec_sigs.count(sig) || g_rec_sigs.count(mir)) continue;
+        if (g_rec_poses.size() >= kRecMaxPoses) continue;
+        g_rec_sigs.insert(sig);
+        g_rec_sigs.insert(mir);
+        for (size_t k = 0; k < n; ++k) {
+            if (pose.tile[k] != PPU_NATIVE_SCENE_NO_TILE) {
+                pose.tile[k] = rec_tile_index(scene->tiles[pose.tile[k]]);
+            }
+        }
+        g_rec_poses.push_back(std::move(pose));
+    }
+}
+
+int hd_pack_io_sprite_rec_stop(void) {
+    if (!g_rec_active) return -1;
+    g_rec_active = false;
+    if (g_rec_poses.empty()) {
+        fprintf(stderr, "[HD] Gravacao de sprites: nenhuma pose (nada gravado)\n");
+        return -1;
+    }
+    /* Monta a folha: prateleiras, na ordem em que as poses apareceram. */
+    int sheet_w = kRecSheetWidth;
+    for (const RecPose& p : g_rec_poses) sheet_w = std::max(sheet_w, p.w + 2 * kRecGap);
+    std::vector<int> pos_x(g_rec_poses.size()), pos_y(g_rec_poses.size());
+    int x = kRecGap, y = kRecGap, row_h = 0;
+    for (size_t i = 0; i < g_rec_poses.size(); ++i) {
+        const RecPose& p = g_rec_poses[i];
+        if (x + p.w + kRecGap > sheet_w) {
+            x = kRecGap;
+            y += row_h + kRecGap;
+            row_h = 0;
+        }
+        pos_x[i] = x;
+        pos_y[i] = y;
+        x += p.w + kRecGap;
+        row_h = std::max(row_h, p.h);
+    }
+    const int sheet_h = y + row_h + kRecGap;
+    const size_t count = (size_t)sheet_w * sheet_h;
+    std::vector<uint32_t> rgba(count, 0u);
+    std::vector<uint16_t> tile(count, PPU_NATIVE_SCENE_NO_TILE);
+    std::vector<uint8_t> uvf(count, 0);
+    for (size_t i = 0; i < g_rec_poses.size(); ++i) {
+        const RecPose& p = g_rec_poses[i];
+        for (int py = 0; py < p.h; ++py) {
+            for (int px = 0; px < p.w; ++px) {
+                const size_t s = (size_t)py * p.w + px;
+                const size_t d = (size_t)(pos_y[i] + py) * sheet_w + (size_t)(pos_x[i] + px);
+                rgba[d] = p.rgba[s];
+                tile[d] = p.tile[s];
+                uvf[d] = p.uvf[s];
+            }
+        }
+    }
+
+    std::error_code ec;
+    const fs::path dir(hd_pack_io_scene_dir());
+    fs::create_directories(dir, ec);
+    int number = 1;
+    char base[32];
+    for (;; ++number) {
+        snprintf(base, sizeof(base), "sprites_%03d", number);
+        if (!fs::exists(dir / (std::string(base) + ".json"), ec)) break;
+    }
+    bool ok = true;
+    ok = write_rgba_png(dir / (std::string(base) + "_obj.png"), rgba.data(), sheet_w, sheet_h, 1) && ok;
+    ok = write_rgba_png(dir / (std::string(base) + "_obj_4x.png"), rgba.data(), sheet_w, sheet_h, 4) && ok;
+    const fs::path json_path = dir / (std::string(base) + ".json");
+    FILE* f = fopen(json_path.string().c_str(), "w");
+    if (!f) {
+        fprintf(stderr, "[HD] Falha ao gravar %s\n", json_path.string().c_str());
+        return -1;
+    }
+    fprintf(f, "{\n  \"version\": 1,\n  \"kind\": \"sprites\",\n  \"poses\": %u,\n  \"width\": %d,\n  \"height\": %d,\n  \"tiles\": [\n",
+            (unsigned)g_rec_poses.size(), sheet_w, sheet_h);
+    for (size_t t = 0; t < g_rec_tiles.size(); ++t) {
+        const PPUNativeTileDump& d = g_rec_tiles[t];
+        char index[65];
+        for (int i = 0; i < 64; ++i) index[i] = (char)('0' + (d.index[i] & 3u));
+        index[64] = '\0';
+        fprintf(f, "    {\"name\": \"%c_%016llx\", \"kind\": \"%c\", \"palette\": [%u, %u, %u, %u], \"index\": \"%s\"}%s\n",
+                d.kind, (unsigned long long)d.tile_hash, d.kind,
+                (unsigned)d.rgba[0], (unsigned)d.rgba[1], (unsigned)d.rgba[2], (unsigned)d.rgba[3],
+                index, (t + 1 < g_rec_tiles.size()) ? "," : "");
+    }
+    fprintf(f, "  ],\n");
+    const std::vector<uint16_t> no_bg(count, PPU_NATIVE_SCENE_NO_TILE);
+    const std::vector<uint8_t> zero(count, 0);
+    write_int_array(f, "bg_tile", no_bg.data(), (int)count, false);
+    write_byte_array(f, "bg_uvf", zero.data(), (int)count, false);
+    write_int_array(f, "obj_tile", tile.data(), (int)count, false);
+    write_byte_array(f, "obj_uvf", uvf.data(), (int)count, true);
+    fprintf(f, "}\n");
+    ok = (fclose(f) == 0) && ok;
+    g_rec_last = (dir / base).string();
+    fprintf(stderr, "[HD] Folha de sprites gravada: %s (%u poses, %u tiles, %dx%d, %u frames)%s\n",
+            g_rec_last.c_str(), (unsigned)g_rec_poses.size(), (unsigned)g_rec_tiles.size(),
+            sheet_w, sheet_h, g_rec_frames, ok ? "" : " COM ERROS");
+    return number;
+}
+

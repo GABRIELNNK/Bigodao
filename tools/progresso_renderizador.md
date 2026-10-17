@@ -19,7 +19,13 @@
 - **Passo 6c.2** (validado: CH1 e CH4 separam bem música e efeitos) — Portão por canal em `audio_emit_sample` (tocar sempre / mudo / só com efeito quando byte da RAM do cartucho != 0). Configuração final: CH1 em `$A601`, CH2 e CH3 mudos, CH4 em `$A616`.
 - **Passo 6c** (validado: trilha e .o2r empacotado funcionando) — Trilhas .ogg: `music_replace.cpp/.h` (stb_vorbis v1.22 em `runtime/vendor/stb`, compilado por `stb_vorbis_impl.c`). Arquivos `music/XX*.ogg` nos mods; loop por tags LOOPSTART/LOOPLENGTH/LOOPEND ou `music/music.json` (loop_start, loop_end, loop, volume). `hd_pack_io` ganhou `hd_pack_io_list_files`, `hd_pack_io_read_file` (lê só o pedaço do .o2r) e `hd_pack_io_generation`. Platform: segue `$A61D` (ignora os 8 primeiros frames), atrasa a trilha pelo nível do buffer do GB, liga o portão enquanto a trilha toca (`g_audio_lab_gate || music_replace_active()`), mixa no callback só quando o GB produziu áudio (pausa junto). Menu Mods: "Trilhas .ogg", volume e lista. `tools/musica_empacotar.py`. Precisa `cmake -S . -B build` (arquivos novos, GLOB). Testado fora do jogo: atraso, loop, tags, jingle sem loop, troca com fade, 44,1/48 kHz, mono.
 
-- **Passo 6d** (entregue, aguardando teste) — Pasta solta `mods/music/` (fonte "music/", por último); caminhos das pastas relativos a `mods/`. `[Musica]` no terminal só com Desenvolvedor > Musicas vistas > "Registrar no terminal" (`music_replace_set_log`; erros sempre). Preferências `music.enabled`, `music.volume_percent`, `music.log`. Guia ganhou tabela de faixas (MarioWiki) com números a descobrir.
+- **Passo 6d** (validado) — Pasta solta `mods/music/` (fonte "music/", por último); caminhos das pastas relativos a `mods/`. `[Musica]` no terminal só com Desenvolvedor > Musicas vistas > "Registrar no terminal" (`music_replace_set_log`; erros sempre). Preferências `music.enabled`, `music.volume_percent`, `music.log`. Guia ganhou tabela de faixas (MarioWiki) com números a descobrir.
+
+- **Passo 6e** (validado) — Volume do GB separado: `g_audio_gb_volume_percent` (0..200, pref `audio.gb_volume_percent`); GB usa master×GB/100 (`gb_effective_volume_percent`) nos dois caminhos do callback; trilhas usam só o master × volume das trilhas. Slider "Game Boy Volume (%)" no menu Audio e "Volume do GB" no menu Mods (quando há trilhas).
+
+- **Passo 7a** (validado) — Gravador de poses de sprites em `hd_pack_io.cpp` (`hd_pack_io_sprite_rec_*`): com a gravação ligada, a plataforma pede uma cena por frame (`g_scene_for_recorder`) e entrega ao gravador; componentes 8-conexos de `obj_tile` viram poses; assinatura FNV por tile_hash+uvf (e a espelhada, `mirror_uvf`); folha em prateleiras (largura 320, folga 4) gravada como cena `mods/scenes/sprites_NNN.json` + `_obj.png` + `_obj_4x.png` (bg vazio), fatiável pelo `hd_slice.py --obj` sem mudanças. Retângulo (padrão 40,24,80,96 na tela 160x144, centro da pose) desenhado na tela; aviso "REC poses". F9 desligado durante a gravação. Testado fora do jogo: deduplicação, espelho, retângulo e fatiamento.
+
+- **Passo 7b** (entregue, aguardando teste) — Achado no sprites_001 do usuário: o jogo espelha o Wario pelo hardware (mesmos tiles com flip X), mas a pose da direita tem um pedaço a mais (`…9db8`); havia poses repetidas porque o jogo troca a ordem dos pedaços sobrepostos. Gravador: assinatura pela lista de pedaços (canto da caixa = x-u, y-v; tile_hash; flips), espelho com x' = w-8-x. `hd_slice.py`: amostra igual ao original (comparando com o `_obj.png` 1x) não vota se alguma ocorrência foi pintada; `--todas-votam` desliga. Testado fora do jogo.
 
 ## Áudio do jogo (achados)
 - Músicas (`$A61D`): 00 silêncio; FF parada/transição; 20 abertura; 26 escolha do slot; 15 mapa de Rice Beach; 02 mapa geral; 2B jingle de entrada na fase; 04 fase 1 de Rice Beach; 08 Wario morre.
@@ -36,6 +42,6 @@
 
 ## Pendências / próximos
 - Trilhas: abrir o .ogg fora da thread principal se a troca travar; ir completando a tabela de números das músicas.
-- Despejo gravar `mods/dump/pack.json` com as paletas (adiado pelo usuário).
+- Despejo gravar `mods/dump/pack.json` com as paletas (em parte coberto pelo 7a para sprites).
 - Opção futura: fundo por posição no mundo; otimizar amostragem HD; limpar campos mortos do GBPPU; GPU só se necessário.
 - Regra de trabalho: uma mudança por vez, teste e commit entre elas; entregas como script Python com `--conferir`.

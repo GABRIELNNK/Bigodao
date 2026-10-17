@@ -25,6 +25,9 @@ Regras:
         comum     a cor mais frequente em cada subpixel
         media     a media das cores de cada subpixel
     --mapa-conflitos grava uma imagem com os pontos em conflito em vermelho.
+  - (passo 7b) O que foi pintado vence o que ficou igual ao original: basta
+    pintar uma ocorrencia de cada tile (ex.: so o Wario olhando para um lado).
+    --todas-votam volta ao comportamento antigo.
   - Partes do tile que nao aparecem na tela sao mantidas do PNG HD que ja
     existir; se nao existir, recebem o desenho original ampliado.
   - Sprites: o canal alfa da pintura define a forma (alfa < 128 = vazio).
@@ -75,6 +78,11 @@ def original_tile(tile, n):
 
 def _resolve(samples, mode, is_obj):
     """Escolhe a cor final de um subpixel a partir de todas as ocorrencias."""
+    if samples and isinstance(samples[0], tuple) and len(samples[0]) == 2 and isinstance(samples[0][1], bool):
+        # Passo 7b: (cor, pintado). O que foi pintado vence o que ficou igual
+        # ao original; se nada foi pintado, todas valem.
+        painted = [c for c, p in samples if p]
+        samples = painted if painted else [c for c, _ in samples]
     if len(samples) == 1 or mode == "primeira":
         return samples[0]
     if mode == "comum":
@@ -113,7 +121,7 @@ def _normalize(color, orig, ref):
     return (out[0], out[1], out[2], color[3])
 
 
-def slice_layer(scene, layer, painted, n, mode, reference=None):
+def slice_layer(scene, layer, painted, n, mode, reference=None, prefer_painted=True):
     """Devolve ({tile_id: (pixels, covered, conflitos)}, pontos_em_conflito)."""
     w, h = scene["width"], scene["height"]
     tiles_of = scene[layer + "_tile"]
@@ -161,12 +169,20 @@ def slice_layer(scene, layer, painted, n, mode, reference=None):
                         color = (r, g, b, 255) if a >= 128 else (0, 0, 0, 0)
                     else:
                         color = (r, g, b, 255)
+                    # Passo 7b: igual ao original neste ponto = nao pintado.
+                    is_painted = True
+                    if ref_px is not None and prefer_painted:
+                        o = ref_px[x, y]
+                        if is_obj and orig is None:
+                            is_painted = a >= 128
+                        else:
+                            is_painted = not ((a >= 128 or not is_obj) and (r, g, b) == tuple(o[:3]))
                     if orig is not None:
                         color = _normalize(color, orig, ref_color)
                     k = rs * size + cs
                     if slots[k] is None:
                         slots[k] = []
-                    slots[k].append((color, (px, py)))
+                    slots[k].append((color, (px, py), is_painted))
 
     out = {}
     hot = []
@@ -177,11 +193,14 @@ def slice_layer(scene, layer, painted, n, mode, reference=None):
         for k, lst in enumerate(slots):
             if not lst:
                 continue
-            colors = [c for c, _ in lst]
-            final = _resolve(colors, mode, is_obj)
+            votes = [(c, p) for c, _, p in lst]
+            final = _resolve(votes, mode, is_obj)
             pixels[k] = final
             covered[k] = True
-            for c, pos in lst:
+            any_painted = any(p for _, _, p in lst)
+            for c, pos, p in lst:
+                if any_painted and not p:
+                    continue          # nao pintado: nao conta como conflito
                 if c != final:
                     conflicts += 1
                     hot.append(pos)
@@ -231,6 +250,9 @@ def main():
     ap.add_argument("--mapa-conflitos", action="store_true",
                     help="grava conflitos_bg.png / conflitos_obj.png mostrando em vermelho "
                          "onde a pintura difere do que ficou no tile")
+    ap.add_argument("--todas-votam", action="store_true",
+                    help="(passo 7b) ocorrencias deixadas como o original tambem contam; "
+                         "por padrao, o que foi pintado vence o que ficou igual ao original")
     args = ap.parse_args()
     if not args.bg and not args.obj:
         ap.error("informe --bg e/ou --obj")
@@ -268,7 +290,8 @@ def main():
         if reference is None:
             print(f"aviso: {ref_path.name} nao encontrado; tiles que aparecem com mais de "
                   f"uma paleta podem sair com cor errada")
-        result, hot = slice_layer(scene, layer, img, n, args.modo, reference)
+        result, hot = slice_layer(scene, layer, img, n, args.modo, reference,
+                                  prefer_painted=not args.todas_votam)
         if args.mapa_conflitos:
             map_path = out_dir / f"conflitos_{layer}.png"
             save_conflict_map(img, hot, map_path)

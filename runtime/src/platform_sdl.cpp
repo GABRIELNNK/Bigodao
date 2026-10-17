@@ -287,6 +287,9 @@ static int g_music_request_seen = -1;        /* ultimo pedido diferente de zero 
 static uint32_t g_music_monitor_frames = 0;
 static bool g_audio_lab_gate = false;        /* passo 6c: checkbox do laboratorio */
 static bool g_music_log = false;             /* passo 6d: [Musica] no terminal */
+static bool g_scene_for_recorder = false;    /* passo 7a: a captura pedida e do gravador */
+static bool g_rec_rect_enabled = false;       /* passo 7a: so dentro do retangulo */
+static int g_rec_rect[4] = {40, 24, 80, 96}; /* x, y, largura, altura (tela 160x144) */
 static uint32_t g_music_mods_generation = 0;  /* passo 6c: recarga de mods vista */
 static uint32_t audio_ring_fill_samples(void);
 
@@ -2863,6 +2866,29 @@ static void render_frame_internal(const uint32_t* framebuffer,
     ImGui::NewFrame();
     ImGuiIO& imgui_io = ImGui::GetIO();
     imgui_io.FontGlobalScale = settings_ui_scale_for_size(imgui_io.DisplaySize);
+    /* Passo 7a: retangulo do gravador de poses e aviso "gravando". */
+    if (hd_pack_io_sprite_rec_active() || (g_show_menu && g_rec_rect_enabled)) {
+        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        const float base_w = g_widescreen_mode ? (float)GB_WIDESCREEN_WIDTH : (float)GB_SCREEN_WIDTH;
+        const float off = g_widescreen_mode ? (float)GB_WIDESCREEN_MARGIN : 0.0f;
+        const float s = (float)g_game_viewport.w / base_w;
+        if (g_rec_rect_enabled) {
+            const ImVec2 a((float)g_game_viewport.x + (off + (float)g_rec_rect[0]) * s,
+                           (float)g_game_viewport.y + (float)g_rec_rect[1] * s);
+            const ImVec2 b(a.x + (float)g_rec_rect[2] * s, a.y + (float)g_rec_rect[3] * s);
+            fg->AddRect(a, b, IM_COL32(255, 60, 60, 220), 0.0f, 0, 2.0f);
+        }
+        if (hd_pack_io_sprite_rec_active()) {
+            char rec_text[64];
+            snprintf(rec_text, sizeof(rec_text), "REC poses: %u", hd_pack_io_sprite_rec_pose_count());
+            const ImVec2 t((float)g_game_viewport.x + (float)g_game_viewport.w - 150.0f,
+                           (float)g_game_viewport.y + 8.0f);
+            fg->AddRectFilled(ImVec2(t.x - 6.0f, t.y - 3.0f), ImVec2(t.x + 140.0f, t.y + 18.0f),
+                              IM_COL32(0, 0, 0, 160), 4.0f);
+            fg->AddCircleFilled(ImVec2(t.x + 4.0f, t.y + 7.0f), 5.0f, IM_COL32(255, 40, 40, 255));
+            fg->AddText(ImVec2(t.x + 14.0f, t.y), IM_COL32(255, 255, 255, 255), rec_text);
+        }
+    }
 
     if (g_show_menu) {
         const float ui_scale = imgui_io.FontGlobalScale;
@@ -3072,8 +3098,40 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     ppu_native_reset_tile_dump();
                 }
             }
-            if (ImGui::Button("Capturar cena (F9)")) {
+            if (ImGui::Button("Capturar cena (F9)") && !hd_pack_io_sprite_rec_active()) {
                 ppu_native_request_scene_capture();
+            }
+            /* Passo 7a: gravador de poses de sprites. */
+            if (ImGui::TreeNode("Gravar poses de sprites")) {
+                if (!hd_pack_io_sprite_rec_active()) {
+                    if (ImGui::Button("Comecar a gravar")) {
+                        hd_pack_io_sprite_rec_start();
+                    }
+                } else {
+                    if (ImGui::Button("Parar e salvar")) {
+                        hd_pack_io_sprite_rec_stop();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "gravando");
+                }
+                ImGui::Text("Poses: %u   quadros: %u", hd_pack_io_sprite_rec_pose_count(),
+                            hd_pack_io_sprite_rec_frames());
+                ImGui::Checkbox("So dentro do retangulo", &g_rec_rect_enabled);
+                if (g_rec_rect_enabled) {
+                    ImGui::SetNextItemWidth(220.0f);
+                    ImGui::SliderInt2("X / Y", g_rec_rect, 0, 159);
+                    ImGui::SetNextItemWidth(220.0f);
+                    ImGui::SliderInt2("Largura / Altura", g_rec_rect + 2, 8, 160);
+                    if (g_rec_rect[1] > 143) g_rec_rect[1] = 143;
+                    if (g_rec_rect[3] > 144) g_rec_rect[3] = 144;
+                    ImGui::TextDisabled("Entram as poses com o centro dentro do retangulo vermelho.");
+                } else {
+                    ImGui::TextDisabled("Entram todos os sprites da tela (inclusive laterais).");
+                }
+                if (hd_pack_io_sprite_rec_last()[0]) {
+                    ImGui::TextWrapped("Ultima folha: %s_obj_4x.png", hd_pack_io_sprite_rec_last());
+                }
+                ImGui::TreePop();
             }
             if (ppu_native_scene_capture_pending()) {
                 ImGui::SameLine();
@@ -4640,7 +4698,7 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
                     }
                     return true;
                 case SDL_SCANCODE_F9:
-                    if (pressed && event->key.repeat == 0) {
+                    if (pressed && event->key.repeat == 0 && !hd_pack_io_sprite_rec_active()) {
                         ppu_native_request_scene_capture(); /* passo 5a.2 */
                     }
                     return true;
@@ -4799,7 +4857,18 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     {
         const PPUNativeScene* scene = ppu_native_take_scene(); /* passo 5a.2 */
         if (scene) {
-            hd_pack_io_write_scene(scene);
+            if (g_scene_for_recorder) {
+                hd_pack_io_sprite_rec_feed(scene);   /* passo 7a */
+            } else {
+                hd_pack_io_write_scene(scene);
+            }
+        }
+        g_scene_for_recorder = false;
+        if (hd_pack_io_sprite_rec_active()) {   /* passo 7a: uma cena por frame */
+            hd_pack_io_sprite_rec_set_rect(g_rec_rect_enabled, g_rec_rect[0], g_rec_rect[1],
+                                           g_rec_rect[2], g_rec_rect[3]);
+            ppu_native_request_scene_capture();
+            g_scene_for_recorder = true;
         }
     }
     //render_frame_internal(framebuffer, true, false);

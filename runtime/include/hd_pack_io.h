@@ -71,6 +71,21 @@ uint8_t* hd_pack_io_read_file(int source_index, const char* path, size_t* out_si
 /* Muda a cada recarga ou liga/desliga de mod. */
 uint32_t hd_pack_io_generation(void);
 
+/* Passo 7a: gravador de poses de sprites. Enquanto ativo, a plataforma
+ * entrega uma cena por frame (feed). Ao parar, grava a folha de poses em
+ * <base>/mods/scenes/sprites_NNN.json + _obj.png + _obj_4x.png (formato de
+ * cena: pinta-se o _obj_4x.png e fatia-se com tools/hd_slice.py --obj).
+ * Retangulo em pixels da tela do jogo (160x144, sem as laterais): so entram
+ * as poses com o centro dentro dele. */
+void hd_pack_io_sprite_rec_start(void);
+int hd_pack_io_sprite_rec_stop(void);          /* NNN gravado, ou -1 se nao havia poses */
+bool hd_pack_io_sprite_rec_active(void);
+void hd_pack_io_sprite_rec_feed(const PPUNativeScene* scene);
+void hd_pack_io_sprite_rec_set_rect(bool enabled, int x, int y, int w, int h);
+uint32_t hd_pack_io_sprite_rec_pose_count(void);
+uint32_t hd_pack_io_sprite_rec_frames(void);
+const char* hd_pack_io_sprite_rec_last(void);   /* caminho sem extensao */
+
 #ifdef __cplusplus
 }
 #endif
