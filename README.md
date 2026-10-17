@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="platform/icone_bigodao.ico" alt="Bigodão icon" width="160">
+</p>
+
 #  Bigodão: WL SM3
 
-> **A static recompilation study and native PC port of *Wario Land: Super Mario Land 3* with native widescreen support.**
+> **A static recompilation study and native port of *Wario Land: Super Mario Land 3* with native widescreen support, mods support for HD tile and remastered music.**
 
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-blue)](https://github.com)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20Android-blue)](https://github.com)
 [![License](https://img.shields.io/badge/Status-Research%20%2F%20Study-orange)](#-about-the-project)
 
 ---
@@ -11,7 +15,15 @@
 
 **Bigodão: WL SM3** is a personal study project focused on **static decompilation and recompilation** techniques applied to classic Game Boy hardware binaries. 
 
-By extracting and recompiling game code into modern C/C++, this project enables *Wario Land: Super Mario Land 3* to run natively on Linux and Windows with enhanced performance and **native widescreen rendering** without standard emulator stretched distortion.
+By extracting and recompiling game code into modern C/C++, this project enables *Wario Land: Super Mario Land 3* to run natively on Linux, Windows and Android with enhanced performance and **native widescreen rendering** without standard emulator stretched distortion.
+
+### ✨ Features
+
+* 🖥️ **Native widescreen** (16:9), enabled by default.
+* 🎨 **HD tile mods**: replace backgrounds and sprites with high-resolution PNGs packed in `.o2r` files.
+* 🎵 **Music mods**: replace the Game Boy soundtrack with `.ogg` tracks, while sound effects keep playing from the original audio.
+* 📱 **Android port** with an on-screen gamepad, physical controller support and the system file picker.
+* 📦 **Single executable** on Windows: no extra DLLs required.
 
 ---
 
@@ -29,7 +41,7 @@ To build and run this port, you must provide your own legally acquired Game Boy 
 > ℹ️ **How memory patching works:**  
 > The executable validates the base ROM via its SHA-256 hash and applies the IPS patch (defined in `tools/wl_sm3_dx_v12_patch.json`) directly **in memory**. Your original ROM on disk remains untouched.  
 > 
-> *When packaging binary releases, keep the executable, `tools/wl_sm3_dx_v12_patch.json`, and the IPS patch together in the same folder.*
+> *When packaging binary releases for Linux and Windows, keep the executable and `tools/wl_sm3_dx_v12_patch.json` together in the same folder. On Android, the manifest is bundled inside the APK.*
 
 ---
 
@@ -39,7 +51,7 @@ To build and run this port, you must provide your own legally acquired Game Boy 
 
 Before starting, ensure you have installed:
 * 🛠️ **C++ Compiler** (GCC / Clang / MSVC)
-* ⚙️ **CMake** (v3.15+)
+* ⚙️ **CMake** (v3.16+)
 * ⚡ **Ninja** build system
 * 🐍 **Python 3**
 
@@ -69,7 +81,13 @@ cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release
 ninja -C build
 ```
 
-> 💡 *Note: The build process automatically applies the widescreen FOV patch (`tools/widescreen_hack_fov_30_patch.json`) during CMake configuration.*
+> 💡 *Note: The build process automatically applies the widescreen FOV patch (`tools/widescreen_hack_fov_30_patch.json`) before compiling.*
+
+**Optional — application menu shortcut with the icon:**
+
+```bash
+bash platform/linux/instalar_atalho.sh
+```
 
 ---
 
@@ -87,16 +105,53 @@ To cross-compile for Windows from a Linux environment:
 
 2. **Configure & Build:**
    ```bash
-   mkdir build_win
-   cd build_win
-   cmake -DCMAKE_TOOLCHAIN_FILE=../mingw-toolchain.cmake ..
-   cmake --build .
+   cmake -S . -B build_win -DCMAKE_TOOLCHAIN_FILE=mingw-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+   cmake --build build_win -j
    ```
 
-3. **Copy Required Runtime Libraries:**
-   Copy `libgcc_s_seh-1.dll` and `libstdc++-6.dll` from your MinGW distribution to the output folder next to the generated executable and SDL2 DLLs.
+> 💡 *Note: SDL2, libgcc and libstdc++ are linked statically, so the `.exe` runs on its own — no DLLs need to be copied. To get a console window with logs for debugging, add `-DWL_WINDOWS_GUI=OFF`.*
 
 ---
+
+### 4️⃣ Step 4: Android Build
+
+**Requirements:** JDK 17, Android SDK, NDK and CMake 3.22.1 (all installable through the Android Studio SDK Manager or `sdkmanager`).
+
+1. **One-time setup** (downloads the SDL2 source code and prepares the Gradle project):
+   ```bash
+   bash android/setup_android.sh
+   ```
+
+2. **Build the APK:**
+   ```bash
+   cd android
+   ./gradlew assembleRelease
+   ```
+   The APK is written to `android/app/build/outputs/apk/release/`.
+
+3. **Install** it on your device (copy the APK to the phone, or use `adb install -r <apk>`).
+
+> 📱 *On first launch, the app asks for "All files access" to create the `Bigodao/` folder (with `mods/` and `log/`) in the device storage. If denied, mods and logs stay inside the app's private folder.*
+
+---
+
+## 🧩 Mods
+
+The game loads HD tile packs and music packs (`.o2r` files) from the `mods/` folder. The full guide — capturing scenes, painting, slicing, packing and music track numbers — is in [`tools/mods/COMO_CRIAR_MODS.md`](tools/mods/COMO_CRIAR_MODS.md).
+
+### 🐍 Mod Scripts
+
+| Script | Purpose |
+| :--- | :--- |
+| `tools/hd_slice.py` | Slices a painted scene (captured with **F9**) or sprite sheet into HD tiles. |
+| `tools/hd_empacotar.py` | Packs the HD tiles and `pack.json` into a `.o2r` mod. |
+| `tools/musica_empacotar.py` | Packs `.ogg` music tracks (and `music.json`) into a `.o2r` mod. |
+
+> 💡 *The HD scripts require Pillow: `pip install pillow`.*
+
+---
+
+
 
 ## 🙏 Credits & Acknowledgments
 
@@ -105,3 +160,7 @@ Without the work of these incredible projects and individuals, this project woul
 * 🛠️ [**gb-recompiled**](https://github.com/arcanite24/gb-recompiled) by [arcanite24](https://github.com/arcanite24) – Static recompilation toolsuite for Game Boy binaries.
 * 🔍 [**WL Disassembly**](https://github.com/Kak2X/wl) by [Kak2X](https://github.com/Kak2X) – Reverse engineering and disassembly of *Wario Land*.
 * 🎨 **korxo** – Special thanks for the fantastic work on the Version 1.2 IPS patch.
+* 🎵 **Sound mapping** – Music and RAM references used to map the soundtrack:
+   * Sources:
+      * [Wario Land: Super Mario Land 3 – RAM map (Data Crystal)](https://datacrystal.tcrf.net/wiki/Wario_Land:_Super_Mario_Land_3/RAM_map)
+      * [Multimedia: Wario Land: Super Mario Land 3 (MarioWiki)](https://www.mariowiki.com/Multimedia:Wario_Land:_Super_Mario_Land_3)
