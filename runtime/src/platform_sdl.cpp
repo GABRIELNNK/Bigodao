@@ -436,6 +436,14 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
  * antiga e as laterais mostravam lixo. Lista dos Init no constants.asm do
  * disassembly (MAP_MODE_*). */
 #define WL_GAME_MODE_2_MAP_CLEAR 13
+/* Passo 7v (disassembly, bank01 Map_Do / Mode_LevelInit):
+ *   14 = modo 1 sub 01 (GM_MAP_COURSESCR): tela "COURSE No.XX". A VRAM tem a
+ *        fonte e as laterais mostravam "000000".
+ *   23 = modo 2 sub 00 (GM_LEVELINIT_LOAD): carregando a fase, LCD desligado.
+ *   Modo 2 sub 01..03 (FADEBG, FADEOBJ, STARTLEVEL): a fase ja esta na tela,
+ *   com o layout da fase pronto -> 21/22 como no modo 3. */
+#define WL_GAME_MODE_2_COURSE_SCREEN 14
+#define WL_GAME_MODE_2_LEVEL_LOAD 23
 static bool gb_wl_map_mode_is_init(uint8_t map_id) {
     switch (map_id) {
         case 0x00: /* MAP_MODE_INIT */
@@ -478,6 +486,9 @@ static uint8_t gb_wl_game_mode_2(const GBContext* ctx) {
         s_after_clear = (s_prev_mode == 4 && mode == 1);
         s_prev_mode = mode;
     }
+    if (mode == 1 && ctx->eram[0x08C4] == 0x01) {   /* passo 7v: COURSE No.XX */
+        return WL_GAME_MODE_2_COURSE_SCREEN;
+    }
     if (mode == 1) {   /* passo 7t / 7u */
         const uint8_t map_id = ctx->eram[0x079C];
         if (gb_wl_map_mode_is_init(map_id)) {
@@ -494,6 +505,9 @@ static uint8_t gb_wl_game_mode_2(const GBContext* ctx) {
     if (mode != 2 && mode != 3) {
         return 0;
     }
+    if (mode == 2 && ctx->eram[0x08C4] == 0x00) {   /* passo 7v */
+        return WL_GAME_MODE_2_LEVEL_LOAD;
+    }
     const bool boss = ctx->eram[0x099D] >= 0xF0 || ctx->eram[0x0995] != 0;
     return boss ? WL_GAME_MODE_2_BOSS : WL_GAME_MODE_2_LEVEL;
 }
@@ -505,6 +519,10 @@ static bool gb_mode_2_wants_widescreen(uint8_t game_mode_2) {
             return false;
         case WL_GAME_MODE_2_MAP_CLEAR:   /* 13: mapa se preparando, tela antiga (passo 7t) */
             return false;
+        case WL_GAME_MODE_2_COURSE_SCREEN:   /* 14: tela COURSE No.XX (passo 7v) */
+            return false;
+        case WL_GAME_MODE_2_LEVEL_LOAD:      /* 23: carregando a fase (passo 7v) */
+            return false;
         case WL_GAME_MODE_2_LEVEL:  /* 21: fase normal */
         default:                    /*  0: fora da fase, decide o game_mode */
             return true;
@@ -515,7 +533,11 @@ static bool gb_platform_want_widescreen(const GBContext* ctx) {
     if (!g_widescreen_mode || !ctx || !ctx->eram || ctx->eram_size <= 0x08C3) {
         return false;
     }
-    return gb_mode_is_side_scrolling(ctx->eram[0x08C3]) &&
+    /* Passo 7v: o modo 2 volta a ter laterais (o case 2 foi tirado do switch
+     * de gb_mode_is_side_scrolling por causa do COURSE e da carga, que agora
+     * sao o 14 e o 23 do game_mode_2). */
+    const uint8_t mode = ctx->eram[0x08C3];
+    return (gb_mode_is_side_scrolling(mode) || mode == 2) &&
            gb_mode_2_wants_widescreen(gb_wl_game_mode_2(ctx));   /* passo 7r */
 }
 
@@ -524,8 +546,8 @@ static bool gb_platform_should_black_fill_non_side_scrolling(const GBContext* ct
         return false;
     }
     const uint8_t game_mode = ctx->eram[0x08C3];
-    return !gb_mode_is_side_scrolling(game_mode) /*&& game_mode != 1*/ ||
-           !gb_mode_2_wants_widescreen(gb_wl_game_mode_2(ctx));   /* passo 7r */
+    return (!gb_mode_is_side_scrolling(game_mode) && game_mode != 2) /*&& game_mode != 1*/ ||
+           !gb_mode_2_wants_widescreen(gb_wl_game_mode_2(ctx));   /* passo 7r / 7v */
 }
 
 static GBPortFrame g_port_frame = {};
@@ -3088,7 +3110,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     if (page >= 0) ImGui::TextDisabled("Tabela DX: pagina %02X", page);
                     else ImGui::TextDisabled("Tabela DX: sem calibracao");
                     if (g_registered_ctx) {   /* passo 7r */
-                        ImGui::TextDisabled("game_mode_2: %u (21 fase, 22 chefe, 13 mapa se preparando)",
+                        ImGui::TextDisabled("game_mode_2: %u (21 fase, 22 chefe, 23 carregando, 13 mapa se preparando, 14 COURSE)",
                                             (unsigned)gb_wl_game_mode_2(g_registered_ctx));
                         ImGui::Checkbox("Registrar estado no terminal ([Estado] ...)", &g_state_log);   /* passo 7t */
                     }
