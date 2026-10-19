@@ -550,6 +550,176 @@ static bool gb_platform_should_black_fill_non_side_scrolling(const GBContext* ct
            !gb_mode_2_wants_widescreen(gb_wl_game_mode_2(ctx));   /* passo 7r / 7v */
 }
 
+/* ============================================================================
+ * Passo 8a: laterais sem cenario com fundo ambiente.
+ * Nas telas em que o jogo so usa a tela original (titulo, COURSE, carga,
+ * chefe, mapa se preparando...), as laterais eram pretas. Agora podem mostrar:
+ *   1 = borda desfocada: a cor das colunas da borda da tela, esticada e
+ *       desfocada;
+ *   2 = centro desfocado: a propria tela ampliada, desfocada e escurecida
+ *       atras (como video em pe).
+ * Calculado em 1x (256x144) uma vez por quadro do jogo, com mistura com o
+ * quadro anterior (sem piscar) e ampliado com interpolacao bilinear no HD.
+ * As paredes das salas (fim da fase) continuam pretas.
+ * ========================================================================== */
+enum { WS_FILL_BLACK = 0, WS_FILL_EDGE = 1, WS_FILL_CENTER = 2 };
+static int g_ws_fill_mode = WS_FILL_EDGE;
+static int g_ws_fill_dim_percent = 45;   /* escurecimento das laterais */
+static float g_ws_amb[GB_SCREEN_HEIGHT][GB_WIDESCREEN_WIDTH][3];
+static bool g_ws_amb_valid = false;
+static int g_ws_amb_last_frame = -100;
+
+static inline uint32_t ws_center_px(const uint32_t* src, bool wide, int x, int y) {
+    if (x < 0) x = 0;
+    if (x > GB_SCREEN_WIDTH - 1) x = GB_SCREEN_WIDTH - 1;
+    if (y < 0) y = 0;
+    if (y > GB_SCREEN_HEIGHT - 1) y = GB_SCREEN_HEIGHT - 1;
+    return wide ? src[(size_t)y * GB_WIDESCREEN_WIDTH + GB_WIDESCREEN_MARGIN + x]
+                : src[(size_t)y * GB_SCREEN_WIDTH + x];
+}
+
+/* Desfoque de caixa separavel (somas corridas), borda repetida. */
+static void ws_box_blur_h(float (*img)[GB_WIDESCREEN_WIDTH][3], int r) {
+    static float line[GB_WIDESCREEN_WIDTH][3];
+    const int w = GB_WIDESCREEN_WIDTH;
+    const float inv = 1.0f / (float)(2 * r + 1);
+    for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
+        for (int c = 0; c < 3; c++) {
+            float acc = 0.0f;
+            for (int i = -r; i <= r; i++) acc += img[y][i < 0 ? 0 : (i >= w ? w - 1 : i)][c];
+            for (int x = 0; x < w; x++) {
+                line[x][c] = acc * inv;
+                const int add = x + r + 1, sub = x - r;
+                acc += img[y][add >= w ? w - 1 : add][c] - img[y][sub < 0 ? 0 : sub][c];
+            }
+        }
+        memcpy(img[y], line, sizeof(line));
+    }
+}
+
+static void ws_box_blur_v(float (*img)[GB_WIDESCREEN_WIDTH][3], int r) {
+    static float col[GB_SCREEN_HEIGHT][3];
+    const int h = GB_SCREEN_HEIGHT;
+    const float inv = 1.0f / (float)(2 * r + 1);
+    for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
+        for (int c = 0; c < 3; c++) {
+            float acc = 0.0f;
+            for (int i = -r; i <= r; i++) acc += img[i < 0 ? 0 : (i >= h ? h - 1 : i)][x][c];
+            for (int y = 0; y < h; y++) {
+                col[y][c] = acc * inv;
+                const int add = y + r + 1, sub = y - r;
+                acc += img[add >= h ? h - 1 : add][x][c] - img[sub < 0 ? 0 : sub][x][c];
+            }
+        }
+        for (int y = 0; y < h; y++) {
+            img[y][x][0] = col[y][0];
+            img[y][x][1] = col[y][1];
+            img[y][x][2] = col[y][2];
+        }
+    }
+}
+
+static void ws_ambient_update(const uint32_t* src, bool wide, bool new_frame, int frame) {
+    if (g_ws_amb_valid && !new_frame) {
+        return;   /* quadro repetido (pausa, LCD desligado): mantem */
+    }
+    if (frame - g_ws_amb_last_frame > 2) {
+        g_ws_amb_valid = false;   /* voltou depois de um tempo: nao mistura com o antigo */
+    }
+    g_ws_amb_last_frame = frame;
+
+    static float pre[GB_SCREEN_HEIGHT][GB_WIDESCREEN_WIDTH][3];
+    const int right0 = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH;
+    for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
+        for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
+            uint32_t c;
+            if (g_ws_fill_mode == WS_FILL_EDGE) {
+                const int cx = x < GB_WIDESCREEN_MARGIN ? 0
+                             : (x >= right0 ? GB_SCREEN_WIDTH - 1 : x - GB_WIDESCREEN_MARGIN);
+                c = ws_center_px(src, wide, cx, y);
+            } else {
+                /* tela ampliada 1,6x (160 -> 256), centrada */
+                const float sx = 80.0f + ((float)x + 0.5f - 128.0f) * 0.625f;
+                const float sy = 72.0f + ((float)y + 0.5f - 72.0f) * 0.625f;
+                c = ws_center_px(src, wide, (int)sx, (int)sy);
+            }
+            pre[y][x][0] = (float)((c >> 16) & 0xFF);
+            pre[y][x][1] = (float)((c >> 8) & 0xFF);
+            pre[y][x][2] = (float)(c & 0xFF);
+        }
+    }
+    const int rh = 6, rv = (g_ws_fill_mode == WS_FILL_EDGE) ? 10 : 6;
+    for (int pass = 0; pass < 2; pass++) {
+        ws_box_blur_h(pre, rh);
+        ws_box_blur_v(pre, rv);
+    }
+
+    const float dim = 1.0f - (float)g_ws_fill_dim_percent / 100.0f;
+    const float keep = g_ws_amb_valid ? 0.75f : 0.0f;
+    for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
+        for (int x = 0; x < GB_WIDESCREEN_WIDTH; x++) {
+            float t = 0.0f;   /* 0 junto da tela, 1 na borda da janela */
+            if (x < GB_WIDESCREEN_MARGIN) t = (float)(GB_WIDESCREEN_MARGIN - x) / GB_WIDESCREEN_MARGIN;
+            else if (x >= right0) t = (float)(x - right0 + 1) / GB_WIDESCREEN_MARGIN;
+            const float f = dim * (1.0f - 0.35f * t);
+            for (int c = 0; c < 3; c++) {
+                const float v = pre[y][x][c] * f;
+                g_ws_amb[y][x][c] = g_ws_amb[y][x][c] * keep + v * (1.0f - keep);
+            }
+        }
+    }
+    g_ws_amb_valid = true;
+}
+
+static inline uint32_t ws_amb_pack(const float* p) {
+    const int r = (int)(p[0] + 0.5f), g = (int)(p[1] + 0.5f), b = (int)(p[2] + 0.5f);
+    return 0xFF000000u | ((uint32_t)(r > 255 ? 255 : r) << 16) |
+           ((uint32_t)(g > 255 ? 255 : g) << 8) | (uint32_t)(b > 255 ? 255 : b);
+}
+
+/* Linha na resolucao base (1x). */
+static void ws_ambient_row_1x(int y, uint32_t* row) {
+    for (int x = 0; x < GB_WIDESCREEN_MARGIN; x++) {
+        row[x] = ws_amb_pack(g_ws_amb[y][x]);
+        const int xr = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH + x;
+        row[xr] = ws_amb_pack(g_ws_amb[y][xr]);
+    }
+}
+
+/* Linhas HD (escala > 1) das laterais, com interpolacao bilinear. */
+static void ws_ambient_rows_hd(void* pixels, int pitch, int y, int scale) {
+    const int right0 = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH;
+    for (int k = 0; k < scale; k++) {
+        const int Y = y * scale + k;
+        float fy = ((float)Y + 0.5f) / (float)scale - 0.5f;
+        if (fy < 0.0f) fy = 0.0f;
+        if (fy > GB_SCREEN_HEIGHT - 1) fy = (float)(GB_SCREEN_HEIGHT - 1);
+        const int y0 = (int)fy;
+        const int y1 = y0 + 1 < GB_SCREEN_HEIGHT ? y0 + 1 : y0;
+        const float wy = fy - (float)y0;
+        uint32_t* dst = (uint32_t*)((uint8_t*)pixels + (size_t)Y * pitch);
+        for (int side = 0; side < 2; side++) {
+            const int lo = side ? right0 : 0;
+            const int hi = lo + GB_WIDESCREEN_MARGIN - 1;
+            for (int X = lo * scale; X < (hi + 1) * scale; X++) {
+                float fx = ((float)X + 0.5f) / (float)scale - 0.5f;
+                if (fx < (float)lo) fx = (float)lo;
+                if (fx > (float)hi) fx = (float)hi;
+                const int x0 = (int)fx;
+                const int x1 = x0 + 1 <= hi ? x0 + 1 : x0;
+                const float wx = fx - (float)x0;
+                float p[3];
+                for (int c = 0; c < 3; c++) {
+                    const float a = g_ws_amb[y0][x0][c] * (1.0f - wx) + g_ws_amb[y0][x1][c] * wx;
+                    const float b = g_ws_amb[y1][x0][c] * (1.0f - wx) + g_ws_amb[y1][x1][c] * wx;
+                    p[c] = a * (1.0f - wy) + b * wy;
+                }
+                dst[X] = ws_amb_pack(p);
+            }
+        }
+    }
+}
+
 static GBPortFrame g_port_frame = {};
 static bool g_port_frame_valid = false;
 static GBInputBinding g_keyboard_bindings[GB_INPUT_ACTION_COUNT][2] = {};
@@ -1405,6 +1575,20 @@ static void load_runtime_preferences(void) {
                     }
                     continue;
                 }
+if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= WS_FILL_BLACK && parsed <= WS_FILL_CENTER) {
+                        g_ws_fill_mode = (int)parsed;
+                    }
+                    continue;
+                }
+                if (strcmp(key, "display.widescreen_fill_dim") == 0) {   /* passo 8a */
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= 0 && parsed <= 90) {
+                        g_ws_fill_dim_percent = (int)parsed;
+                    }
+                    continue;
+                }
                 if (strcmp(key, "audio.gb_volume_percent") == 0) {   /* passo 6e */
                     long parsed = strtol(value, NULL, 10);
                     if (parsed >= 0 && parsed <= 200) {
@@ -1651,6 +1835,8 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.fullscreen=%d\n", g_fullscreen ? 1 : 0);
     fprintf(file, "display.widescreen_v2=%d\n", g_widescreen_mode ? 1 : 0);   /* [fix-v2] */
     fprintf(file, "display.widescreen_fade_enabled=%d\n", g_widescreen_fade_enabled ? 1 : 0);
+    fprintf(file, "display.widescreen_fill_mode=%d\n", g_ws_fill_mode);          /* passo 8a */
+    fprintf(file, "display.widescreen_fill_dim=%d\n", g_ws_fill_dim_percent);    /* passo 8a */
     fprintf(file, "display.widescreen_fade_percent=%d\n", g_widescreen_fade_percent);
     fprintf(file, "display.internal_scale=%d\n", g_internal_res_scale);
     fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
@@ -2857,6 +3043,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
     const int texture_height = base_height * scale;
     const bool black_fill_non_side_scrolling = g_widescreen_mode && gb_platform_should_black_fill_non_side_scrolling(g_registered_ctx);
     const bool src_is_wide = (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE);
+    /* Passo 8a: fundo ambiente nas laterais que seriam pretas. */
+    const bool ws_ambient = black_fill_non_side_scrolling && g_ws_fill_mode != WS_FILL_BLACK &&
+                            base_width == GB_WIDESCREEN_WIDTH && g_palette_idx == 0;
+    if (ws_ambient) {
+        ws_ambient_update(src, src_is_wide, count_guest_frame, g_frame_count);
+    }
 
     if (g_palette_idx == 0) {
         /* Monta cada linha uma vez na resolução base, amplia na horizontal
@@ -2906,6 +3098,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
                         base_row[x] = 0xFF000000;
                         base_row[GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH + x] = 0xFF000000;
                     }
+                    if (ws_ambient) {
+                        ws_ambient_row_1x(y, base_row);   /* passo 8a */
+                    }
                 }
             } else {
                 memcpy(base_row, src + (size_t)y * GB_SCREEN_WIDTH,
@@ -2944,6 +3139,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     memcpy(dst, m_src, m_w * sizeof(uint32_t));
                     memcpy(dst + right_x, m_src + m_w, m_w * sizeof(uint32_t));
                 }
+            }
+            if (ws_ambient && scale > 1) {
+                ws_ambient_rows_hd(pixels, pitch, y, scale);   /* passo 8a: suave no HD */
             }
         }
     } else {    
@@ -3444,6 +3642,25 @@ static void render_frame_internal(const uint32_t* framebuffer,
         }
         if (g_widescreen_mode) {
             ImGui::TextDisabled("Extends the background at the sides; may reveal unused tiles.");
+
+            /* Passo 8a */
+            int fill_mode = g_ws_fill_mode;
+            static const char* fill_names[] = {"Preto", "Borda desfocada", "Centro desfocado"};
+            if (ImGui::Combo("Laterais sem cenario", &fill_mode, fill_names, IM_ARRAYSIZE(fill_names))) {
+                g_ws_fill_mode = fill_mode;
+                g_ws_amb_valid = false;
+                save_runtime_preferences();
+            }
+            if (g_ws_fill_mode != WS_FILL_BLACK) {
+                int dim = g_ws_fill_dim_percent;
+                if (ImGui::SliderInt("Escurecer laterais (%)", &dim, 0, 90)) {
+                    g_ws_fill_dim_percent = dim;
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    save_runtime_preferences();
+                }
+            }
+            ImGui::TextDisabled("Titulo, COURSE, chefe, transicoes. Paredes das salas ficam pretas.");
 
             bool fade_enabled = g_widescreen_fade_enabled;
             if (ImGui::Checkbox("Widescreen Edge Fade", &fade_enabled)) {
