@@ -242,7 +242,11 @@ static GBContext* g_registered_ctx = NULL;
 static bool g_widescreen_mode = true;   /* [fix-v2] widescreen ligado por padrão */
 static bool g_widescreen_fade_enabled = true;
 static int g_widescreen_fade_percent = 65; /* mirrors GBPPU's default of 0.65f */
-static bool g_widescreen_auto_active = false; /* current effective state, gated by sGameMode */
+static bool g_widescreen_auto_active = false;
+/* Passo 10a: 0 = 60 fps (original), 1 = 120 fps (quadros intermediarios) */
+static int g_fps_mode = 0;
+static bool g_ip_mid_draw = false;   /* desenhando o quadro do meio */
+static void ip_release_textures(void); /* current effective state, gated by sGameMode */
 
 // Variável para guardar o estado do filtro selecionado
 static GBPostFilterMode g_post_filter_mode = GB_POST_FILTER_NONE;
@@ -1684,6 +1688,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     ppu_native_hd_set_tiles_enabled(strcmp(value, "0") != 0);
                     continue;
                 }
+                if (strcmp(key, "display.fps_mode") == 0) {   /* passo 10a */
+                    g_fps_mode = (strtol(value, NULL, 10) == 1) ? 1 : 0;
+                    continue;
+                }
                 if (strcmp(key, "display.renderer") == 0) {
                     long parsed = strtol(value, NULL, 10);
                     if (parsed >= 0 && parsed < PPU_RENDERER_COUNT) {
@@ -1842,6 +1850,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
+    fprintf(file, "display.fps_mode=%d\n", g_fps_mode);   /* passo 10a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
     for (int i = 0; i < hd_pack_io_disabled_count(); ++i) {
@@ -2548,6 +2557,7 @@ static bool recreate_streaming_texture(void) {
     if (!g_renderer || g_benchmark_mode) {
         return true;
     }
+    ip_release_textures();   /* passo 10a */
 
     if (g_texture) {
         SDL_DestroyTexture(g_texture);
@@ -2792,6 +2802,459 @@ static void render_binding_editor(const char* section_label,
     }
 }
 
+/* ============================================================================
+ * Passo 10a: 120 fps com quadros intermediarios.
+ *
+ * O jogo continua rodando a ~60 quadros por segundo: fisica, musica e tudo o
+ * que conta quadros do jogo ficam na mesma velocidade. Entre dois quadros do
+ * jogo a tela mostra um quadro do meio, montado a partir do ultimo quadro:
+ *   - cenario: cada linha anda metade do que o SCX/SCY andou no ultimo quadro
+ *     (linhas da window, como o HUD, ficam paradas; parallax por linha vale);
+ *   - sprites: cada sprite anda metade do que andou na tela no ultimo quadro
+ *     (procura o mesmo sprite no quadro anterior pelo tile e pelo slot do OAM);
+ *   - por baixo dos sprites o cenario e preenchido com os pontos vizinhos.
+ * E uma previsao (meio passo a frente), sem atraso a mais. Saltos grandes
+ * (porta, troca de sala, LCD desligado) nao sao interpolados. So liga com
+ * monitor de 100 Hz ou mais e velocidade em 100%.
+ * ========================================================================== */
+static const char* g_fps_mode_names[] = {
+    "60 fps (original)",
+    "120 fps (quadros intermediarios)",
+};
+
+#define IP_MAX_SHIFT 6   /* andou mais que isso num quadro = salto, nao interpola */
+
+struct IpSprite {
+    bool on;
+    int x, y, h;    /* na resolucao base da textura (com a margem do widescreen) */
+    int vx, vy;     /* quanto andou na tela no ultimo quadro */
+};
+
+static SDL_Texture* g_ip_tex_bg = NULL;    /* cenario sem os sprites */
+static SDL_Texture* g_ip_tex_obj = NULL;   /* so os sprites (alfa) */
+static int g_ip_tex_w = 0;
+static int g_ip_tex_h = 0;
+static std::vector<uint32_t> g_ip_comp;    /* quadro montado (o mesmo da tela) */
+static std::vector<uint32_t> g_ip_bg;
+static std::vector<uint32_t> g_ip_obj;
+static uint8_t g_ip_owner[GB_WIDESCREEN_FRAMEBUFFER_SIZE];   /* indice OAM + 1 */
+static bool g_ip_valid = false;            /* quadro atual capturado */
+static bool g_ip_prev_valid = false;       /* o anterior tambem (e nada invalidou) */
+static bool g_ip_have_prev = false;
+static int g_ip_base_w = GB_SCREEN_WIDTH;
+static int g_ip_scale = 1;
+static bool g_ip_black_fill = false;
+static int g_ip_xmin = 0;
+static int g_ip_xmax = GB_SCREEN_WIDTH;
+static uint8_t g_ip_oam_cur[OAM_SIZE];
+static uint8_t g_ip_oam_prev[OAM_SIZE];
+static PPUNativeLineState g_ip_lines_cur[GB_SCREEN_HEIGHT];
+static PPUNativeLineState g_ip_lines_prev[GB_SCREEN_HEIGHT];
+static bool g_ip_lines_ok_cur = false;
+static bool g_ip_lines_ok_prev = false;
+static int8_t g_ip_line_dx[GB_SCREEN_HEIGHT];
+static int8_t g_ip_line_dy[GB_SCREEN_HEIGHT];
+static IpSprite g_ip_spr[40];
+static uint64_t g_ip_last_present = 0;     /* contador de desempenho do ultimo quadro do jogo */
+static uint32_t g_ip_mid_count = 0;
+static uint32_t g_ip_mid_per_s = 0;
+static uint32_t g_ip_mid_window_start = 0;
+static int g_ip_refresh_hz = 0;
+/* Passo 10b: por que o quadro do meio nao saiu (por segundo) */
+enum { IP_SKIP_NO_FRAME = 0, IP_SKIP_NO_PREV, IP_SKIP_AUDIO, IP_SKIP_OFF, IP_SKIP_LATE, IP_SKIP_COUNT };
+static uint32_t g_ip_skip_count[IP_SKIP_COUNT] = {};
+static uint32_t g_ip_skip_shown[IP_SKIP_COUNT] = {};
+static uint32_t g_ip_skip_window_start = 0;
+static double g_ip_last_gap_ms = 0.0;   /* do quadro do jogo ate o alvo do proximo */
+/* Passo 10c: o quadro do meio sai primeiro e o quadro do jogo fica para
+ * meio quadro depois (interpolacao de verdade, atraso de ~8 ms). */
+static bool g_ip_pending_main = false;
+
+static void ip_note_skip(int reason) {
+    const uint32_t now = SDL_GetTicks();
+    if (now - g_ip_skip_window_start >= 1000) {
+        memcpy(g_ip_skip_shown, g_ip_skip_count, sizeof(g_ip_skip_shown));
+        memset(g_ip_skip_count, 0, sizeof(g_ip_skip_count));
+        g_ip_skip_window_start = now;
+    }
+    if (reason >= 0 && reason < IP_SKIP_COUNT) g_ip_skip_count[reason]++;
+}
+
+static void ip_skip_text(char* out, size_t n) {
+    if (SDL_GetTicks() - g_ip_skip_window_start > 2000) {
+        snprintf(out, n, "Pulados/s: nenhum");
+        return;
+    }
+    snprintf(out, n, "Pulados/s: sem quadro %u, sem anterior %u, desligado %u (folga %.1f ms)",
+             g_ip_skip_shown[IP_SKIP_NO_FRAME], g_ip_skip_shown[IP_SKIP_NO_PREV],
+             g_ip_skip_shown[IP_SKIP_OFF], g_ip_last_gap_ms);
+}
+static uint32_t g_ip_refresh_checked = 0;
+
+static void ip_invalidate(void) {
+    g_ip_valid = false;
+    g_ip_prev_valid = false;
+    g_ip_have_prev = false;
+}
+
+static void ip_release_textures(void) {
+    if (g_ip_tex_bg) SDL_DestroyTexture(g_ip_tex_bg);
+    if (g_ip_tex_obj) SDL_DestroyTexture(g_ip_tex_obj);
+    g_ip_tex_bg = NULL;
+    g_ip_tex_obj = NULL;
+    g_ip_tex_w = 0;
+    g_ip_tex_h = 0;
+    ip_invalidate();
+}
+
+static int ip_display_refresh_hz(void) {
+    const uint32_t now = SDL_GetTicks();
+    if (g_window && (g_ip_refresh_checked == 0 || now - g_ip_refresh_checked > 1000)) {
+        g_ip_refresh_checked = now ? now : 1;
+        const int idx = SDL_GetWindowDisplayIndex(g_window);
+        SDL_DisplayMode mode;
+        if (idx >= 0 && SDL_GetCurrentDisplayMode(idx, &mode) == 0) {
+            g_ip_refresh_hz = mode.refresh_rate;
+        }
+    }
+    return g_ip_refresh_hz;
+}
+
+static bool ip_refresh_ok(void) {
+    const int hz = ip_display_refresh_hz();
+    return hz >= 100 || (hz == 0 && !g_vsync);
+}
+
+static uint32_t ip_mid_per_second(void) {
+    if (SDL_GetTicks() - g_ip_mid_window_start > 2000) {
+        return 0;
+    }
+    return g_ip_mid_per_s;
+}
+
+static bool ip_mid_wanted(void) {
+    return g_fps_mode == 1 && g_ip_valid && g_ip_have_prev && g_renderer &&
+           g_ip_tex_bg && g_ip_tex_obj && !g_benchmark_mode && !g_app_suspended &&
+           effective_speed_percent() == 100 && ip_refresh_ok();
+}
+
+/* Passo 10c */
+static bool ip_mid_ready_note(void) {
+    if (!g_ip_valid) { ip_note_skip(IP_SKIP_NO_FRAME); return false; }
+    if (!g_ip_have_prev) { ip_note_skip(IP_SKIP_NO_PREV); return false; }
+    if (!ip_mid_wanted()) { ip_note_skip(IP_SKIP_OFF); return false; }
+    ip_note_skip(-1);
+    return true;
+}
+
+static bool ip_capture_wanted(bool count_guest_frame) {
+    return g_fps_mode == 1 && count_guest_frame && !g_ip_mid_draw && g_renderer;
+}
+
+/* Buffer onde o quadro e montado (no lugar da textura travada). */
+static void* ip_comp_buffer(int* out_pitch) {
+    const int base_w = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+    const int w = base_w * g_texture_scale;
+    const int h = GB_SCREEN_HEIGHT * g_texture_scale;
+    g_ip_comp.resize((size_t)w * (size_t)h);
+    *out_pitch = w * (int)sizeof(uint32_t);
+    return g_ip_comp.data();
+}
+
+static inline int ip_wrap(int d) {
+    d &= 0xFF;
+    return d >= 128 ? d - 256 : d;
+}
+
+/* Posicao do sprite na tela (x ajustado como nas laterais do widescreen). */
+static bool ip_oam_pos(const uint8_t* o, int* out_x, int* out_y) {
+    if (o[0] == 0 || o[0] >= 160 || o[1] == 0) {
+        return false;
+    }
+    const int center = GB_SCREEN_WIDTH / 2;
+    int sx = (int)o[1] - 8;
+    int best = sx;
+    if (abs(sx - 256 - center) < abs(best - center)) best = sx - 256;
+    if (abs(sx + 256 - center) < abs(best - center)) best = sx + 256;
+    *out_x = best;
+    *out_y = (int)o[0] - 16;
+    return true;
+}
+
+static void ip_build_sprites(const GBContext* ctx) {
+    memset(g_ip_owner, 0, (size_t)g_ip_base_w * GB_SCREEN_HEIGHT);
+    for (int i = 0; i < 40; i++) {
+        g_ip_spr[i].on = false;
+    }
+    if (!ctx || !ctx->oam || !ctx->vram) {
+        return;
+    }
+    const bool cgb = ctx->config.model == GB_MODEL_CGB && !ctx->config.cgb_compatibility_mode;
+    const int off = (g_ip_base_w == GB_WIDESCREEN_WIDTH) ? GB_WIDESCREEN_MARGIN : 0;
+
+    /* Do ultimo para o primeiro: o de indice menor fica por cima. */
+    for (int i = 39; i >= 0; --i) {
+        const uint8_t* o = &g_ip_oam_cur[i * 4];
+        int sx = 0, sy = 0;
+        if (!ip_oam_pos(o, &sx, &sy)) continue;
+        if (o[3] & OAM_PRIORITY) continue;   /* atras do cenario: anda junto com ele */
+        const int ly0 = sy < 0 ? 0 : (sy > GB_SCREEN_HEIGHT - 1 ? GB_SCREEN_HEIGHT - 1 : sy);
+        const uint8_t lcdc = g_ip_lines_ok_cur ? g_ip_lines_cur[ly0].lcdc : ctx->io[0x40];
+        const int h = (lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
+        const uint8_t tile = (h == 16) ? (uint8_t)(o[2] & 0xFE) : o[2];
+        const size_t bank_base = (cgb && (o[3] & OAM_CGB_BANK)) ? (size_t)VRAM_SIZE : 0u;
+        bool any = false;
+        for (int r = 0; r < h; r++) {
+            const int y = sy + r;
+            if (y < 0 || y >= GB_SCREEN_HEIGHT) continue;
+            if (g_ip_lines_ok_cur && !(g_ip_lines_cur[y].lcdc & LCDC_OBJ_ENABLE)) continue;
+            const int line = (o[3] & OAM_FLIP_Y) ? (h - 1 - r) : r;
+            const size_t addr = bank_base + (size_t)tile * 16u + (size_t)line * 2u;
+            const uint8_t lo = ctx->vram[addr];
+            const uint8_t hi = ctx->vram[addr + 1];
+            uint8_t* row = g_ip_owner + (size_t)y * g_ip_base_w;
+            for (int c = 0; c < 8; c++) {
+                const int bit = (o[3] & OAM_FLIP_X) ? c : 7 - c;
+                if ((((lo >> bit) & 1) | (((hi >> bit) & 1) << 1)) == 0) continue;
+                const int x = sx + off + c;
+                if (x < g_ip_xmin || x >= g_ip_xmax) continue;
+                row[x] = (uint8_t)(i + 1);
+                any = true;
+            }
+        }
+        if (!any) continue;
+        IpSprite& s = g_ip_spr[i];
+        s.on = true;
+        s.x = sx + off;
+        s.y = sy;
+        s.h = h;
+        s.vx = 0;
+        s.vy = 0;
+        if (!g_ip_have_prev) continue;
+
+        /* Mesmo sprite no quadro anterior: 1) mesmo slot e mesmo tile;
+         * 2) mesmo tile em outro slot, o mais perto; 3) mesmo slot (o
+         * desenho mudou na animacao). */
+        int best_d = 1 << 30, bvx = 0, bvy = 0;
+        bool found = false;
+        int px = 0, py = 0;
+        const uint8_t* p = &g_ip_oam_prev[i * 4];
+        if (ip_oam_pos(p, &px, &py) && p[2] == o[2] && (p[3] & 0x60) == (o[3] & 0x60) &&
+            abs(sx - px) <= IP_MAX_SHIFT && abs(sy - py) <= IP_MAX_SHIFT) {
+            bvx = sx - px; bvy = sy - py; found = true;
+        }
+        if (!found) {
+            for (int j = 0; j < 40; j++) {
+                const uint8_t* q = &g_ip_oam_prev[j * 4];
+                if (q[2] != o[2] || (q[3] & 0x60) != (o[3] & 0x60)) continue;
+                if (!ip_oam_pos(q, &px, &py)) continue;
+                const int dx = sx - px, dy = sy - py;
+                if (abs(dx) > IP_MAX_SHIFT || abs(dy) > IP_MAX_SHIFT) continue;
+                const int d = dx * dx + dy * dy;
+                if (d < best_d) { best_d = d; bvx = dx; bvy = dy; found = true; }
+            }
+        }
+        if (!found && ip_oam_pos(p, &px, &py) &&
+            abs(sx - px) <= IP_MAX_SHIFT && abs(sy - py) <= IP_MAX_SHIFT) {
+            bvx = sx - px; bvy = sy - py; found = true;
+        }
+        if (found) {
+            s.vx = bvx;
+            s.vy = bvy;
+        }
+    }
+}
+
+static void ip_build_line_shifts(void) {
+    memset(g_ip_line_dx, 0, sizeof(g_ip_line_dx));
+    memset(g_ip_line_dy, 0, sizeof(g_ip_line_dy));
+    if (!g_ip_have_prev || !g_ip_lines_ok_cur || !g_ip_lines_ok_prev) {
+        return;
+    }
+    for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
+        const PPUNativeLineState& a = g_ip_lines_cur[y];
+        const PPUNativeLineState& b = g_ip_lines_prev[y];
+        const bool win_a = (a.flags & PPU_NATIVE_LINE_WINDOW) && a.wx <= 7;
+        const bool win_b = (b.flags & PPU_NATIVE_LINE_WINDOW) && b.wx <= 7;
+        if (win_a || win_b || ((a.lcdc ^ b.lcdc) & (LCDC_BG_TILEMAP | LCDC_TILE_DATA))) {
+            continue;
+        }
+        const int dx = ip_wrap((int)a.scx - (int)b.scx);
+        const int dy = ip_wrap((int)a.scy - (int)b.scy);
+        if (abs(dx) > IP_MAX_SHIFT || abs(dy) > IP_MAX_SHIFT) {
+            continue;
+        }
+        g_ip_line_dx[y] = (int8_t)dx;
+        g_ip_line_dy[y] = (int8_t)dy;
+    }
+}
+
+static bool ip_ensure_textures(int w, int h) {
+    if (g_ip_tex_bg && g_ip_tex_obj && g_ip_tex_w == w && g_ip_tex_h == h) {
+        return true;
+    }
+    if (g_ip_tex_bg) SDL_DestroyTexture(g_ip_tex_bg);
+    if (g_ip_tex_obj) SDL_DestroyTexture(g_ip_tex_obj);
+    g_ip_tex_bg = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                    SDL_TEXTUREACCESS_STREAMING, w, h);
+    g_ip_tex_obj = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                     SDL_TEXTUREACCESS_STREAMING, w, h);
+    if (!g_ip_tex_bg || !g_ip_tex_obj) {
+        if (g_ip_tex_bg) SDL_DestroyTexture(g_ip_tex_bg);
+        if (g_ip_tex_obj) SDL_DestroyTexture(g_ip_tex_obj);
+        g_ip_tex_bg = NULL;
+        g_ip_tex_obj = NULL;
+        g_ip_tex_w = 0;
+        g_ip_tex_h = 0;
+        return false;
+    }
+    SDL_SetTextureBlendMode(g_ip_tex_bg, SDL_BLENDMODE_NONE);
+    SDL_SetTextureBlendMode(g_ip_tex_obj, SDL_BLENDMODE_BLEND);
+    g_ip_tex_w = w;
+    g_ip_tex_h = h;
+    return true;
+}
+
+/* Chamado com o quadro do jogo ja montado em g_ip_comp: copia para a textura
+ * da tela e prepara o cenario sem sprites e a camada de sprites. */
+static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int tex_h,
+                              int scale, int base_w, bool black_fill) {
+    for (int y = 0; y < tex_h; y++) {
+        memcpy((uint8_t*)tex_pixels + (size_t)y * tex_pitch,
+               g_ip_comp.data() + (size_t)y * tex_w, (size_t)tex_w * sizeof(uint32_t));
+    }
+
+    /* O quadro atual vira o anterior. */
+    memcpy(g_ip_oam_prev, g_ip_oam_cur, sizeof(g_ip_oam_prev));
+    memcpy(g_ip_lines_prev, g_ip_lines_cur, sizeof(g_ip_lines_prev));
+    g_ip_lines_ok_prev = g_ip_lines_ok_cur;
+    g_ip_have_prev = g_ip_prev_valid && base_w == g_ip_base_w && scale == g_ip_scale &&
+                     black_fill == g_ip_black_fill;
+
+    const GBContext* ctx = g_registered_ctx;
+    if (ctx && ctx->oam) {
+        memcpy(g_ip_oam_cur, ctx->oam, sizeof(g_ip_oam_cur));
+    } else {
+        memset(g_ip_oam_cur, 0, sizeof(g_ip_oam_cur));
+    }
+    const PPUNativeLineState* ls =
+        (ppu_native_get_mode() != PPU_RENDERER_EMULATED) ? ppu_native_line_states() : NULL;
+    if (ls) {
+        memcpy(g_ip_lines_cur, ls, sizeof(g_ip_lines_cur));
+    }
+    g_ip_lines_ok_cur = (ls != NULL);
+
+    g_ip_base_w = base_w;
+    g_ip_scale = scale;
+    g_ip_black_fill = black_fill;
+    const int off = (base_w == GB_WIDESCREEN_WIDTH) ? GB_WIDESCREEN_MARGIN : 0;
+    g_ip_xmin = black_fill ? off : 0;
+    g_ip_xmax = black_fill ? off + GB_SCREEN_WIDTH : base_w;
+
+    ip_build_sprites(ctx);
+    ip_build_line_shifts();
+
+    if (!ip_ensure_textures(tex_w, tex_h)) {
+        return;
+    }
+    const size_t n = (size_t)tex_w * (size_t)tex_h;
+    g_ip_bg.assign(g_ip_comp.begin(), g_ip_comp.begin() + (ptrdiff_t)n);
+    g_ip_obj.assign(n, 0u);
+    for (int ty = 0; ty < tex_h; ty++) {
+        const uint8_t* ow = g_ip_owner + (size_t)(ty / scale) * base_w;
+        const uint32_t* comp = g_ip_comp.data() + (size_t)ty * tex_w;
+        uint32_t* bg = g_ip_bg.data() + (size_t)ty * tex_w;
+        uint32_t* obj = g_ip_obj.data() + (size_t)ty * tex_w;
+        int x = 0;
+        while (x < base_w) {
+            if (!ow[x]) { x++; continue; }
+            const int a = x;
+            while (x < base_w && ow[x]) x++;
+            const int b = x;
+            const int ta = a * scale, tb = b * scale, tm = (ta + tb) / 2;
+            for (int tx = ta; tx < tb; tx++) {
+                obj[tx] = comp[tx] | 0xFF000000u;
+            }
+            /* Cenario por baixo do sprite: metade com o ponto da esquerda,
+             * metade com o da direita. */
+            const uint32_t cl = (ta > 0) ? comp[ta - 1] : (tb < tex_w ? comp[tb] : 0xFF000000u);
+            const uint32_t cr = (tb < tex_w) ? comp[tb] : cl;
+            for (int tx = ta; tx < tm; tx++) bg[tx] = cl;
+            for (int tx = tm; tx < tb; tx++) bg[tx] = cr;
+        }
+    }
+    SDL_UpdateTexture(g_ip_tex_bg, NULL, g_ip_bg.data(), tex_w * (int)sizeof(uint32_t));
+    SDL_UpdateTexture(g_ip_tex_obj, NULL, g_ip_obj.data(), tex_w * (int)sizeof(uint32_t));
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    const SDL_ScaleMode sm = (g_render_filter_mode == GB_RENDER_FILTER_LINEAR)
+                                 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest;
+    SDL_SetTextureScaleMode(g_ip_tex_bg, sm);
+    SDL_SetTextureScaleMode(g_ip_tex_obj, sm);
+#endif
+    g_ip_valid = true;
+}
+
+/* Desenha o quadro do meio no lugar da textura da tela. */
+static void ip_draw_mid(void) {
+    const SDL_Rect vp = g_game_viewport;
+    if (!g_ip_tex_bg || !g_ip_tex_obj || vp.w <= 0 || vp.h <= 0) {
+        SDL_RenderCopy(g_renderer, g_texture, NULL, &vp);
+        return;
+    }
+    const float t = -0.5f;   /* passo 10c: este quadro recuado meio passo = meio do caminho desde o anterior */
+    const float kx = (float)vp.w / (float)g_ip_base_w;
+    const float ky = (float)vp.h / (float)GB_SCREEN_HEIGHT;
+    const int s = g_ip_scale;
+
+    SDL_RenderCopy(g_renderer, g_ip_tex_bg, NULL, &vp);
+
+    SDL_Rect clip = vp;
+    if (g_ip_xmin > 0 || g_ip_xmax < g_ip_base_w) {
+        clip.x = vp.x + (int)((float)g_ip_xmin * kx + 0.5f);
+        clip.w = (int)((float)(g_ip_xmax - g_ip_xmin) * kx + 0.5f);
+    }
+    SDL_RenderSetClipRect(g_renderer, &clip);
+
+    /* Cenario: primeiro as faixas que andam, depois as paradas por cima
+     * (HUD fica firme). */
+    bool any_moving = false;
+    for (int pass = 0; pass < 2; pass++) {
+        int y = 0;
+        while (y < GB_SCREEN_HEIGHT) {
+            const int dx = g_ip_line_dx[y], dy = g_ip_line_dy[y];
+            int y1 = y + 1;
+            while (y1 < GB_SCREEN_HEIGHT && g_ip_line_dx[y1] == dx && g_ip_line_dy[y1] == dy) y1++;
+            const bool still = (dx == 0 && dy == 0);
+            if (!still) any_moving = true;
+            if ((pass == 0 && !still) || (pass == 1 && still && any_moving)) {
+                const SDL_Rect src = {0, y * s, g_ip_tex_w, (y1 - y) * s};
+                const SDL_FRect dst = {(float)vp.x - (float)dx * t * kx,
+                                       (float)vp.y + ((float)y - (float)dy * t) * ky,
+                                       (float)vp.w, (float)(y1 - y) * ky};
+                SDL_RenderCopyF(g_renderer, g_ip_tex_bg, &src, &dst);
+            }
+            y = y1;
+        }
+    }
+
+    /* Sprites: o de indice menor por ultimo (fica por cima). */
+    for (int i = 39; i >= 0; --i) {
+        const IpSprite& sp = g_ip_spr[i];
+        if (!sp.on) continue;
+        const int x0 = sp.x < g_ip_xmin ? g_ip_xmin : sp.x;
+        const int x1 = (sp.x + 8) > g_ip_xmax ? g_ip_xmax : sp.x + 8;
+        const int y0 = sp.y < 0 ? 0 : sp.y;
+        const int y1 = (sp.y + sp.h) > GB_SCREEN_HEIGHT ? GB_SCREEN_HEIGHT : sp.y + sp.h;
+        if (x1 <= x0 || y1 <= y0) continue;
+        const SDL_Rect src = {x0 * s, y0 * s, (x1 - x0) * s, (y1 - y0) * s};
+        const SDL_FRect dst = {(float)vp.x + ((float)x0 + (float)sp.vx * t) * kx,
+                               (float)vp.y + ((float)y0 + (float)sp.vy * t) * ky,
+                               (float)(x1 - x0) * kx, (float)(y1 - y0) * ky};
+        SDL_RenderCopyF(g_renderer, g_ip_tex_obj, &src, &dst);
+    }
+    SDL_RenderSetClipRect(g_renderer, NULL);
+}
+
 static void ensure_lcd_off_framebuffer(void) {
     if (g_lcd_off_framebuffer_initialized) {
         return;
@@ -2815,6 +3278,14 @@ static void render_frame_internal(const uint32_t* framebuffer,
     }
 
     g_present_count++;
+    if (!g_ip_mid_draw) {   /* passo 10a */
+        if (count_guest_frame) {
+            g_ip_prev_valid = g_ip_valid;   /* o anterior serve de base para a velocidade */
+            g_ip_valid = false;
+        } else {
+            ip_invalidate();   /* frame repetido (LCD desligado, pausa) */
+        }
+    }
     if (count_guest_frame && g_last_vsync_end_ms > 0.0) {
         timing_window_add(g_emu_window, sdl_now_ms() - g_last_vsync_end_ms);
     }
@@ -2929,7 +3400,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
         char title[64];
         snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Frame %d", g_frame_count);
         SDL_SetWindowTitle(g_window, title);
-    } else if (!count_guest_frame && (g_present_count % 30) == 0) {
+    } else if (!count_guest_frame && !g_ip_mid_draw && (g_present_count % 30) == 0) {
         char title[96];
         if (g_frame_count == 0) {
             snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Starting... (%llu)",
@@ -2941,11 +3412,20 @@ static void render_frame_internal(const uint32_t* framebuffer,
         SDL_SetWindowTitle(g_window, title);
     }
 
+    if (!g_ip_mid_draw) {   /* passo 10a: o quadro do meio usa o que ja foi montado */
     /* Update texture */
     double upload_start_ms = sdl_now_ms();
     void* pixels;
     int pitch;
     SDL_LockTexture(g_texture, NULL, &pixels, &pitch);
+    /* Passo 10a: com 120 fps o quadro e montado num buffer proprio, copiado
+     * para a textura no fim; o buffer vira a base do quadro do meio. */
+    void* ip_tex_pixels = pixels;
+    const int ip_tex_pitch = pitch;
+    const bool ip_capture = ip_capture_wanted(count_guest_frame);
+    if (ip_capture) {
+        pixels = ip_comp_buffer(&pitch);
+    }
 
     const uint32_t* src = framebuffer;
     int src_pixel_count = GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT;
@@ -3196,8 +3676,13 @@ static void render_frame_internal(const uint32_t* framebuffer,
     // Aplica o filtro de pós-processamento ativo diretamente no buffer escalado
     post_processing_apply(g_post_filter_mode, (uint32_t*)pixels, texture_width, texture_height, pitch);
 
+    if (ip_capture) {   /* passo 10a */
+        ip_finish_capture(ip_tex_pixels, ip_tex_pitch, texture_width, texture_height,
+                          scale, base_width, black_fill_non_side_scrolling);
+    }
     SDL_UnlockTexture(g_texture);
     g_last_timing.upload_ms = sdl_now_ms() - upload_start_ms;
+    }   /* passo 10a: fim do if (!g_ip_mid_draw) */
 
     /* Clear and render */
     double compose_start_ms = sdl_now_ms();
@@ -3208,7 +3693,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
     SDL_RenderClear(g_renderer);
 
     // Desenha a textura do jogo no viewport proporcional correto
-    SDL_RenderCopy(g_renderer, g_texture, NULL, &g_game_viewport);
+    if (g_ip_mid_draw) {
+        /* passo 10c: chamada do ritmo = o quadro do jogo, meio quadro depois */
+        SDL_RenderCopy(g_renderer, g_texture, NULL, &g_game_viewport);
+    } else if (count_guest_frame && g_fps_mode == 1 && ip_mid_ready_note()) {
+        ip_draw_mid();   /* passo 10c: primeiro o meio do caminho entre o anterior e este */
+        g_ip_pending_main = true;
+    } else {
+        SDL_RenderCopy(g_renderer, g_texture, NULL, &g_game_viewport);
+    }
 
     ImGui_ImplSDLRenderer2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
@@ -3719,6 +4212,34 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
         ImGui::Separator();
         ImGui::TextDisabled("Runtime");
+        {   /* passo 10a */
+            int fps_mode = g_fps_mode;
+            if (ImGui::Combo("Quadros por segundo", &fps_mode, g_fps_mode_names,
+                             IM_ARRAYSIZE(g_fps_mode_names))) {
+                g_fps_mode = fps_mode;
+                ip_invalidate();
+                save_runtime_preferences();
+            }
+            if (g_fps_mode == 1) {
+                ImGui::TextDisabled("O jogo continua a 60: fisica e musica na mesma velocidade.");
+                ImGui::TextDisabled("Quadro do meio = meio do caminho entre o anterior e o atual (atraso ~8 ms).");
+                const int hz = ip_display_refresh_hz();
+                if (!ip_refresh_ok()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                       "Monitor a %d Hz: precisa de 100 Hz ou mais. Quadro do meio desligado.", hz);
+                } else if (effective_speed_percent() != 100) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                       "Desligado enquanto a velocidade nao for 100%%.");
+                } else if (hz > 0) {
+                    ImGui::TextDisabled("Monitor: %d Hz. Quadros do meio: %u por segundo.", hz, ip_mid_per_second());
+                    char ip_why[192];
+                    ip_skip_text(ip_why, sizeof(ip_why));
+                    ImGui::TextDisabled("%s", ip_why);   /* passo 10b */
+                } else {
+                    ImGui::TextDisabled("Monitor: frequencia desconhecida. Quadros do meio: %u por segundo.", ip_mid_per_second());
+                }
+            }
+        }
         if (ImGui::Checkbox("V-Sync", &g_vsync)) {
             SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);
         }
@@ -3989,6 +4510,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
         if (ImGui::Begin("Overlay", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
             update_audio_stats_from_ring();
             ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            if (g_fps_mode == 1) {
+                ImGui::Text("Quadros do meio: %u/s", ip_mid_per_second());   /* passo 10a */
+                char ip_why[192];
+                ip_skip_text(ip_why, sizeof(ip_why));
+                ImGui::TextUnformatted(ip_why);   /* passo 10b */
+            }
             {
                 const double budget_ms = 1000.0 * 70224.0 / 4194304.0; /* 16,74 ms */
                 ImGui::Separator();
@@ -4136,13 +4663,58 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
     double present_start_ms = sdl_now_ms();
     SDL_RenderPresent(g_renderer);
+    if (count_guest_frame) {
+        g_ip_last_present = SDL_GetPerformanceCounter();   /* passo 10a */
+    }
 
     g_last_timing.present_ms = sdl_now_ms() - present_start_ms;
     g_last_timing.total_render_ms = sdl_now_ms() - total_render_start_ms;
-    g_timing_render_total += g_last_timing.total_render_ms;
-    timing_window_add(g_render_window, g_last_timing.total_render_ms);
+    if (!g_ip_mid_draw) {   /* passo 10a: a medicao e so do quadro do jogo */
+        g_timing_render_total += g_last_timing.total_render_ms;
+        timing_window_add(g_render_window, g_last_timing.total_render_ms);
+    }
 }
 ////////////////
+
+/* Passo 10a: espera ate o instante pedido (mesmo jeito do ritmo dos quadros). */
+static void ip_wait_until(uint64_t target) {
+    const uint64_t freq = SDL_GetPerformanceFrequency();
+    for (;;) {
+        const uint64_t now = SDL_GetPerformanceCounter();
+        if (now >= target) return;
+        const uint32_t wait_us = (uint32_t)(((target - now) * 1000000ull) / freq);
+        if (wait_us > 4000) {
+            SDL_Delay((wait_us / 1000) - 2);
+        } else if (wait_us > 1500) {
+            SDL_Delay(1);
+        } else {
+            break;
+        }
+    }
+    while (SDL_GetPerformanceCounter() < target) {
+        /* spin */
+    }
+}
+
+/* Passo 10a: mostra o quadro do meio (mesmo menu/overlay, sem mexer no jogo). */
+static void ip_present_mid(void) {
+    if (!g_texture || g_renderer_reset_pending || effective_internal_scale() != g_texture_scale) {
+        return;
+    }
+    const bool wide = g_widescreen_mode && g_last_guest_widescreen_framebuffer_valid;
+    const uint32_t* fb = wide ? g_last_guest_widescreen_framebuffer : g_last_guest_framebuffer;
+    g_ip_mid_draw = true;
+    render_frame_internal(fb, false, wide);
+    g_ip_mid_draw = false;
+
+    const uint32_t now = SDL_GetTicks();
+    if (now - g_ip_mid_window_start >= 1000) {
+        g_ip_mid_per_s = g_ip_mid_count;
+        g_ip_mid_count = 0;
+        g_ip_mid_window_start = now;
+    }
+    g_ip_mid_count++;
+}
 
 /* ============================================================================
  * Platform Functions
@@ -4165,6 +4737,7 @@ void gb_platform_shutdown(void) {
         ImGui::DestroyContext();
     }
 
+    ip_release_textures();   /* passo 10a */
     if (g_texture) {
         SDL_DestroyTexture(g_texture);
         g_texture = NULL;
@@ -5431,6 +6004,29 @@ void gb_platform_vsync(uint32_t frame_cycles) {
     next_frame_time += frame_ticks / 50; /* ~2% mais lento até drenar */
     }
     uint64_t target_frame_time = next_frame_time;
+
+    /* Passo 10a: quadro do meio, meio quadro depois do ultimo quadro do jogo
+     * (assim os dois ficam igualmente espacados). */
+    /* Passo 10b: o quadro do meio vai no meio do intervalo do ritmo (o
+     * horario do ultimo present podia chegar tarde quando o present espera
+     * o monitor); se o jogo demorou mais que meio quadro, sai assim que der. */
+    /* Passo 10c: o quadro do meio ja saiu no lugar do quadro do jogo; o
+     * quadro do jogo sai meio quadro depois (sempre sai, mesmo atrasado). */
+    if (g_ip_pending_main) {
+        g_ip_pending_main = false;
+        g_ip_last_gap_ms = (target_frame_time > now)
+            ? (double)(target_frame_time - now) * 1000.0 / (double)freq : 0.0;
+        uint64_t main_time = g_ip_last_present + frame_ticks / 2;
+        const uint64_t latest = target_frame_time - frame_ticks / 16;
+        if (main_time > latest) {
+            main_time = latest;
+        }
+        if (!audio_starved) {
+            ip_wait_until(main_time);
+        }
+        ip_present_mid();
+        now = SDL_GetPerformanceCounter();
+    }
 
     if (!audio_starved && now < target_frame_time) {
         for (;;) {
