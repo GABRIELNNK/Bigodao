@@ -54,17 +54,20 @@
 
 - **Passo 7o** (removido pelo 7p: não fez nada) — Tentou separar o modo 1 em 11/12 pela música e pintar a faixa do mapa pela janela (WY/WX). A faixa do nome da região não é janela, por isso nada mudou. O usuário pediu para tirar tudo.
 
-- **Passo 7p** (entregue, aguardando teste) — Tira o 7o inteiro (ppu.c, ppu.h e platform_sdl.cpp voltam ao estado do 7n, conferido por diff). Achado do usuário no log `[DX]`: página da fase 43 = mapa geral; 44 = mapa regional 1 (Rice Beach); 46 = regional 2; 4A = regional especial 1. Regra nova em `ppu_render_widescreen_scanline_fast`: `ws_map_band` = modo `$A8C3` == 1 && `0x41 + $A800` != 0x43 && `ly >= 136` (última fileira de tiles, faixa do nome da região) → laterais brancas (0xFFFFFFFF), também no registro HD (`ws_rec`).
+- **Passo 7p** (aplicado) — Tira o 7o inteiro (ppu.c, ppu.h e platform_sdl.cpp voltam ao estado do 7n, conferido por diff). Achado do usuário no log `[DX]`: página da fase 43 = mapa geral; 44 = mapa regional 1 (Rice Beach); 46 = regional 2; 4A = regional especial 1. Regra nova em `ppu_render_widescreen_scanline_fast`: `ws_map_band` = modo `$A8C3` == 1 && `0x41 + $A800` != 0x43 && `ly >= 136` (última fileira de tiles, faixa do nome da região) → laterais brancas (0xFFFFFFFF), também no registro HD (`ws_rec`).
+
+- **Passo 7q** (entregue, aguardando teste) — A cor da faixa do centro varia de mapa para mapa. `ppu_ws_screen_edge_rgba(ppu, ctx, attribute_cache, right)`: cor do fundo no pixel da borda da tela original nesta linha (x = 0 ou x = 159, via `ppu_fetch_widescreen_background_pixel`, sem sprites). Na faixa do mapa regional, a lateral esquerda usa a cor de x = 0 e a direita a de x = 159 (calculadas uma vez por linha), também no registro HD.
 
 ## Mapa (achados)
 - No mapa (modo 1), `$A800` indica qual mapa: página DX = 0x41 + `$A800`; 43 (`$A800`=02) = mapa geral; 44 (03) = Rice Beach; 46 (05) = regional 2; 4A (09) = regional especial 1.
-- A faixa do nome da região (linhas 136–143) é fundo, não janela.
+- A faixa do nome da região (linhas 136–143) é fundo, não janela; a cor dela varia por mapa.
 
 ## Revisões futuras
 - **Laterais no modo 2 (refinar):** achar o sub-estado do Mode_LevelInit que separa "COURSE na tela" de "fase já na tela" (vigiar `$A8C0`–`$A8FF` no Laboratório de áudio durante a transição, ou procurar no disassembly perto de `CheckMode`/bank01.asm). Regra final: laterais da fase no modo 3, ou no modo 2 quando o sub-estado indicar fase visível; laterais pretas na tela do COURSE.
 - **Sprites cortados na coluna -8..-1 da lateral esquerda:** `ppu_ws_collect_line_sprites` (ppu.c) descarta OAM X == 0 (`current_x == 0`), mas no widescreen essa coluna é visível. Teste sugerido: tirar `current_x == 0` do filtro (manter `current_y == 0`). Se aparecerem pedaços soltos parados na coluna, o jogo usa X = 0 para esconder → desenhar X = 0 só quando o objeto tem pedaços vizinhos visíveis. Aguardando resultado do teste do usuário.
 - **Faixa do HUD (7l):** opção comentada no código; alternativa não escolhida: estender a faixa de pedras do HUD até as bordas.
 - **Caverna após o 7n:** se a página da fase explicar ≥75% lá e a água voltar a errar, ajustar o limite com o log.
+- **Faixa do mapa (7q):** se a borda da faixa tiver uma coluna de contorno (ex.: preta), pegar a cor alguns pixels para dentro (x = 4 / x = 155).
 
 
 ## Áudio do jogo (achados)

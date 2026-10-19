@@ -1756,6 +1756,21 @@ static bool ppu_widescreen_uses_level_layout(const GBContext* ctx) {
     return mode == 2 || mode == 3;
 }
 
+/* Passo 7q: cor do pixel da borda da tela original nesta linha (x = 0 com
+ * right = false, x = 159 com right = true). So o fundo, sem sprites. */
+static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
+    const GBPPU* ppu,
+    const GBContext* ctx,
+    int extended_x,
+    const WidescreenBlockAttributeCache* attribute_cache);
+static uint32_t ppu_ws_screen_edge_rgba(const GBPPU* ppu,
+                                        const GBContext* ctx,
+                                        const WidescreenBlockAttributeCache* attribute_cache,
+                                        bool right) {
+    return ppu_fetch_widescreen_background_pixel(
+        ppu, ctx, right ? GB_SCREEN_WIDTH - 1 : 0, attribute_cache).rgba;
+}
+
 static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     const GBPPU* ppu,
     const GBContext* ctx,
@@ -2462,12 +2477,19 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
     }
     const bool is_sidescrolling_gameplay = (game_mode == 3 || game_mode == 2);
 
-    /* Passo 7p: no mapa regional (modo 1, fora do mapa geral = pagina DX 43),
+    /* Passo 7p: no mapa regional (game_mode = 1, fora do mapa geral = pagina DX 43),
      * a ultima fileira de tiles da tela (faixa com o nome da regiao) continua
      * branca pelas laterais. */
     const bool ws_map_band = ctx && ctx->eram && ctx->eram_size > 0x08C3u &&
         ctx->eram[0x08C3] == 1 && (0x41 + ctx->eram[0x0800]) != 0x43 &&
         ppu->ly >= GB_SCREEN_HEIGHT - 8;
+    /* Passo 7q: a faixa continua com a cor da borda da tela original
+     * (a cor da faixa do centro varia de mapa para mapa). */
+    uint32_t ws_map_band_left = 0xFFFFFFFFu, ws_map_band_right = 0xFFFFFFFFu;
+    if (ws_map_band) {
+        ws_map_band_left = ppu_ws_screen_edge_rgba(ppu, ctx, attribute_cache, false);
+        ws_map_band_right = ppu_ws_screen_edge_rgba(ppu, ctx, attribute_cache, true);
+    }
 
     WsLineSprite sprites[40];
     const int sprite_count = ppu_ws_collect_line_sprites(ppu, ctx, sprites);
@@ -2519,14 +2541,15 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
             }
         }
 
-        if (margin && ws_map_band) {   /* Passo 7p */
-            out_row[dest_x] = 0xFFFFFFFFu;
+        if (margin && ws_map_band) {   /* Passo 7p / 7q */
+            const uint32_t band_rgba = extended_x < 0 ? ws_map_band_left : ws_map_band_right;
+            out_row[dest_x] = band_rgba;
             if (want_rec) {
                 PPUNativeMarginPixel* r = &ws_rec[extended_x < 0
                     ? extended_x + GB_WIDESCREEN_MARGIN
                     : extended_x - GB_SCREEN_WIDTH + GB_WIDESCREEN_MARGIN];
-                r->rgba = 0xFFFFFFFFu;
-                r->bg_rgba = 0xFFFFFFFFu;
+                r->rgba = band_rgba;
+                r->bg_rgba = band_rgba;
             }
             continue;
         }
