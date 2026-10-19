@@ -50,12 +50,21 @@
 
 - **Passo 7m** (aplicado) — Empate na calibração: antes ganhava a página de número mais baixo; agora a da fase (0x41+`$A800`), depois a atual. Log `[DX] ... N/M tiles, K paginas empatadas, e a da fase`. Não era empate: o log do usuário mostrou o problema real (7n).
 
-- **Passo 7n** (entregue, aguardando teste) — Barris da praia da fase 1 (fase 10) brancos/azuis na lateral direita antes de aparecerem (`scene_006.json` = barril no centro, cor real marrom/laranja; `scene_007.json` = barril na lateral sem cor). Log: início da fase página 51 (a da fase, 19/19); no trecho do barril a calibração troca para 52 com 20/22 (1 página, sem empate) → barris errados; andando volta à 51 (17/17). Agora a página da fase fica mesmo perdendo, se perde por até 3 tiles e explica ≥75% da tela (aceita com 75% em vez de 90%). Log extra: `[DX]   pagina da fase XX: a/b tiles (mantida: perdeu por pouco)`. Tiles visíveis que a página da fase erra continuam corrigidos pelo 7k. Risco: caverna (7g) — se a página da fase explicar ≥75% lá e voltar a errar, ajustar o limite com o log.
+- **Passo 7n** (validado pelo usuário: "parece que resolveu todos que eu notei"; caverna não reportada) — Barris da praia da fase 1 (fase 10) brancos/azuis na lateral direita antes de aparecerem (`scene_006.json` = barril no centro, cor real marrom/laranja; `scene_007.json` = barril na lateral sem cor). Log: início da fase página 51 (a da fase, 19/19); no trecho do barril a calibração troca para 52 com 20/22 (1 página, sem empate) → barris errados; andando volta à 51 (17/17). Agora a página da fase fica mesmo perdendo, se perde por até 3 tiles e explica ≥75% da tela (aceita com 75% em vez de 90%). Log extra: `[DX]   pagina da fase XX: a/b tiles (mantida: perdeu por pouco)`. Tiles visíveis que a página da fase erra continuam corrigidos pelo 7k.
+
+- **Passo 7o** (removido pelo 7p: não fez nada) — Tentou separar o modo 1 em 11/12 pela música e pintar a faixa do mapa pela janela (WY/WX). A faixa do nome da região não é janela, por isso nada mudou. O usuário pediu para tirar tudo.
+
+- **Passo 7p** (entregue, aguardando teste) — Tira o 7o inteiro (ppu.c, ppu.h e platform_sdl.cpp voltam ao estado do 7n, conferido por diff). Achado do usuário no log `[DX]`: página da fase 43 = mapa geral; 44 = mapa regional 1 (Rice Beach); 46 = regional 2; 4A = regional especial 1. Regra nova em `ppu_render_widescreen_scanline_fast`: `ws_map_band` = modo `$A8C3` == 1 && `0x41 + $A800` != 0x43 && `ly >= 136` (última fileira de tiles, faixa do nome da região) → laterais brancas (0xFFFFFFFF), também no registro HD (`ws_rec`).
+
+## Mapa (achados)
+- No mapa (modo 1), `$A800` indica qual mapa: página DX = 0x41 + `$A800`; 43 (`$A800`=02) = mapa geral; 44 (03) = Rice Beach; 46 (05) = regional 2; 4A (09) = regional especial 1.
+- A faixa do nome da região (linhas 136–143) é fundo, não janela.
 
 ## Revisões futuras
 - **Laterais no modo 2 (refinar):** achar o sub-estado do Mode_LevelInit que separa "COURSE na tela" de "fase já na tela" (vigiar `$A8C0`–`$A8FF` no Laboratório de áudio durante a transição, ou procurar no disassembly perto de `CheckMode`/bank01.asm). Regra final: laterais da fase no modo 3, ou no modo 2 quando o sub-estado indicar fase visível; laterais pretas na tela do COURSE.
 - **Sprites cortados na coluna -8..-1 da lateral esquerda:** `ppu_ws_collect_line_sprites` (ppu.c) descarta OAM X == 0 (`current_x == 0`), mas no widescreen essa coluna é visível. Teste sugerido: tirar `current_x == 0` do filtro (manter `current_y == 0`). Se aparecerem pedaços soltos parados na coluna, o jogo usa X = 0 para esconder → desenhar X = 0 só quando o objeto tem pedaços vizinhos visíveis. Aguardando resultado do teste do usuário.
 - **Faixa do HUD (7l):** opção comentada no código; alternativa não escolhida: estender a faixa de pedras do HUD até as bordas.
+- **Caverna após o 7n:** se a página da fase explicar ≥75% lá e a água voltar a errar, ajustar o limite com o log.
 
 
 ## Áudio do jogo (achados)
