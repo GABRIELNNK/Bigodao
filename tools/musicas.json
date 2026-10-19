@@ -1,0 +1,299 @@
+{
+  "version": 1,
+  "descricao": "Números das músicas do Wario Land: Super Mario Land 3 (DX), como aparecem em $A61D e no overlay 'Musica: XX'. Use o número no nome do arquivo: music/XX.ogg.",
+  "fonte": "Constantes BGM_* do disassembly https://github.com/Kak2X/wl (src/constants.asm). 'confirmado' = conferido jogando no Bigodão. 'jingle' = trecho curto; provavelmente quer \"loop\": false no music.json.",
+  "nao_sao_musicas": {
+    "00": "silêncio",
+    "FF": "parada / troca (BGM_NONE)"
+  },
+  "musicas": {
+    "01": {
+      "nome": "BGM_TITLE",
+      "onde": "Tela de título",
+      "confirmado": false,
+      "jingle": false
+    },
+    "02": {
+      "nome": "BGM_OVERWORLD",
+      "onde": "Mapa geral (escolha de região)",
+      "confirmado": true,
+      "jingle": false
+    },
+    "03": {
+      "nome": "BGM_WATER",
+      "onde": "Fases debaixo d'água",
+      "confirmado": false,
+      "jingle": false
+    },
+    "04": {
+      "nome": "BGM_COURSE1",
+      "onde": "Tema principal (fase 1 de Rice Beach e outras)",
+      "confirmado": true,
+      "jingle": false
+    },
+    "05": {
+      "nome": "BGM_COINVAULT",
+      "onde": "Cofre de moedas",
+      "confirmado": false,
+      "jingle": false
+    },
+    "06": {
+      "nome": "BGM_INVINCIBILE",
+      "onde": "Invencibilidade",
+      "confirmado": false,
+      "jingle": false
+    },
+    "07": {
+      "nome": "BGM_COINGAME",
+      "onde": "Chuva de moedas no fim da luta com o chefe",
+      "confirmado": false,
+      "jingle": false
+    },
+    "08": {
+      "nome": "BGM_LIFELOST",
+      "onde": "Wario morre",
+      "confirmado": true,
+      "jingle": true
+    },
+    "09": {
+      "nome": "BGM_SHIP",
+      "onde": "Fases de navio",
+      "confirmado": false,
+      "jingle": false
+    },
+    "0A": {
+      "nome": "BGM_LAVA",
+      "onde": "Fases de lava",
+      "confirmado": false,
+      "jingle": false
+    },
+    "0B": {
+      "nome": "BGM_TRAIN",
+      "onde": "Fases do trem",
+      "confirmado": false,
+      "jingle": false
+    },
+    "0C": {
+      "nome": "BGM_COINBONUS",
+      "onde": "Jogo bônus de moedas",
+      "confirmado": false,
+      "jingle": false
+    },
+    "0D": {
+      "nome": "BGM_LEVELCLEAR",
+      "onde": "Fase concluída",
+      "confirmado": false,
+      "jingle": true
+    },
+    "0E": {
+      "nome": "BGM_BOSSLEVEL",
+      "onde": "Fase de chefe (antes da luta)",
+      "confirmado": false,
+      "jingle": false
+    },
+    "0F": {
+      "nome": "BGM_TREASURE",
+      "onde": "Sala do tesouro",
+      "confirmado": false,
+      "jingle": false
+    },
+    "10": {
+      "nome": "BGM_LAVA2",
+      "onde": "Fases de lava (segunda versão)",
+      "confirmado": false,
+      "jingle": false
+    },
+    "11": {
+      "nome": "BGM_BOSS",
+      "onde": "Luta contra o chefe",
+      "confirmado": false,
+      "jingle": false
+    },
+    "12": {
+      "nome": "BGM_BOSSCLEAR",
+      "onde": "Fase de chefe concluída",
+      "confirmado": false,
+      "jingle": true
+    },
+    "13": {
+      "nome": "BGM_MTTEAPOT",
+      "onde": "Mapa de Mt. Teapot",
+      "confirmado": false,
+      "jingle": false
+    },
+    "14": {
+      "nome": "BGM_SHERBETLAND",
+      "onde": "Mapa de Sherbet Land",
+      "confirmado": false,
+      "jingle": false
+    },
+    "15": {
+      "nome": "BGM_RICEBEACH",
+      "onde": "Mapa de Rice Beach",
+      "confirmado": true,
+      "jingle": false
+    },
+    "16": {
+      "nome": "BGM_CAVE",
+      "onde": "Cavernas",
+      "confirmado": false,
+      "jingle": false
+    },
+    "17": {
+      "nome": "BGM_COURSE3",
+      "onde": "Tema de fase (fase 3)",
+      "confirmado": false,
+      "jingle": false
+    },
+    "18": {
+      "nome": "BGM_HEARTBONUS",
+      "onde": "Jogo bônus de corações",
+      "confirmado": false,
+      "jingle": false
+    },
+    "19": {
+      "nome": "BGM_FINALBOSSINTRO",
+      "onde": "Chegada ao chefe final",
+      "confirmado": false,
+      "jingle": false
+    },
+    "1A": {
+      "nome": "BGM_WORLDCLEAR",
+      "onde": "Mundo concluído",
+      "confirmado": false,
+      "jingle": true
+    },
+    "1B": {
+      "nome": "BGM_AMBIENT",
+      "onde": "Ambiente",
+      "confirmado": false,
+      "jingle": false
+    },
+    "1C": {
+      "nome": "BGM_TREASUREGET",
+      "onde": "Tesouro obtido (também no final)",
+      "confirmado": false,
+      "jingle": true
+    },
+    "1D": {
+      "nome": "BGM_SYRUPCASTLE",
+      "onde": "Mapa do Syrup Castle",
+      "confirmado": false,
+      "jingle": false
+    },
+    "1E": {
+      "nome": "BGM_FINALLEVEL",
+      "onde": "Fase final",
+      "confirmado": false,
+      "jingle": false
+    },
+    "1F": {
+      "nome": "BGM_PARSLEYWOODS",
+      "onde": "Mapa de Parsley Woods",
+      "confirmado": false,
+      "jingle": false
+    },
+    "20": {
+      "nome": "BGM_INTRO",
+      "onde": "Abertura",
+      "confirmado": true,
+      "jingle": false
+    },
+    "21": {
+      "nome": "BGM_STOVECANYON",
+      "onde": "Mapa de Stove Canyon",
+      "confirmado": false,
+      "jingle": false
+    },
+    "22": {
+      "nome": "BGM_COURSE32",
+      "onde": "Tema de fase (variação da fase 3)",
+      "confirmado": false,
+      "jingle": false
+    },
+    "23": {
+      "nome": "BGM_SSTEACUP",
+      "onde": "Mapa do SS Teacup",
+      "confirmado": false,
+      "jingle": false
+    },
+    "24": {
+      "nome": "BGM_GAMEOVER",
+      "onde": "Game over",
+      "confirmado": false,
+      "jingle": true
+    },
+    "25": {
+      "nome": "BGM_TIMEOVER",
+      "onde": "Tempo esgotado",
+      "confirmado": false,
+      "jingle": true
+    },
+    "26": {
+      "nome": "BGM_SAVESELECT",
+      "onde": "Escolha do slot",
+      "confirmado": true,
+      "jingle": false
+    },
+    "27": {
+      "nome": "BGM_ICE",
+      "onde": "Fases de gelo",
+      "confirmado": false,
+      "jingle": false
+    },
+    "28": {
+      "nome": "BGM_FINALBOSS",
+      "onde": "Luta contra o chefe final",
+      "confirmado": false,
+      "jingle": false
+    },
+    "29": {
+      "nome": "BGM_CREDITS",
+      "onde": "Créditos",
+      "confirmado": false,
+      "jingle": false
+    },
+    "2A": {
+      "nome": "BGM_SELECTBONUS",
+      "onde": "Escolha do bônus na tela de fase concluída",
+      "confirmado": false,
+      "jingle": false
+    },
+    "2B": {
+      "nome": "BGM_LEVELENTER",
+      "onde": "Entrada na fase",
+      "confirmado": true,
+      "jingle": true
+    },
+    "2C": {
+      "nome": "BGM_CUTSCENE",
+      "onde": "Cena de história",
+      "confirmado": false,
+      "jingle": false
+    },
+    "2D": {
+      "nome": "BGM_ENDINGGENIE",
+      "onde": "Final (gênio)",
+      "confirmado": false,
+      "jingle": false
+    },
+    "2E": {
+      "nome": "BGM_GAMEOVER2",
+      "onde": "Game over (segunda versão)",
+      "confirmado": false,
+      "jingle": true
+    },
+    "2F": {
+      "nome": "BGM_ENDINGSTATUE",
+      "onde": "Final (estátua)",
+      "confirmado": false,
+      "jingle": false
+    },
+    "30": {
+      "nome": "BGM_FINALBOSSOUTRO",
+      "onde": "Cena antes da bomba, depois do chefe final",
+      "confirmado": false,
+      "jingle": false
+    }
+  }
+}

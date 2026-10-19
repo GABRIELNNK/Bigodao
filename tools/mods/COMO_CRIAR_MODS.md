@@ -233,7 +233,7 @@ meu_mod.o2r  (ZIP)
 | Cores erradas só nos fades | O tile não tem paleta no `pack.json`. Inclua o `pack.json` no `.o2r`. |
 | Pintura de um lugar apareceu em outro | É um tile repetido. Use `--mapa-conflitos` para ver onde, e `--modo` para escolher. |
 | `aviso: ... recriado em NxN` no fatiador | O tile já existia em outra escala. Ele foi refeito na escala nova, e a pintura antiga dele se perdeu. |
-| As laterais do widescreen não mudam | Os tiles das laterais precisam estar no pacote: capture a cena com o widescreen ligado. Nas telas em que o jogo deixa as laterais pretas (menu, mapa de bônus…), elas continuam pretas. |
+| As laterais do widescreen não mudam | Os tiles das laterais precisam estar no pacote: capture a cena com o widescreen ligado. Nas telas em que o jogo deixa as laterais pretas (menu, mapa de bônus, sala do chefe…), elas continuam pretas. |
 | Pintura do fundo passa atrás do Wario quando não devia | A prioridade vem do jogo original e não pode ser mudada pelo PNG. |
 
 ---
@@ -255,46 +255,73 @@ Cada trilha fica numa pasta `music` (a pasta `mods/music/` ou uma pasta `music/`
 
 ```
 music/04.ogg
-music/04_rice_beach.ogg
+music/04_tema_principal.ogg
 music/2B - entrada da fase.ogg
 ```
 
-Para descobrir o número de uma música, jogue até ela tocar e veja:
+A tabela abaixo tem todos os números. Para conferir qual música está tocando agora, veja:
 - o overlay, que mostra `Musica: XX` (com `[ogg]` quando a trilha está tocando);
 - **Menu > Desenvolvedor > Musicas vistas**, com as últimas 16 trocas;
 - o terminal, se você marcar **Registrar no terminal** nessa mesma seção. Sai uma linha `[Musica] frame N: musica XX (modo de jogo YY)` a cada troca, o que facilita anotar uma sessão inteira de jogo.
 
-**Números já confirmados no jogo:**
+**Lista completa das músicas.** Os números e nomes vêm das constantes `BGM_*` do disassembly do jogo original ([Kak2X/wl](https://github.com/Kak2X/wl), `src/constants.asm`); a DX usa os mesmos números. ✔ = conferido jogando no Bigodão. **Jingle** = trecho curto, que provavelmente deve tocar uma vez só (`"loop": false` no `music.json`, seção 6.2).
 
-| Número | Onde toca |
-|---|---|
-| 20 | Abertura |
-| 26 | Escolha do slot |
-| 02 | Mapa geral (escolha de região) |
-| 15 | Mapa de fases de Rice Beach |
-| 2B | Jingle de entrada na fase (curto) |
-| 04 | Fase 1 de Rice Beach |
-| 08 | Wario morre (jingle) |
+A mesma lista existe em formato de dados em `tools/musicas.json`, para scripts e ferramentas.
+
+| Número | Onde toca | Nome no disassembly | Jingle |
+|---|---|---|---|
+| 01 | Tela de título | `BGM_TITLE` |  |
+| 02 | Mapa geral (escolha de região) ✔ | `BGM_OVERWORLD` |  |
+| 03 | Fases debaixo d'água | `BGM_WATER` |  |
+| 04 | Tema principal (fase 1 de Rice Beach e outras) ✔ | `BGM_COURSE1` |  |
+| 05 | Cofre de moedas | `BGM_COINVAULT` |  |
+| 06 | Invencibilidade | `BGM_INVINCIBILE` |  |
+| 07 | Chuva de moedas no fim da luta com o chefe | `BGM_COINGAME` |  |
+| 08 | Wario morre ✔ | `BGM_LIFELOST` | sim |
+| 09 | Fases de navio | `BGM_SHIP` |  |
+| 0A | Fases de lava | `BGM_LAVA` |  |
+| 0B | Fases do trem | `BGM_TRAIN` |  |
+| 0C | Jogo bônus de moedas | `BGM_COINBONUS` |  |
+| 0D | Fase concluída | `BGM_LEVELCLEAR` | sim |
+| 0E | Fase de chefe (antes da luta) | `BGM_BOSSLEVEL` |  |
+| 0F | Sala do tesouro | `BGM_TREASURE` |  |
+| 10 | Fases de lava (segunda versão) | `BGM_LAVA2` |  |
+| 11 | Luta contra o chefe | `BGM_BOSS` |  |
+| 12 | Fase de chefe concluída | `BGM_BOSSCLEAR` | sim |
+| 13 | Mapa de Mt. Teapot | `BGM_MTTEAPOT` |  |
+| 14 | Mapa de Sherbet Land | `BGM_SHERBETLAND` |  |
+| 15 | Mapa de Rice Beach ✔ | `BGM_RICEBEACH` |  |
+| 16 | Cavernas | `BGM_CAVE` |  |
+| 17 | Tema de fase (fase 3) | `BGM_COURSE3` |  |
+| 18 | Jogo bônus de corações | `BGM_HEARTBONUS` |  |
+| 19 | Chegada ao chefe final | `BGM_FINALBOSSINTRO` |  |
+| 1A | Mundo concluído | `BGM_WORLDCLEAR` | sim |
+| 1B | Ambiente | `BGM_AMBIENT` |  |
+| 1C | Tesouro obtido (também no final) | `BGM_TREASUREGET` | sim |
+| 1D | Mapa do Syrup Castle | `BGM_SYRUPCASTLE` |  |
+| 1E | Fase final | `BGM_FINALLEVEL` |  |
+| 1F | Mapa de Parsley Woods | `BGM_PARSLEYWOODS` |  |
+| 20 | Abertura ✔ | `BGM_INTRO` |  |
+| 21 | Mapa de Stove Canyon | `BGM_STOVECANYON` |  |
+| 22 | Tema de fase (variação da fase 3) | `BGM_COURSE32` |  |
+| 23 | Mapa do SS Teacup | `BGM_SSTEACUP` |  |
+| 24 | Game over | `BGM_GAMEOVER` | sim |
+| 25 | Tempo esgotado | `BGM_TIMEOVER` | sim |
+| 26 | Escolha do slot ✔ | `BGM_SAVESELECT` |  |
+| 27 | Fases de gelo | `BGM_ICE` |  |
+| 28 | Luta contra o chefe final | `BGM_FINALBOSS` |  |
+| 29 | Créditos | `BGM_CREDITS` |  |
+| 2A | Escolha do bônus na tela de fase concluída | `BGM_SELECTBONUS` |  |
+| 2B | Entrada na fase ✔ | `BGM_LEVELENTER` | sim |
+| 2C | Cena de história | `BGM_CUTSCENE` |  |
+| 2D | Final (gênio) | `BGM_ENDINGGENIE` |  |
+| 2E | Game over (segunda versão) | `BGM_GAMEOVER2` | sim |
+| 2F | Final (estátua) | `BGM_ENDINGSTATUE` |  |
+| 30 | Cena antes da bomba, depois do chefe final | `BGM_FINALBOSSOUTRO` |  |
 
 `00` e `FF` não são músicas (silêncio e parada).
 
-**Ainda a descobrir.** Não há uma lista pública com os números das músicas do Wario Land. Pela RAM do jogo, os pedidos vão de 01 a 30 (hexa). A MarioWiki lista estas faixas da trilha sonora; vá preenchendo a coluna do número conforme for jogando:
-
-| Faixa | Onde toca | Número |
-|---|---|---|
-| Ripple Course | primeira fase (Rice Beach 1) | 04 |
-| Results | resultado da fase | ? |
-| Boss | luta contra chefe | ? |
-| Boss Course | fases de chefe | ? |
-| Underwater theme | fases debaixo d'água | ? |
-| Underground theme | fases subterrâneas | ? |
-| WL Ice Theme | fases de Sherbet Land | ? |
-| Train Course | fases do trem | ? |
-| Syrup Castle | mapa do Syrup Castle | ? |
-| Final Boss | chefe final | ? |
-| Overworld Theme 2 / 3 | outros mapas | ? |
-
-Faltam também invencibilidade, game over, bônus e final, que não estão nessa lista.
+As descrições sem ✔ vêm dos nomes do disassembly e podem ser imprecisas em algum detalhe (por exemplo, qual fase usa qual tema). Se jogar e confirmar uma, marque na tabela e no `musicas.json`.
 
 ### 6.2 Loop
 
@@ -310,7 +337,7 @@ Sem configuração, a trilha **repete do começo ao fim**. Para escolher o ponto
   }
   ```
   - `loop_start` / `loop_end`: em amostras do `.ogg` (a 44100 Hz, 1 segundo = 44100). `loop_end` 0 = fim do arquivo.
-  - `"loop": false`: toca uma vez só. Use nos **jingles** (2B, 08…) para não repetirem.
+  - `"loop": false`: toca uma vez só. Use nos **jingles** (a coluna "Jingle" da tabela) para não repetirem.
   - `volume`: ajuste desta trilha (1.0 = normal).
   - O `music.json` vale sobre as tags do `.ogg`.
 

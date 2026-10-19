@@ -339,8 +339,30 @@ static int read_cart_ram_byte(uint16_t addr) {
     return ctx->eram[offset];
 }
 
+/* Passo 7t: [Estado] no terminal a cada troca de modo, sub-modo, sMapId ou
+ * pagina DX, para achar o trecho exato de uma transicao. */
+static bool g_state_log = false;
+static uint8_t gb_wl_game_mode_2(const GBContext* ctx);
+static void state_log_update(void) {
+    static int last[4] = {-1, -1, -1, -1};
+    const GBContext* ctx = g_registered_ctx;
+    if (!g_state_log || !ctx || !ctx->eram || ctx->eram_size <= 0x099D) {
+        return;
+    }
+    const int now[4] = {ctx->eram[0x08C3], ctx->eram[0x08C4], ctx->eram[0x079C],
+                        0x41 + ctx->eram[0x0800]};
+    if (memcmp(now, last, sizeof(now)) != 0) {
+        memcpy(last, now, sizeof(now));
+        printf("[Estado] frame %u: modo %02X sub %02X sMapId %02X pagina %02X game_mode_2 %u\n",
+               g_music_monitor_frames, now[0], now[1], now[2], now[3],
+               (unsigned)gb_wl_game_mode_2(ctx));
+        fflush(stdout);
+    }
+}
+
 static void music_monitor_update(void) {
     g_music_monitor_frames++;
+    state_log_update();   /* passo 7t */
     audio_lab_update(); /* passo 6c.1 */
     const int request = read_cart_ram_byte(WL_MUSIC_REQUEST_ADDR);
     if (request > 0) {
@@ -407,11 +429,68 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
  *    0 = fora da fase (outros modos) */
 #define WL_GAME_MODE_2_LEVEL 21
 #define WL_GAME_MODE_2_BOSS  22
+/* Passo 7t (troca o 7s, que olhava a pagina DX 4C/4D e nao resolveu):
+ * modo 1 (mapa) com sMapId ($A79C) num modo de preparo do mapa. Na volta da
+ * tela do tesouro, o jogo entra no modo 1 com sMapId = MAP_MODE_INIT (0) e
+ * passa por um *Init da regiao antes do fade; nesses quadros a tela ainda e a
+ * antiga e as laterais mostravam lixo. Lista dos Init no constants.asm do
+ * disassembly (MAP_MODE_*). */
+#define WL_GAME_MODE_2_MAP_CLEAR 13
+static bool gb_wl_map_mode_is_init(uint8_t map_id) {
+    switch (map_id) {
+        case 0x00: /* MAP_MODE_INIT */
+        case 0x01: /* INITOVERWORLD */
+        case 0x03: /* INITRICEBEACH */
+        case 0x05: /* INITMTTEAPOT */
+        case 0x09: /* INITSTOVECANYON */
+        case 0x0B: /* INITSYRUPCASTLE */
+        case 0x0D: /* INITPARSLEYWOODS */
+        case 0x0F: /* INITSSTEACUP */
+        case 0x11: /* INITSHERBETLAND */
+        case 0x13: /* INITMTTEAPOTCUTSCENE */
+        case 0x16: /* INITSSTEACUPCUTSCENE */
+        case 0x18: /* INITPARSLEYWOODSCUTSCENE */
+        case 0x1A: /* INITSYRUPCASTLEC38CUTSCENE */
+        case 0x1C: /* INITSYRUPCASTLEC39CUTSCENE */
+        case 0x1E: /* INITENDING2 */
+        case 0x21: /* INITENDING1 */
+            return true;
+        default:
+            return false;
+    }
+}
 static uint8_t gb_wl_game_mode_2(const GBContext* ctx) {
     if (!ctx || !ctx->eram || ctx->eram_size <= 0x099D) {
         return 0;
     }
     const uint8_t mode = ctx->eram[0x08C3];
+    /* Passo 7u: o registro [Estado] do usuario mostrou a volta do tesouro:
+     *   modo 04 sMapId 03 pagina 4D -> modo 01 sMapId 03 (2 quadros, 13)
+     *   -> modo 01 sMapId 07 (MAP_MODE_FADEIN) pagina 44 (67 quadros, lixo)
+     *   -> modo 01 sMapId 04 (mapa de Rice Beach).
+     * O lixo fica no fade de entrada. Para nao apagar as laterais em todo fade
+     * de mapa, so vale quando o mapa veio do modo 4 (fim de fase): marca na
+     * troca 4 -> 1 e desmarca quando o mapa chega num modo que nao e de
+     * preparo nem o fade de entrada. */
+    static uint8_t s_prev_mode = 0xFF;
+    static bool s_after_clear = false;
+    if (mode != s_prev_mode) {
+        s_after_clear = (s_prev_mode == 4 && mode == 1);
+        s_prev_mode = mode;
+    }
+    if (mode == 1) {   /* passo 7t / 7u */
+        const uint8_t map_id = ctx->eram[0x079C];
+        if (gb_wl_map_mode_is_init(map_id)) {
+            return WL_GAME_MODE_2_MAP_CLEAR;
+        }
+        if (s_after_clear) {
+            if (map_id == 0x07) {   /* MAP_MODE_FADEIN */
+                return WL_GAME_MODE_2_MAP_CLEAR;
+            }
+            s_after_clear = false;
+        }
+        return 0;
+    }
     if (mode != 2 && mode != 3) {
         return 0;
     }
@@ -423,6 +502,8 @@ static uint8_t gb_wl_game_mode_2(const GBContext* ctx) {
 static bool gb_mode_2_wants_widescreen(uint8_t game_mode_2) {
     switch (game_mode_2) {
         case WL_GAME_MODE_2_BOSS:   /* 22: chefe, laterais pretas */
+            return false;
+        case WL_GAME_MODE_2_MAP_CLEAR:   /* 13: mapa se preparando, tela antiga (passo 7t) */
             return false;
         case WL_GAME_MODE_2_LEVEL:  /* 21: fase normal */
         default:                    /*  0: fora da fase, decide o game_mode */
@@ -3007,8 +3088,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     if (page >= 0) ImGui::TextDisabled("Tabela DX: pagina %02X", page);
                     else ImGui::TextDisabled("Tabela DX: sem calibracao");
                     if (g_registered_ctx) {   /* passo 7r */
-                        ImGui::TextDisabled("game_mode_2: %u (21 fase, 22 chefe)",
+                        ImGui::TextDisabled("game_mode_2: %u (21 fase, 22 chefe, 13 mapa se preparando)",
                                             (unsigned)gb_wl_game_mode_2(g_registered_ctx));
+                        ImGui::Checkbox("Registrar estado no terminal ([Estado] ...)", &g_state_log);   /* passo 7t */
                     }
                 }
             }
