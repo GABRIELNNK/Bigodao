@@ -56,14 +56,17 @@
 
 - **Passo 7p** (aplicado) — Tira o 7o inteiro (ppu.c, ppu.h e platform_sdl.cpp voltam ao estado do 7n, conferido por diff). Achado do usuário no log `[DX]`: página da fase 43 = mapa geral; 44 = mapa regional 1 (Rice Beach); 46 = regional 2; 4A = regional especial 1. Regra nova em `ppu_render_widescreen_scanline_fast`: `ws_map_band` = modo `$A8C3` == 1 && `0x41 + $A800` != 0x43 && `ly >= 136` (última fileira de tiles, faixa do nome da região) → laterais brancas (0xFFFFFFFF), também no registro HD (`ws_rec`).
 
-- **Passo 7q** (entregue, aguardando teste) — A cor da faixa do centro varia de mapa para mapa. `ppu_ws_screen_edge_rgba(ppu, ctx, attribute_cache, right)`: cor do fundo no pixel da borda da tela original nesta linha (x = 0 ou x = 159, via `ppu_fetch_widescreen_background_pixel`, sem sprites). Na faixa do mapa regional, a lateral esquerda usa a cor de x = 0 e a direita a de x = 159 (calculadas uma vez por linha), também no registro HD.
+- **Passo 7q** (validado: "muito bom") — A cor da faixa do centro varia de mapa para mapa. `ppu_ws_screen_edge_rgba(ppu, ctx, attribute_cache, right)`: cor do fundo no pixel da borda da tela original nesta linha (x = 0 ou x = 159, via `ppu_fetch_widescreen_background_pixel`, sem sprites). Na faixa do mapa regional, a lateral esquerda usa a cor de x = 0 e a direita a de x = 159 (calculadas uma vez por linha), também no registro HD.
 
-## Mapa (achados)
+- **Passo 7r** (entregue, aguardando teste) — `game_mode_2` no `platform_sdl.cpp`: `gb_wl_game_mode_2(ctx)` = 21 fase normal / 22 sala do chefe / 0 fora da fase (modos 2 e 3 do `$A8C3`). Pelo disassembly Kak2X/wl: chefe se `sLvlScrollMode` (`$A99D`) >= `$F0` (LVLSCROLL_NONE, "boss mode") ou `sBossRoom` (`$A995`) != 0 (posto em `Mode_LevelDoor_LoadRoom`, bank01). Ao morrer o jogo zera `sLvlScrollMode`; o `sBossRoom` segura o 22. A tela do COURSE (`Map_Do` → `.initCourseScreen`) zera `$A900`–`$AEFF`, então os dois voltam a 0 a cada fase. `gb_mode_2_wants_widescreen()` (switch para o usuário editar): 22 → laterais pretas; usado em `gb_platform_want_widescreen` e `gb_platform_should_black_fill_non_side_scrolling`. Menu Desenvolvedor (com o diagnóstico das laterais ligado): "game_mode_2: N". Motivo: print do chefe (Rice Beach) com laterais listradas — chefes usam só a tela de 160 px.
+
+## Mapa e fase (achados)
 - No mapa (modo 1), `$A800` indica qual mapa: página DX = 0x41 + `$A800`; 43 (`$A800`=02) = mapa geral; 44 (03) = Rice Beach; 46 (05) = regional 2; 4A (09) = regional especial 1.
 - A faixa do nome da região (linhas 136–143) é fundo, não janela; a cor dela varia por mapa.
+- Disassembly de referência: https://github.com/Kak2X/wl (o DX usa os mesmos endereços: `$A8C3` sGameMode, `$A8C4` sSubMode, `$A804` sLevelId, `$A900`–`$A903` scroll, `$A938` sLvlScrollLockCur, `$A990` sParallaxMode, `$A995` sBossRoom, `$A99D` sLvlScrollMode). Modos de rolagem: `$00` por segmentos, `$01` trem, `$10` livre, `$30`/`$31` automática, `$40` automática sem parallax, `$FF` nenhuma (chefe).
 
 ## Revisões futuras
-- **Laterais no modo 2 (refinar):** achar o sub-estado do Mode_LevelInit que separa "COURSE na tela" de "fase já na tela" (vigiar `$A8C0`–`$A8FF` no Laboratório de áudio durante a transição, ou procurar no disassembly perto de `CheckMode`/bank01.asm). Regra final: laterais da fase no modo 3, ou no modo 2 quando o sub-estado indicar fase visível; laterais pretas na tela do COURSE.
+- **Laterais no modo 2 (refinar):** achar o sub-estado do Mode_LevelInit que separa "COURSE na tela" de "fase já na tela" (agora com o disassembly: `sSubMode` `$A8C4`, constantes `GM_LEVELINIT_*` em bank01 `Mode_LevelInit`). Regra final: laterais da fase no modo 3, ou no modo 2 quando o sub-estado indicar fase visível; laterais pretas na tela do COURSE.
 - **Sprites cortados na coluna -8..-1 da lateral esquerda:** `ppu_ws_collect_line_sprites` (ppu.c) descarta OAM X == 0 (`current_x == 0`), mas no widescreen essa coluna é visível. Teste sugerido: tirar `current_x == 0` do filtro (manter `current_y == 0`). Se aparecerem pedaços soltos parados na coluna, o jogo usa X = 0 para esconder → desenhar X = 0 só quando o objeto tem pedaços vizinhos visíveis. Aguardando resultado do teste do usuário.
 - **Faixa do HUD (7l):** opção comentada no código; alternativa não escolhida: estender a faixa de pedras do HUD até as bordas.
 - **Caverna após o 7n:** se a página da fase explicar ≥75% lá e a água voltar a errar, ajustar o limite com o log.
@@ -71,7 +74,7 @@
 
 
 ## Áudio do jogo (achados)
-- Músicas (`$A61D`): 00 silêncio; FF parada/transição; 20 abertura; 26 escolha do slot; 15 mapa de Rice Beach; 02 mapa geral; 2B jingle de entrada na fase; 04 fase 1 de Rice Beach; 08 Wario morre.
+- Músicas (`$A61D`): 00 silêncio; FF parada/transição; 20 abertura; 26 escolha do slot; 15 mapa de Rice Beach; 02 mapa geral; 2B jingle de entrada na fase; 04 fase 1 de Rice Beach; 08 Wario morre. Lista completa (BGM_*) em `constants.asm` do disassembly Kak2X/wl.
 - CH1 = efeitos (moeda/pulo/pisar) + melodia; CH4 = efeitos (passos/correr/quebrar) + bateria. CH2 e CH3 só tocam música: os sons de entrada na fase e de moedas ao morrer são as próprias músicas 2B e 08.
 - `$A630`–`$A637` parece o estado da música: `$A633` = nº de canais e depois a lista (04 01 02 03 04 na fase; 03 01 02 03 no 2B; 02 01 02 no 08).
 - Ao morrer: `$A601`=10 e `$A603`=1B (efeitos), `$A629` muda de 21 para 10.
@@ -84,7 +87,7 @@
 - 6a.1/6a.2 (simulação): derivas de -2,5% a +2,5% estáveis. Sintaxe checada com headers SDL2/ImGui.
 
 ## Pendências / próximos
-- Trilhas: abrir o .ogg fora da thread principal se a troca travar; ir completando a tabela de números das músicas.
+- Trilhas: abrir o .ogg fora da thread principal se a troca travar; ir completando a tabela de números das músicas (dá para tirar os nomes de `BGM_*` no disassembly).
 - Despejo gravar `mods/dump/pack.json` com as paletas (em parte coberto pelo 7a para sprites).
 - Opção futura: fundo por posição no mundo; otimizar amostragem HD; limpar campos mortos do GBPPU; GPU só se necessário.
 - Regra de trabalho: uma mudança por vez, teste e commit entre elas; entregas como script Python com `--conferir`.

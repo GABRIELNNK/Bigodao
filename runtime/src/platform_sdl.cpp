@@ -397,11 +397,45 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
     }
 }
 
+/* Passo 7r: game_mode_2, separa a fase normal da sala do chefe (modos 2 e 3).
+ * Do disassembly (github.com/Kak2X/wl):
+ *   sLvlScrollMode ($A99D) >= $F0 = sala sem rolagem (LVLSCROLL_NONE, "boss mode");
+ *   sBossRoom      ($A995) != 0   = sala de chefe (Mode_LevelDoor_LoadRoom, bank01).
+ * O jogo zera sLvlScrollMode quando o Wario morre; o sBossRoom segura o 22.
+ *   21 = fase normal (rolagem lateral)
+ *   22 = sala do chefe (tela fixa de 160 px)
+ *    0 = fora da fase (outros modos) */
+#define WL_GAME_MODE_2_LEVEL 21
+#define WL_GAME_MODE_2_BOSS  22
+static uint8_t gb_wl_game_mode_2(const GBContext* ctx) {
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x099D) {
+        return 0;
+    }
+    const uint8_t mode = ctx->eram[0x08C3];
+    if (mode != 2 && mode != 3) {
+        return 0;
+    }
+    const bool boss = ctx->eram[0x099D] >= 0xF0 || ctx->eram[0x0995] != 0;
+    return boss ? WL_GAME_MODE_2_BOSS : WL_GAME_MODE_2_LEVEL;
+}
+
+/* Passo 7r: laterais por game_mode_2. Comente um case para mudar. */
+static bool gb_mode_2_wants_widescreen(uint8_t game_mode_2) {
+    switch (game_mode_2) {
+        case WL_GAME_MODE_2_BOSS:   /* 22: chefe, laterais pretas */
+            return false;
+        case WL_GAME_MODE_2_LEVEL:  /* 21: fase normal */
+        default:                    /*  0: fora da fase, decide o game_mode */
+            return true;
+    }
+}
+
 static bool gb_platform_want_widescreen(const GBContext* ctx) {
     if (!g_widescreen_mode || !ctx || !ctx->eram || ctx->eram_size <= 0x08C3) {
         return false;
     }
-    return gb_mode_is_side_scrolling(ctx->eram[0x08C3]);
+    return gb_mode_is_side_scrolling(ctx->eram[0x08C3]) &&
+           gb_mode_2_wants_widescreen(gb_wl_game_mode_2(ctx));   /* passo 7r */
 }
 
 static bool gb_platform_should_black_fill_non_side_scrolling(const GBContext* ctx) {
@@ -409,7 +443,8 @@ static bool gb_platform_should_black_fill_non_side_scrolling(const GBContext* ct
         return false;
     }
     const uint8_t game_mode = ctx->eram[0x08C3];
-    return !gb_mode_is_side_scrolling(game_mode) /*&& game_mode != 1*/;
+    return !gb_mode_is_side_scrolling(game_mode) /*&& game_mode != 1*/ ||
+           !gb_mode_2_wants_widescreen(gb_wl_game_mode_2(ctx));   /* passo 7r */
 }
 
 static GBPortFrame g_port_frame = {};
@@ -2971,6 +3006,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     const int page = ppu_get_dx_page();
                     if (page >= 0) ImGui::TextDisabled("Tabela DX: pagina %02X", page);
                     else ImGui::TextDisabled("Tabela DX: sem calibracao");
+                    if (g_registered_ctx) {   /* passo 7r */
+                        ImGui::TextDisabled("game_mode_2: %u (21 fase, 22 chefe)",
+                                            (unsigned)gb_wl_game_mode_2(g_registered_ctx));
+                    }
                 }
             }
             bool rate_control = g_audio_rate_control.load(std::memory_order_relaxed);
