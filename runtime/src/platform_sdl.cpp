@@ -2958,6 +2958,21 @@ static void render_frame_internal(const uint32_t* framebuffer,
             ImGui::TextDisabled("Escala HD: %dx (segue a escala da textura)",
                                 ppu_native_get_hd_scale());
             ImGui::Checkbox("Usar frame HD na tela", &g_use_hd_frame);
+            {   /* Passo 7h */
+                bool attr_dbg = ppu_get_widescreen_attr_debug();
+                if (ImGui::Checkbox("Laterais: mostrar origem da cor", &attr_dbg)) {
+                    ppu_set_widescreen_attr_debug(attr_dbg);
+                }
+                if (attr_dbg) {
+                    ImGui::TextDisabled("sem tinta = VRAM | verde = cache | azul = tabela DX calibrada");
+                    ImGui::TextDisabled("amarelo = bloco aprendido | magenta = tabela pela fase");
+                    ImGui::TextDisabled("ciano = cor do mesmo tile na tela (7j/7k)");
+                    ImGui::TextDisabled("vermelho = palpite do tile | cinza = nada");
+                    const int page = ppu_get_dx_page();
+                    if (page >= 0) ImGui::TextDisabled("Tabela DX: pagina %02X", page);
+                    else ImGui::TextDisabled("Tabela DX: sem calibracao");
+                }
+            }
             bool rate_control = g_audio_rate_control.load(std::memory_order_relaxed);
             if (ImGui::Checkbox("Audio: controle de taxa (mixer)", &rate_control)) {
                 g_audio_rate_control.store(rate_control, std::memory_order_relaxed);

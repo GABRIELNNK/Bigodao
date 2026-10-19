@@ -335,6 +335,11 @@ void ppu_render_scanline(GBPPU* ppu, GBContext* ctx);
 void ppu_set_native_render_enabled(GBPPU* ppu, bool enabled);
 bool ppu_get_native_render_enabled(const GBPPU* ppu);
 
+/* Passo 7h: diagnostico das cores das laterais do widescreen. */
+void ppu_set_widescreen_attr_debug(bool enabled);
+bool ppu_get_widescreen_attr_debug(void);
+int ppu_get_dx_page(void);   /* pagina calibrada da tabela DX, ou -1 */
+
 #ifdef __cplusplus
 }
 #endif
