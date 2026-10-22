@@ -9,6 +9,7 @@
 #include "ppu.h"
 #include "ppu_native.h"
 #include "hd_pack_io.h"
+#include "gabarito.h"   /* passo 12a */
 #include "audio_stats.h"
 #include "audio.h" /* passo 6c.1 */
 #include "music_replace.h" /* passo 6c */
@@ -4061,6 +4062,40 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (ImGui::Button("Capturar cena (F9)") && !hd_pack_io_sprite_rec_active()) {
                 ppu_native_request_scene_capture();
             }
+            /* Passo 12a: gabarito do renderizador. */
+            if (ImGui::TreeNode("Gabarito do renderizador")) {
+                ImGui::TextWrapped("Grava o estado do jogo e o quadro que o renderizador desenha "
+                                   "a partir dele. Depois de mudar o desenho, Conferir repete "
+                                   "cada um e compara ponto a ponto.");
+                if (ImGui::Button("Gravar gabarito (F4)")) {
+                    gabarito_request_capture();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Conferir gabaritos")) {
+                    gabarito_request_check();
+                }
+                if (gabarito_busy()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("rodando...");
+                }
+                ImGui::TextWrapped("%s", gabarito_status());
+                for (int i = 0; i < gabarito_result_count(); ++i) {
+                    const ImVec4 color = gabarito_result_ok(i) ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f)
+                                                               : ImVec4(1.0f, 0.45f, 0.40f, 1.0f);
+                    ImGui::TextColored(color, "%s", gabarito_result_text(i));
+                }
+                ImGui::TextWrapped("Pasta: %s", gabarito_dir());
+                static bool confirm_rewrite = false;
+                ImGui::Checkbox("Liberar regravar", &confirm_rewrite);
+                if (confirm_rewrite) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Regravar todos com o resultado atual")) {
+                        gabarito_request_rewrite();
+                        confirm_rewrite = false;
+                    }
+                }
+                ImGui::TreePop();
+            }
             /* Passo 7a: gravador de poses de sprites. */
             if (ImGui::TreeNode("Gravar poses de sprites")) {
                 if (!hd_pack_io_sprite_rec_active()) {
@@ -5830,6 +5865,11 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
                         ppu_native_request_scene_capture(); /* passo 5a.2 */
                     }
                     return true;
+                case SDL_SCANCODE_F4:   /* passo 12a: gravar gabarito */
+                    if (pressed && event->key.repeat == 0) {
+                        gabarito_request_capture();
+                    }
+                    return true;
                 case SDL_SCANCODE_F11:
                     if (pressed && event->key.repeat == 0) {
                         set_fullscreen_enabled(!g_fullscreen);
@@ -6067,6 +6107,15 @@ uint8_t gb_platform_get_joypad(void) {
 }
 
 void gb_platform_vsync(uint32_t frame_cycles) {
+    /* Passo 12a: gabarito entre um quadro e outro. O jogo volta ao estado de
+     * antes; o resto é o mesmo que depois de carregar um savestate. */
+    if (g_registered_ctx && gabarito_process(g_registered_ctx)) {
+        reset_audio_output_buffer(true);
+        g_last_guest_framebuffer_valid = false;
+        g_last_guest_widescreen_framebuffer_valid = false;
+        g_present_count = g_registered_ctx->completed_frames;
+        g_last_frame_time = SDL_GetTicks();
+    }
     if (g_benchmark_mode || g_app_suspended) {
         g_last_timing.pacing_cycles = (frame_cycles > 0) ? frame_cycles : 70224u;
         g_last_timing.pacing_ms = 0.0;

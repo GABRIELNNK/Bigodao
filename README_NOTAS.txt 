@@ -135,4 +135,3 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
 
 
 
-

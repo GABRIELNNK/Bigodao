@@ -2397,6 +2397,8 @@ static void ppu_build_widescreen_block_attribute_cache_fast(
  * Mudancas no layout da fase (WRAM) ou na tabela de blocos (ERAM $AD00) no
  * meio do frame so entram no frame seguinte. */
 static WidescreenBlockAttributeCache g_ws_attr_cache;
+/* Passo 12a: estava dentro da função (static local); fora para poder zerar. */
+static uint64_t g_ws_lcd_spans_seen = 0;
 static struct {
     bool valid;
     uint8_t last_ly;
@@ -2452,9 +2454,8 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
         /* Passo 7i: tambem a cada vez que o LCD desliga e religa (porta,
          * troca de sala): os mesmos blocos podem ter outra cor na sala nova,
          * e a cor aprendida da sala anterior pintava a lateral errado. */
-        static uint64_t s_lcd_spans_seen = 0;
-        const bool room_changed = ctx->total_lcd_off_span_count != s_lcd_spans_seen;
-        s_lcd_spans_seen = ctx->total_lcd_off_span_count;
+        const bool room_changed = ctx->total_lcd_off_span_count != g_ws_lcd_spans_seen;
+        g_ws_lcd_spans_seen = ctx->total_lcd_off_span_count;
         if ((mode_now == 2 && ppu->ws_prev_game_mode != 2) || room_changed) {
             memset(ppu->ws_block_known, 0, sizeof(ppu->ws_block_known));
             memset(ppu->ws_tile_known, 0, sizeof(ppu->ws_tile_known));
@@ -3441,4 +3442,18 @@ void ppu_set_native_render_enabled(GBPPU* ppu, bool enabled) {
 bool ppu_get_native_render_enabled(const GBPPU* ppu) {
     (void)ppu;
     return ppu_native_get_mode() != PPU_RENDERER_EMULATED;
+}
+
+/* Passo 12a: estado das laterais que fica fora do GBPPU (e por isso fora do
+ * savestate): página DX calibrada, cache de atributos do frame, tabelas do
+ * "mesmo tile perto" e a contagem de trocas de sala. Sem zerar, um savestate
+ * carregado herdava a calibração de antes e as laterais dependiam do que
+ * tinha passado na tela. Os blocos aprendidos (ws_block_known/ws_tile_known)
+ * estão no GBPPU e vêm do próprio savestate. */
+void ppu_reset_widescreen_heuristics(const GBContext* ctx) {
+    g_dx_page = -1;
+    g_dx_page_misses = 0;
+    g_ws_attr_key.valid = false;
+    s_ws_near_frame = UINT64_MAX;
+    g_ws_lcd_spans_seen = ctx ? ctx->total_lcd_off_span_count : 0;
 }

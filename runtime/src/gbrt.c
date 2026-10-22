@@ -1838,6 +1838,7 @@ bool gb_context_load_state_file(GBContext* ctx, const char* path) {
         return false;
     }
     gbrt_restore_core_state(ctx, &core_state);
+    ppu_reset_widescreen_heuristics(ctx);   /* passo 12a */
     ctx->audio_pending_cpu_cycles = 0u;
     ctx->audio_cycles_until_event = 0u;
     ctx->audio_pending_old_div = ctx->div_counter;
