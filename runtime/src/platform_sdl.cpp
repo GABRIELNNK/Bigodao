@@ -4117,6 +4117,22 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 g_renderer_reset_pending = true;
             }
             ImGui::TextDisabled("%s", hd_pack_io_pack_status());
+            {
+                /* Passo 11a: contexto atual, que vira o sufixo _fXX/_mXX dos tiles. */
+                char hd_ctx[8];
+                ppu_native_hd_context_suffix(ppu_native_hd_context(), hd_ctx);
+                if (hd_ctx[0]) {
+                    ImGui::TextDisabled("Contexto agora: %s (sufixo _%s)",
+                                        hd_ctx[0] == 'f' ? "fase" : hd_ctx[0] == 'm' ? "mapa" : "tela",
+                                        hd_ctx);
+                } else {
+                    ImGui::TextDisabled("Contexto agora: nenhum (so _pN e genericos)");
+                }
+                if (ppu_native_hd_variant_count() > 0) {
+                    ImGui::TextDisabled("Tiles por fase/paleta: %u",
+                                        ppu_native_hd_variant_count());
+                }
+            }
             {   /* Passo 6c: trilhas .ogg */
                 bool music_on = music_replace_get_enabled();
                 if (ImGui::Checkbox("Trilhas .ogg", &music_on)) {

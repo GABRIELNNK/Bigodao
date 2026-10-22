@@ -1,0 +1,60 @@
+sufixo,valor_hex,constante,mundo,course,descricao,observacao
+f07,07,LVL_C01A,Rice Beach,1,Rice Beach - Course 01 (versão A): antes da inundação de Rice Beach,sLevelId ($A804)
+f17,17,LVL_C01B,Rice Beach,1,Rice Beach - Course 01 (versão B): Rice Beach inundada (depois do chefe do mundo),sLevelId ($A804)
+f0f,0F,LVL_C02,Rice Beach,2,Rice Beach - Course 02,sLevelId ($A804)
+f0e,0E,LVL_C03A,Rice Beach,3,Rice Beach - Course 03 (versão A): antes da inundação de Rice Beach,sLevelId ($A804)
+f24,24,LVL_C03B,Rice Beach,3,Rice Beach - Course 03 (versão B): Rice Beach inundada (depois do chefe do mundo),sLevelId ($A804)
+f0c,0C,LVL_C04,Rice Beach,4,Rice Beach - Course 04,sLevelId ($A804)
+f19,19,LVL_C05,Rice Beach,5,Rice Beach - Course 05,sLevelId ($A804)
+f29,29,LVL_C06,Rice Beach,6,Rice Beach - Course 06,sLevelId ($A804)
+f06,06,LVL_C07,Mt. Teapot,7,Mt. Teapot - Course 07,sLevelId ($A804)
+f10,10,LVL_C08,Mt. Teapot,8,Mt. Teapot - Course 08,sLevelId ($A804)
+f0d,0D,LVL_C09,Mt. Teapot,9,Mt. Teapot - Course 09,sLevelId ($A804)
+f05,05,LVL_C10,Mt. Teapot,10,Mt. Teapot - Course 10,sLevelId ($A804)
+f11,11,LVL_C11,Mt. Teapot,11,Mt. Teapot - Course 11,sLevelId ($A804)
+f09,09,LVL_C12,Mt. Teapot,12,Mt. Teapot - Course 12,sLevelId ($A804)
+f0a,0A,LVL_C13,Mt. Teapot,13,Mt. Teapot - Course 13,sLevelId ($A804)
+f21,21,LVL_C14,Sherbet Land,14,Sherbet Land - Course 14,sLevelId ($A804)
+f02,02,LVL_C15,Sherbet Land,15,Sherbet Land - Course 15,sLevelId ($A804)
+f04,04,LVL_C16,Sherbet Land,16,Sherbet Land - Course 16,sLevelId ($A804)
+f08,08,LVL_C17,Sherbet Land,17,Sherbet Land - Course 17,sLevelId ($A804)
+f20,20,LVL_C18,Sherbet Land,18,Sherbet Land - Course 18,sLevelId ($A804)
+f18,18,LVL_C19,Sherbet Land,19,Sherbet Land - Course 19,sLevelId ($A804)
+f03,03,LVL_C20,Stove Canyon,20,Stove Canyon - Course 20,sLevelId ($A804)
+f15,15,LVL_C21,Stove Canyon,21,Stove Canyon - Course 21,sLevelId ($A804)
+f16,16,LVL_C22,Stove Canyon,22,Stove Canyon - Course 22,sLevelId ($A804)
+f27,27,LVL_C23,Stove Canyon,23,Stove Canyon - Course 23,sLevelId ($A804)
+f1b,1B,LVL_C24,Stove Canyon,24,Stove Canyon - Course 24,sLevelId ($A804)
+f1c,1C,LVL_C25,Stove Canyon,25,Stove Canyon - Course 25,sLevelId ($A804)
+f00,00,LVL_C26,SS Teacup,26,SS Teacup - Course 26,sLevelId ($A804)
+f1e,1E,LVL_C27,SS Teacup,27,SS Teacup - Course 27,sLevelId ($A804)
+f1f,1F,LVL_C28,SS Teacup,28,SS Teacup - Course 28,sLevelId ($A804)
+f0b,0B,LVL_C29,SS Teacup,29,SS Teacup - Course 29,sLevelId ($A804)
+f14,14,LVL_C30,SS Teacup,30,SS Teacup - Course 30,sLevelId ($A804)
+f26,26,LVL_C31A,Parsley Woods,31,Parsley Woods - Course 31 (versão A): antes de esvaziar o lago (Course 32 não concluído),sLevelId ($A804)
+f2a,2A,LVL_C31B,Parsley Woods,31,Parsley Woods - Course 31 (versão B): com o lago esvaziado (depois do Course 32),sLevelId ($A804)
+f1d,1D,LVL_C32,Parsley Woods,32,Parsley Woods - Course 32,sLevelId ($A804)
+f01,01,LVL_C33,Parsley Woods,33,Parsley Woods - Course 33,sLevelId ($A804)
+f13,13,LVL_C34,Parsley Woods,34,Parsley Woods - Course 34,sLevelId ($A804)
+f12,12,LVL_C35,Parsley Woods,35,Parsley Woods - Course 35,sLevelId ($A804)
+f1a,1A,LVL_C36,Parsley Woods,36,Parsley Woods - Course 36,sLevelId ($A804)
+f25,25,LVL_C37,Syrup Castle,37,Syrup Castle - Course 37,sLevelId ($A804)
+f22,22,LVL_C38,Syrup Castle,38,Syrup Castle - Course 38,sLevelId ($A804)
+f23,23,LVL_C39,Syrup Castle,39,Syrup Castle - Course 39,sLevelId ($A804)
+f28,28,LVL_C40,Syrup Castle,40,Syrup Castle - Course 40: fase final; não é concluída pela saída normal,sLevelId ($A804)
+f2b,2B,LVL_UNUSED_2B,,,não usado,sLevelId ($A804)
+f2c,2C,LVL_UNUSED_2C,,,não usado,sLevelId ($A804)
+f2d,2D,LVL_UNUSED_2D,,,não usado,sLevelId ($A804)
+f2e,2E,LVL_UNUSED_2E,,,não usado,sLevelId ($A804)
+f2f,2F,LVL_UNUSED_2F,,,não usado,sLevelId ($A804)
+m43,43,,,,Mapa geral (escolha de mundo),página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
+m44,44,,,,Mapa de Rice Beach,página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
+m46,46,,,,Mapa regional 2,página DX no mapa (modo 1); conferido; mundo não anotado; outras páginas aparecem no log [DX]
+m4a,4A,,,,Mapa regional especial 1,página DX no mapa (modo 1); conferido; mundo não anotado; outras páginas aparecem no log [DX]
+m4c,4C,,,,Tela do fim de fase,página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
+m4d,4D,,,,Tela do tesouro / fim de fase,página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
+g00,00,,,,Título e escolha de slot,modo do jogo $A8C3
+g08,08,,,,Game over,modo do jogo $A8C3
+g09,09,,,,Final (menos a parte no mapa),modo do jogo $A8C3
+g0b,0B,,,,Tesouro obtido,modo do jogo $A8C3
+g0d,0D,,,,Não usado (bônus de corações),modo do jogo $A8C3

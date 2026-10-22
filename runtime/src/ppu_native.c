@@ -101,13 +101,16 @@ typedef struct {
     bool has_ref;
     uint32_t ref[4];     /* paleta em que o tile foi pintado (pack.json) */
 } HdTile;
-#define HD_TABLE_CAP 16384u   /* potência de 2 */
+#define HD_TABLE_CAP 32768u   /* potência de 2 (passo 11a: era 16384) */
 static HdTile g_hd_tiles[HD_TABLE_CAP];
 static uint32_t g_hd_tile_count = 0;
 static bool g_hd_tiles_enabled = true;
 static uint32_t g_hd_generation = 1;               /* muda quando o pacote muda */
-/* Cache por tile da VRAM: [tipo 0=b 1=o][banco*384 + tile] */
-static const HdTile* g_hd_for[2][2 * NATIVE_TILES];
+/* Cache por tile da VRAM: [tipo 0=b 1=o][banco*384 + tile][paleta 0..7] */
+static const HdTile* g_hd_for[2][2 * NATIVE_TILES][8];
+/* Passo 11a: contexto atual (fase/mapa) e se há tiles específicos */
+static uint16_t g_hd_ctx = 0;
+static uint32_t g_hd_variant_count = 0;
 
 /* Passo 5d: laterais do widescreen em HD e na captura */
 #define MARGIN_W PPU_NATIVE_MARGIN_PIXELS
@@ -460,7 +463,7 @@ static bool dump_mark_seen(uint64_t key) {
 }
 
 static void dump_tile(char kind, const uint8_t* tile_px, const uint16_t colors[4],
-                      uint32_t pal_hash) {
+                      uint32_t pal_hash, uint8_t pal) {
     const unsigned gi = tile_global_index(tile_px);
     const uint64_t th = g_tile_hash[gi / NATIVE_TILES][gi % NATIVE_TILES];
     if (g_dump_size >= DUMP_QUEUE_CAP) {
@@ -474,6 +477,8 @@ static void dump_tile(char kind, const uint8_t* tile_px, const uint16_t colors[4
     d->kind = kind;
     d->tile_hash = th;
     d->pal_hash = pal_hash;
+    d->pal = pal;
+    d->context = g_hd_ctx;
     memcpy(d->index, tile_px, 64);
     for (unsigned c = 0; c < 4u; ++c) {
         d->rgba[c] = rgb(colors[c]);
@@ -498,12 +503,13 @@ static void line_palette_colors(const GBPPU* ppu, bool cgb, bool compat, bool ob
     }
 }
 
-/* Índice do tile na tabela da cena (mesmo tile = mesma entrada, qualquer
- * paleta; a paleta guardada é a da primeira vez que ele apareceu). */
-static uint16_t scene_tile_id(char kind, const uint8_t* tile_px, const uint16_t colors[4]) {
+/* Índice do tile na tabela da cena. Passo 11a: uma entrada por tile e
+ * número de paleta (antes era uma por tile, com a paleta da primeira vez). */
+static uint16_t scene_tile_id(char kind, const uint8_t* tile_px, const uint16_t colors[4],
+                              uint8_t pal) {
     const unsigned gi = tile_global_index(tile_px);
     const uint64_t th = g_tile_hash[gi / NATIVE_TILES][gi % NATIVE_TILES];
-    const uint64_t key = dump_key(kind, th, 0u);
+    const uint64_t key = dump_key(kind, th, (uint32_t)(pal & 7u) + 1u);
     uint32_t i = (uint32_t)(key ^ (key >> 31)) & (SCENE_MAP_CAP - 1u);
     while (g_scene_map_key[i] != 0) {
         if (g_scene_map_key[i] == key) {
@@ -521,6 +527,8 @@ static uint16_t scene_tile_id(char kind, const uint8_t* tile_px, const uint16_t 
     t->kind = kind;
     t->tile_hash = th;
     t->pal_hash = palette_hash(colors);
+    t->pal = (uint8_t)(pal & 7u);
+    t->context = g_hd_ctx;
     memcpy(t->index, tile_px, 64);
     for (unsigned c = 0; c < 4u; ++c) {
         t->rgba[c] = rgb(colors[c]);
@@ -578,7 +586,7 @@ static void scene_fill_sprite_boxes(const GBContext* ctx, bool cgb,
             if (g_scene.obj_tile[i] != PPU_NATIVE_SCENE_NO_TILE) {
                 continue;
             }
-            g_scene.obj_tile[i] = scene_tile_id('o', tile_px, obj_cols[palette & 7u]);
+            g_scene.obj_tile[i] = scene_tile_id('o', tile_px, obj_cols[palette & 7u], palette);
             g_scene.obj_uvf[i] = scene_uvf((uint8_t)p, screen_v, flags);
         }
     }
@@ -599,16 +607,39 @@ static const HdTile* hd_find(uint64_t key) {
     return NULL;
 }
 
-/* Tile HD de um tile do cache (NULL se não houver), com cache por tile. */
-static inline const HdTile* hd_lookup(char kind, const uint8_t* tile_px) {
+/* Passo 11a: chave de um tile HD. Contexto 0 e paleta "qualquer" dão a
+ * mesma chave de antes (dump_key com 0), então os mods antigos continuam. */
+static inline uint64_t hd_key(char kind, uint64_t tile_hash, uint16_t context, uint8_t pal) {
+    const uint32_t v = ((uint32_t)context << 8) |
+                       (pal == PPU_NATIVE_HD_ANY_PAL ? 0u : (uint32_t)(pal & 7u) + 1u);
+    return dump_key(kind, tile_hash, v);
+}
+
+/* Do mais específico para o mais genérico: fase+paleta, paleta, fase, tile. */
+static const HdTile* hd_resolve(char kind, uint64_t th, uint8_t pal) {
+    if (g_hd_variant_count > 0) {
+        const HdTile* t;
+        if (g_hd_ctx && (t = hd_find(hd_key(kind, th, g_hd_ctx, pal))) != NULL) return t;
+        if ((t = hd_find(hd_key(kind, th, 0u, pal))) != NULL) return t;
+        if (g_hd_ctx && (t = hd_find(hd_key(kind, th, g_hd_ctx, PPU_NATIVE_HD_ANY_PAL))) != NULL) return t;
+    }
+    return hd_find(hd_key(kind, th, 0u, PPU_NATIVE_HD_ANY_PAL));
+}
+
+/* Tile HD de um tile do cache (NULL se não houver), com cache por tile.
+ * O cache guarda as 8 paletas de uma vez; zera quando o pacote ou o
+ * contexto muda (g_hd_generation). */
+static inline const HdTile* hd_lookup(char kind, const uint8_t* tile_px, uint8_t pal) {
     const unsigned gi = tile_global_index(tile_px);
     const unsigned k = (kind == 'o') ? 1u : 0u;
     if (g_hd_for_gen[k][gi] != g_hd_generation) {
         const uint64_t th = g_tile_hash[gi / NATIVE_TILES][gi % NATIVE_TILES];
-        g_hd_for[k][gi] = hd_find(dump_key(kind, th, 0u));
+        for (uint8_t p = 0; p < 8u; ++p) {
+            g_hd_for[k][gi][p] = hd_resolve(kind, th, p);
+        }
         g_hd_for_gen[k][gi] = g_hd_generation;
     }
-    return g_hd_for[k][gi];
+    return g_hd_for[k][gi][pal & 7u];
 }
 
 /* Mesmo mapeamento de sample_tile_sub(), lendo a imagem HD (qualquer tamanho). */
@@ -743,14 +774,14 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                 last_bg_tile = bg.tile;
                 last_bg_pal = bg.palette;
                 const uint8_t pi = cgb ? (bg.palette & 7u) : 0u;
-                dump_tile('b', bg.tile, bg_cols[pi], bg_hash[pi]);
+                dump_tile('b', bg.tile, bg_cols[pi], bg_hash[pi], pi);
             }
             if (use_object &&
                 (objects.tile[x] != last_obj_tile || objects.palette[x] != last_obj_pal)) {
                 last_obj_tile = objects.tile[x];
                 last_obj_pal = objects.palette[x];
                 const uint8_t pi = objects.palette[x] & 7u;
-                dump_tile('o', objects.tile[x], obj_cols[pi], obj_hash[pi]);
+                dump_tile('o', objects.tile[x], obj_cols[pi], obj_hash[pi], pi);
             }
         }
 
@@ -759,7 +790,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             g_scene.bg_rgba[i] = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
             if (bg.tile) {
                 const uint8_t pi = cgb ? (bg.palette & 7u) : 0u;
-                g_scene.bg_tile[i] = scene_tile_id('b', bg.tile, bg_cols[pi]);
+                g_scene.bg_tile[i] = scene_tile_id('b', bg.tile, bg_cols[pi], pi);
                 g_scene.bg_uvf[i] = scene_uvf(bg.u, bg.v, bg.flags);
             } else {
                 g_scene.bg_tile[i] = PPU_NATIVE_SCENE_NO_TILE;
@@ -770,7 +801,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                 const uint8_t pi = objects.palette[x] & 7u;
                 g_scene.obj_rgba[i] = obj_color(ppu, cgb, compat, objects.palette[x],
                                                 objects.raw[x], obp);
-                g_scene.obj_tile[i] = scene_tile_id('o', objects.tile[x], obj_cols[pi]);
+                g_scene.obj_tile[i] = scene_tile_id('o', objects.tile[x], obj_cols[pi], pi);
                 g_scene.obj_uvf[i] = scene_uvf(objects.u[x], objects.v[x], objects.flags[x]);
             } else {
                 g_scene.obj_rgba[i] = 0u;
@@ -795,9 +826,9 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                 of = objects.flags[x];
                 opal = objects.palette[x];
                 obehind = objects.behind[x];
-                obj_hd = hd_tiles ? hd_lookup('o', ot) : NULL;
+                obj_hd = hd_tiles ? hd_lookup('o', ot, opal) : NULL;
             } else if (hd_tiles && objects.box_tile[x]) {
-                obj_hd = hd_lookup('o', objects.box_tile[x]);
+                obj_hd = hd_lookup('o', objects.box_tile[x], objects.box_palette[x]);
                 if (obj_hd) {
                     ot = objects.box_tile[x];
                     ou = objects.box_u[x];
@@ -807,7 +838,8 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                     obehind = objects.box_behind[x];
                 }
             }
-            const HdTile* bg_hd = (hd_tiles && bg.tile) ? hd_lookup('b', bg.tile) : NULL;
+            const HdTile* bg_hd = (hd_tiles && bg.tile)
+                ? hd_lookup('b', bg.tile, cgb ? (uint8_t)(bg.palette & 7u) : 0u) : NULL;
 
             if (!bg_hd && !obj_hd && !g_hd_check) {
                 /* Sem tile HD neste pixel: bloco N x N com a cor do pixel. */
@@ -909,13 +941,40 @@ const char* ppu_native_mode_name(PPURendererMode mode) {
     }
 }
 
+/* Passo 11a/11b: contexto do frame pela RAM do cartucho (disassembly
+ * Kak2X/wl): $A8C3 sGameMode, $A804 sLevelId, $A800 (patch DX) tela do mapa.
+ * A fase continua na tela fora do modo 3: carga e fade (2), porta de saída
+ * (4, 6), fade da morte (5), tempo esgotado (7), porta normal ($0A) e porta
+ * da entrada ($0C). Sem isso a arte por fase sumia nas portas. */
+static uint16_t hd_context_from_ram(const GBContext* ctx) {
+    if (!ctx->eram || ctx->eram_size < 0x08C4u) {
+        return 0;
+    }
+    const uint8_t mode = ctx->eram[0x08C3];
+    switch (mode) {
+        case 0x02: case 0x03: case 0x04: case 0x05:
+        case 0x06: case 0x07: case 0x0A: case 0x0C:
+            return (uint16_t)(PPU_NATIVE_CTX_LEVEL | ctx->eram[0x0804]);
+        case 0x01:
+            return (uint16_t)(PPU_NATIVE_CTX_MAP | (uint8_t)(0x41u + ctx->eram[0x0800]));
+        default:
+            return (uint16_t)(PPU_NATIVE_CTX_MODE | mode);
+    }
+}
+
 static void begin_frame(const GBContext* ctx, uint8_t first_line) {
     g_frame_open = true;
+    const uint16_t hd_ctx = hd_context_from_ram(ctx);
+    if (hd_ctx != g_hd_ctx) {
+        g_hd_ctx = hd_ctx;
+        g_hd_generation++;        /* refaz o cache de tiles HD */
+    }
     g_hd_scale = g_hd_scale_req;
     g_hd_frame_full = (first_line == 0);
     if (g_scene_state == SCENE_REQUESTED && first_line == 0) {
         g_scene_state = SCENE_CAPTURING;
         g_scene.tile_count = 0;
+        g_scene.context = g_hd_ctx;
         memset(g_scene_map_key, 0, sizeof(g_scene_map_key));
     } else if (g_scene_state == SCENE_CAPTURING) {
         g_scene_state = SCENE_REQUESTED;   /* frame interrompido: tenta de novo */
@@ -1193,13 +1252,22 @@ const PPUNativeScene* ppu_native_take_scene(void) {
 
 bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
                             const uint32_t* argb, const uint32_t* ref_palette) {
+    return ppu_native_hd_add_tile_ex(kind, tile_hash, 0u, PPU_NATIVE_HD_ANY_PAL,
+                                     size, argb, ref_palette);
+}
+
+bool ppu_native_hd_add_tile_ex(char kind, uint64_t tile_hash, uint16_t context, uint8_t pal,
+                               int size, const uint32_t* argb, const uint32_t* ref_palette) {
     if ((kind != 'b' && kind != 'o') || !argb || size < 8 || size > 512 || (size % 8) != 0) {
         return false;
     }
     if (g_hd_tile_count >= HD_TABLE_CAP / 2u) {
         return false;
     }
-    const uint64_t key = dump_key(kind, tile_hash, 0u);
+    if (pal != PPU_NATIVE_HD_ANY_PAL) {
+        pal &= 7u;
+    }
+    const uint64_t key = hd_key(kind, tile_hash, context, pal);
     uint32_t i = (uint32_t)(key ^ (key >> 33)) & (HD_TABLE_CAP - 1u);
     while (g_hd_tiles[i].key != 0 && g_hd_tiles[i].key != key) {
         i = (i + 1u) & (HD_TABLE_CAP - 1u);
@@ -1212,6 +1280,9 @@ bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
     memcpy(px, argb, (size_t)size * (size_t)size * sizeof(uint32_t));
     if (t->key == 0) {
         g_hd_tile_count++;
+        if (context != 0u || pal != PPU_NATIVE_HD_ANY_PAL) {
+            g_hd_variant_count++;
+        }
     } else {
         free(t->px);
     }
@@ -1232,11 +1303,34 @@ void ppu_native_hd_clear_tiles(void) {
     }
     memset(g_hd_tiles, 0, sizeof(g_hd_tiles));
     g_hd_tile_count = 0;
+    g_hd_variant_count = 0;
     g_hd_generation++;
 }
 
 uint32_t ppu_native_hd_tile_count(void) {
     return g_hd_tile_count;
+}
+
+uint32_t ppu_native_hd_variant_count(void) {
+    return g_hd_variant_count;
+}
+
+uint16_t ppu_native_hd_context(void) {
+    return g_hd_ctx;
+}
+
+void ppu_native_hd_context_suffix(uint16_t context, char* out) {
+    if (!out) {
+        return;
+    }
+    out[0] = '\0';
+    if (context & PPU_NATIVE_CTX_LEVEL) {
+        snprintf(out, 8, "f%02x", (unsigned)(context & 0xFFu));
+    } else if (context & PPU_NATIVE_CTX_MAP) {
+        snprintf(out, 8, "m%02x", (unsigned)(context & 0xFFu));
+    } else if (context & PPU_NATIVE_CTX_MODE) {
+        snprintf(out, 8, "g%02x", (unsigned)(context & 0xFFu));
+    }
 }
 
 void ppu_native_hd_set_tiles_enabled(bool enabled) {
@@ -1316,12 +1410,12 @@ static void margin_capture(const GBPPU* ppu, const GBContext* ctx, int y,
         g_scene.bg_rgba[i] = r->bg_rgba;
         if (r->bg_tile) {
             const uint8_t pi = cgb ? (r->bg_pal & 7u) : 0u;
-            g_scene.bg_tile[i] = scene_tile_id('b', tile_from_ref(ctx, r->bg_tile), bg_cols[pi]);
+            g_scene.bg_tile[i] = scene_tile_id('b', tile_from_ref(ctx, r->bg_tile), bg_cols[pi], pi);
             g_scene.bg_uvf[i] = r->bg_uvf;
         }
         if (r->obj_tile) {
             const uint8_t pi = r->obj_pal & 7u;
-            g_scene.obj_tile[i] = scene_tile_id('o', tile_from_ref(ctx, r->obj_tile), obj_cols[pi]);
+            g_scene.obj_tile[i] = scene_tile_id('o', tile_from_ref(ctx, r->obj_tile), obj_cols[pi], pi);
             g_scene.obj_uvf[i] = r->obj_uvf;
             g_scene.obj_rgba[i] = r->obj_raw ? r->obj_rgba : 0u;
         }
@@ -1330,6 +1424,7 @@ static void margin_capture(const GBPPU* ppu, const GBContext* ctx, int y,
 
 static void margin_hd(const GBContext* ctx, int y, const PPUNativeMarginPixel* px) {
     const unsigned n = (unsigned)g_hd_scale;
+    const bool cgb = is_cgb(ctx);
     const size_t stride = (size_t)MARGIN_W * n;
     const bool hd_tiles = g_hd_tiles_enabled && g_hd_tile_count > 0;
     for (int m = 0; m < MARGIN_W; ++m) {
@@ -1337,8 +1432,9 @@ static void margin_hd(const GBContext* ctx, int y, const PPUNativeMarginPixel* p
         uint32_t* hd = g_hd_m + (size_t)y * n * stride + (size_t)m * n;
         const uint8_t* bt = r->bg_tile ? tile_from_ref(ctx, r->bg_tile) : NULL;
         const uint8_t* ot = r->obj_tile ? tile_from_ref(ctx, r->obj_tile) : NULL;
-        const HdTile* bg_hd = (hd_tiles && bt) ? hd_lookup('b', bt) : NULL;
-        const HdTile* obj_hd = (hd_tiles && ot) ? hd_lookup('o', ot) : NULL;
+        const HdTile* bg_hd = (hd_tiles && bt)
+            ? hd_lookup('b', bt, cgb ? (uint8_t)(r->bg_pal & 7u) : 0u) : NULL;
+        const HdTile* obj_hd = (hd_tiles && ot) ? hd_lookup('o', ot, r->obj_pal) : NULL;
         if (!r->obj_raw && !obj_hd) {
             ot = NULL;            /* caixa sem HD: não muda nada */
         }

@@ -97,7 +97,8 @@ Abra o `_bg_4x.png` e/ou o `_obj_4x.png` e pinte **por cima**, sem mudar o taman
 - Se pintar numa escala maior, amplie o `_4x.png` com vizinho mais próximo (nearest) antes de começar. Um tile 8x vira 64×64 px.
 
 **Tiles repetidos**
-- O jogo reaproveita o mesmo tile em vários lugares, como blocos, chão e nuvens. **Existe um único PNG por tile.** Se você pintar duas ocorrências do mesmo tile de jeitos diferentes, só uma pode valer. Na seção 2.3 está como escolher qual.
+- O jogo reaproveita o mesmo tile em vários lugares, como blocos, chão e nuvens, e também **em fases diferentes e com paletas diferentes**. Por isso, o fundo que você pinta vale, por padrão, **só na fase da captura e só com a mesma paleta** (seção 2.3b). Os sprites valem em todo lugar.
+- Dentro dessa fase e dessa paleta existe um único PNG por tile. Se você pintar duas ocorrências do mesmo tile de jeitos diferentes, só uma pode valer. Na seção 2.3 está como escolher qual.
 - O jogo também reaproveita tiles **espelhados**. O fatiador desfaz o espelhamento sozinho. Basta pintar o que você vê.
 - Para variar a mesma coisa em lugares diferentes (dois tijolos iguais com rachaduras diferentes), por enquanto não há jeito: o tile é um só.
 
@@ -136,8 +137,35 @@ python3 tools/hd_slice.py <pasta do jogo>/mods/scenes/scene_001.json \
 | `--manter-vazios` | Sprite 100% transparente na pintura vira tile transparente (esconde o pedaço no jogo). Por padrão, tile sem pintura não é gravado. |
 | `--todas-votam` | Ocorrências deixadas iguais ao original também contam. Por padrão, o que foi pintado vence. |
 | `--mapa-conflitos` | Grava `conflitos_bg.png` / `conflitos_obj.png`, com a pintura apagada e, em vermelho, os pontos onde ela diferiu do que ficou no tile. |
+| `--fundo MODO` | Onde o fundo pintado vale: `fase+paleta` (padrão), `paleta`, `fase` ou `generico` (todo lugar). Veja 2.3a. |
+| `--sprites MODO` | O mesmo para os sprites. Padrão: `generico`. |
+| `--generico` | Fundo e sprites valem em todo lugar (o comportamento antigo). |
+| `--contexto fXX` | Força a fase (`fXX`) ou a tela do mapa (`mXX`), em hexadecimal. Serve para cenas gravadas antes desta versão, que não têm essa informação. |
 
-No fim, o script diz quantos tiles gravou e lista os tiles com conflito, por exemplo `b_6d5d26b984233cbc: 4400 subpixels diferentes`. Um conflito não é erro. Ele avisa que um tile repetido foi pintado de jeitos diferentes.
+No fim, o script diz quantos tiles gravou e lista os tiles com conflito, por exemplo `b_6d5d26b984233cbc_f10_p3: 4400 subpixels diferentes`. Um conflito não é erro. Ele avisa que um tile repetido foi pintado de jeitos diferentes.
+
+### 2.3a Por fase e por paleta
+
+O nome do PNG diz onde ele vale:
+
+| Arquivo | Vale para |
+|---|---|
+| `b_<código>.png` | todo lugar |
+| `b_<código>_p3.png` | paleta 3, em qualquer fase |
+| `b_<código>_f10.png` | fase `$10`, com qualquer paleta |
+| `b_<código>_f10_p3.png` | fase `$10` com a paleta 3 |
+
+`_m44` no lugar de `_f10` é a tela do mapa (página DX `$44` = Rice Beach), e `_g00` é uma das outras telas, pelo modo do jogo (`g00` título e slots, `g08` game over, `g09` final, `g0b` tesouro obtido). O número da paleta é o da paleta do Game Boy Color (0 a 7), não as cores: nos fades as cores mudam, o número não.
+
+A lista completa dos números está em **`tools/fases.csv`**. O número da fase é o interno do jogo, não o do Course: o Course 1 é `f07`. Algumas fases têm duas versões com números diferentes: o Course 1 e o Course 3 depois da inundação de Rice Beach (`f17` e `f24`) e o Course 31 com o lago esvaziado (`f2a`). A fase continua valendo nas portas, na morte, no tempo esgotado e na saída da fase.
+
+No jogo vale o **mais específico** que existir: fase+paleta, depois paleta, depois fase, depois o genérico. Então os mods antigos, só com genéricos, continuam funcionando igual.
+
+- O fatiador já dá o nome certo pela captura: o fundo sai com fase e paleta, e os sprites saem genéricos. Use `--fundo` e `--sprites` para mudar.
+- Em **Menu > Mods** aparece o contexto do momento (`Contexto agora: fase (sufixo _f10)`).
+- Um tile novo por fase começa do genérico que já existir na pasta (o que você pintou antes), não do original.
+- Se a pasta tiver o genérico e o específico, o script avisa: o genérico continua valendo nas outras fases. Apague-o se ele estiver "vazando" para onde não devia.
+- Cenas gravadas antes desta versão não têm a fase nem o número da paleta. Fatie com `--contexto f10` (a fase da cena) para separar por fase; o `_pN` fica de fora nelas.
 
 ### 2.3b Sprites animados: gravar poses
 
@@ -210,6 +238,7 @@ meu_mod.o2r  (ZIP)
 
 - **`b_<16 hex>.png`**: tile de fundo ou de window (inclui o HUD).
 - **`o_<16 hex>.png`**: tile de sprite.
+- Sufixos opcionais, nesta ordem: `_fXX` (fase `$XX`), `_mXX` (tela do mapa, página DX `$XX`) ou `_gXX` (outra tela, modo do jogo `$XX`), e `_pN` (paleta 0–7). Exemplo: `b_0123456789abcdef_f07_p3.png`. Veja a seção 2.3a e `tools/fases.csv`.
 - O código de 16 caracteres é tirado do conteúdo do tile (os 16 bytes dele na VRAM). Por isso, o mesmo desenho tem sempre o mesmo nome, em qualquer fase. Cada quadro de uma animação é um tile diferente.
 - **Tamanho**: PNG **quadrado**, com lado múltiplo de 8 (16, 24, 32, 64…, até 512). Tiles diferentes podem ter escalas diferentes.
 - **`pack.json`**:
@@ -218,7 +247,7 @@ meu_mod.o2r  (ZIP)
       "b_0123456789abcdef": {"palette": [4294967295, 4289374890, 4283782485, 4278190080], "scale": 4}
   }}
   ```
-  `palette` são as 4 cores originais do tile na captura, em ARGB. Um tile sem entrada no `pack.json` também funciona, mas não é recolorido nos fades.
+  `palette` são as 4 cores originais do tile na captura, em ARGB. A chave é o nome do arquivo sem `.png`, com os sufixos. Um tile sem entrada no `pack.json` também funciona, mas não é recolorido nos fades.
 - Se vários `.o2r` ou `pack.json` tiverem o mesmo tile, vale o último carregado, isto é, o mais embaixo na lista.
 
 ---
@@ -231,7 +260,7 @@ meu_mod.o2r  (ZIP)
 | Mod com "erro: …" na lista | O arquivo não é um ZIP válido, tem senha ou é ZIP64. Recrie com o `hd_empacotar.py`. |
 | "alguns ignorados (veja o terminal)" | Algum PNG não é quadrado ou o lado não é múltiplo de 8. O terminal mostra o nome. |
 | Cores erradas só nos fades | O tile não tem paleta no `pack.json`. Inclua o `pack.json` no `.o2r`. |
-| Pintura de um lugar apareceu em outro | É um tile repetido. Use `--mapa-conflitos` para ver onde, e `--modo` para escolher. |
+| Pintura de um lugar apareceu em outro | Na mesma tela: é um tile repetido; use `--mapa-conflitos` para ver onde, e `--modo` para escolher. Em outra fase: o tile está genérico (`b_<código>.png`, sem `_fXX`); apague o genérico e fatie de novo (seção 2.3a). |
 | `aviso: ... recriado em NxN` no fatiador | O tile já existia em outra escala. Ele foi refeito na escala nova, e a pintura antiga dele se perdeu. |
 | As laterais do widescreen não mudam | Os tiles das laterais precisam estar no pacote: capture a cena com o widescreen ligado. Nas telas em que o jogo deixa as laterais pretas (menu, mapa de bônus, sala do chefe…), elas continuam pretas. |
 | Pintura do fundo passa atrás do Wario quando não devia | A prioridade vem do jogo original e não pode ser mudada pelo PNG. |
@@ -240,7 +269,7 @@ meu_mod.o2r  (ZIP)
 
 ## 5. Extras (menu Desenvolvedor)
 
-- **Despejar tiles (PNG)**: grava cada tile novo que aparece na tela em `mods/dump`, em 8×8 e no tamanho original. Serve para explorar, mas para pintar o fluxo por cena (F9) é bem mais prático.
+- **Despejar tiles (PNG)**: grava cada tile novo que aparece na tela em `mods/dump`, em 8×8 e no tamanho original, e a paleta de cada um em `mods/dump/pack.json`. Serve para explorar, mas para pintar o fluxo por cena (F9) é bem mais prático.
 - **Conferir amostragem HD** / **Usar frame HD na tela**: ferramentas de teste do renderizador. Deixe como estão.
 
 ---

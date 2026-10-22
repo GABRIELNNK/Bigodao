@@ -50,6 +50,56 @@ static std::string g_pack_dir;
 static std::string g_pack_status;
 static std::string g_last_scene;
 
+/* Passo 11a: paletas dos tiles despejados (mods/dump/pack.json). */
+static void read_pack_palettes(const std::string& text,
+                               std::unordered_map<std::string, std::vector<uint32_t>>& out);
+static bool read_whole_file(const fs::path& path, std::vector<uint8_t>& out, size_t max_bytes);
+static std::unordered_map<std::string, std::vector<uint32_t>> g_dump_pack;
+static bool g_dump_pack_loaded = false;
+
+static void dump_pack_load(void) {
+    if (g_dump_pack_loaded) {
+        return;
+    }
+    g_dump_pack_loaded = true;
+    std::vector<uint8_t> bytes;
+    if (read_whole_file(fs::path(g_dump_dir) / "pack.json", bytes, 64u << 20)) {
+        read_pack_palettes(std::string(bytes.begin(), bytes.end()), g_dump_pack);
+    }
+}
+
+/* Mesmo formato do pack.json do hd_slice.py (escala 1: o tile 8x8). */
+static void dump_pack_save(void) {
+    std::vector<std::string> names;
+    names.reserve(g_dump_pack.size());
+    for (const auto& kv : g_dump_pack) names.push_back(kv.first);
+    std::sort(names.begin(), names.end());
+    const fs::path path = fs::path(g_dump_dir) / "pack.json";
+    const std::string tmp = path.string() + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "w");
+    if (!f) {
+        fprintf(stderr, "[HD] Falha ao gravar %s\n", path.string().c_str());
+        return;
+    }
+    fprintf(f, "{\n \"tiles\": {\n");
+    for (size_t i = 0; i < names.size(); ++i) {
+        const std::vector<uint32_t>& c = g_dump_pack[names[i]];
+        fprintf(f, "  \"%s\": {\"palette\": [%u, %u, %u, %u], \"scale\": 1}%s\n",
+                names[i].c_str(), (unsigned)c[0], (unsigned)c[1], (unsigned)c[2], (unsigned)c[3],
+                (i + 1 < names.size()) ? "," : "");
+    }
+    fprintf(f, " },\n \"version\": 1\n}\n");
+    if (fclose(f) != 0) {
+        return;
+    }
+    std::error_code ec;
+    fs::rename(tmp, path, ec);
+    if (ec) {
+        fs::remove(path, ec);
+        fs::rename(tmp, path, ec);
+    }
+}
+
 void hd_pack_io_set_base_dir(const char* base_dir) {
     g_base_dir = (base_dir && base_dir[0]) ? base_dir : "";
     fs::path dump = fs::path(g_base_dir.empty() ? "." : g_base_dir) / "mods" / "dump";
@@ -85,6 +135,7 @@ static bool ensure_dump_dir(void) {
 int hd_pack_io_flush_dumps(int max) {
     PPUNativeTileDump items[64];
     int written = 0;
+    bool pack_changed = false;
     while (max > 0) {
         const int want = max < 64 ? max : 64;
         const int n = ppu_native_take_tile_dumps(items, want);
@@ -101,6 +152,14 @@ int hd_pack_io_flush_dumps(int max) {
             snprintf(name, sizeof(name), "%c_%016llx.png", d.kind,
                      (unsigned long long)d.tile_hash);
             const fs::path path = fs::path(g_dump_dir) / name;
+            /* Passo 11a: a paleta da primeira vez entra no pack.json, para o
+             * tile despejado poder ir direto para um mod (fades certos). */
+            dump_pack_load();
+            const std::string stem(name, strlen(name) - 4);
+            if (g_dump_pack.find(stem) == g_dump_pack.end()) {
+                g_dump_pack[stem] = {d.rgba[0], d.rgba[1], d.rgba[2], d.rgba[3]};
+                pack_changed = true;
+            }
             std::error_code ec;
             if (fs::exists(path, ec)) {
                 continue;
@@ -120,6 +179,9 @@ int hd_pack_io_flush_dumps(int max) {
                 fprintf(stderr, "[HD] Falha ao gravar %s\n", path.string().c_str());
             }
         }
+    }
+    if (pack_changed) {
+        dump_pack_save();
     }
     return written;
 }
@@ -224,16 +286,37 @@ static void grade_text(std::vector<uint32_t>& img, int W, int H, int x, int y, c
     }
 }
 
+/* Uma entrada da lista "tiles" do .json da cena (passo 11a: com pal e context). */
+static void write_tile_entry(FILE* f, const PPUNativeTileDump& d, bool comma) {
+    char index[65];
+    for (int i = 0; i < 64; ++i) {
+        index[i] = (char)('0' + (d.index[i] & 3u));
+    }
+    index[64] = '\0';
+    char ctx[8];
+    ppu_native_hd_context_suffix(d.context, ctx);
+    fprintf(f, "    {\"name\": \"%c_%016llx\", \"kind\": \"%c\", \"pal\": %u, \"context\": \"%s\", "
+               "\"palette\": [%u, %u, %u, %u], \"index\": \"%s\"}%s\n",
+            d.kind, (unsigned long long)d.tile_hash, d.kind, (unsigned)d.pal, ctx,
+            (unsigned)d.rgba[0], (unsigned)d.rgba[1], (unsigned)d.rgba[2], (unsigned)d.rgba[3],
+            index, comma ? "," : "");
+}
+
 static bool write_grade_png(const fs::path& path, int w, int h, const uint16_t* tile,
                             const uint8_t* uvf, const PPUNativeTileDump* tiles, uint32_t tile_count) {
     const int S = 4;
     const int W = w * S, H = h * S;
     std::vector<uint32_t> img((size_t)W * H, 0u);
-    /* Número de cada entrada = a primeira entrada com o mesmo nome. */
+    /* Número de cada entrada = a primeira entrada com o mesmo nome. Passo 11a:
+     * no fundo, o mesmo tile com outra paleta vira outro PNG (padrão do
+     * hd_slice.py), então conta como outro número; nos sprites não. */
     std::vector<int> canon(tile_count);
     std::unordered_map<uint64_t, int> first;
     for (uint32_t t = 0; t < tile_count; ++t) {
-        const uint64_t key = tiles[t].tile_hash ^ ((uint64_t)(unsigned char)tiles[t].kind << 56);
+        uint64_t key = tiles[t].tile_hash ^ ((uint64_t)(unsigned char)tiles[t].kind << 56);
+        if (tiles[t].kind == 'b') {
+            key ^= ((uint64_t)tiles[t].pal + 1u) * 0x9E3779B97F4A7C15ull;
+        }
         auto it = first.find(key);
         canon[t] = (it == first.end()) ? (first[key] = (int)t) : it->second;
     }
@@ -313,18 +396,14 @@ int hd_pack_io_write_scene(const PPUNativeScene* scene) {
         fprintf(stderr, "[HD] Falha ao gravar %s\n", json_path.string().c_str());
         return -1;
     }
-    fprintf(f, "{\n  \"version\": 1,\n  \"width\": %d,\n  \"height\": %d,\n  \"tiles\": [\n", w, h);
+    /* Passo 11a (version 2): contexto da cena e, por entrada, o número da
+     * paleta e o contexto. Uma entrada por tile + paleta. */
+    char scene_ctx[8];
+    ppu_native_hd_context_suffix(scene->context, scene_ctx);
+    fprintf(f, "{\n  \"version\": 2,\n  \"width\": %d,\n  \"height\": %d,\n  \"context\": \"%s\",\n  \"tiles\": [\n",
+            w, h, scene_ctx);
     for (uint32_t t = 0; t < scene->tile_count; ++t) {
-        const PPUNativeTileDump& d = scene->tiles[t];
-        char index[65];
-        for (int i = 0; i < 64; ++i) {
-            index[i] = (char)('0' + (d.index[i] & 3u));
-        }
-        index[64] = '\0';
-        fprintf(f, "    {\"name\": \"%c_%016llx\", \"kind\": \"%c\", \"palette\": [%u, %u, %u, %u], \"index\": \"%s\"}%s\n",
-                d.kind, (unsigned long long)d.tile_hash, d.kind,
-                (unsigned)d.rgba[0], (unsigned)d.rgba[1], (unsigned)d.rgba[2], (unsigned)d.rgba[3],
-                index, (t + 1 < scene->tile_count) ? "," : "");
+        write_tile_entry(f, scene->tiles[t], t + 1 < scene->tile_count);
     }
     fprintf(f, "  ],\n");
     write_int_array(f, "bg_tile", scene->bg_tile, w * h, false);
@@ -337,7 +416,8 @@ int hd_pack_io_write_scene(const PPUNativeScene* scene) {
         fprintf(stderr, "[HD] Cena %s gravada com erros\n", base);
     }
     g_last_scene = (dir / base).string();
-    fprintf(stderr, "[HD] Cena gravada: %s (%u tiles)\n", g_last_scene.c_str(), (unsigned)scene->tile_count);
+    fprintf(stderr, "[HD] Cena gravada: %s (%u tiles, contexto %s)\n", g_last_scene.c_str(),
+            (unsigned)scene->tile_count, scene_ctx[0] ? scene_ctx : "nenhum");
     return number;
 }
 
@@ -382,22 +462,53 @@ const char* hd_pack_io_pack_status(void) {
     return g_pack_status.c_str();
 }
 
-/* Nome no formato b_<16 hex> ou o_<16 hex>. */
-static bool parse_tile_name(const std::string& name, char* kind, uint64_t* hash) {
-    if (name.size() != 18 || (name[0] != 'b' && name[0] != 'o') || name[1] != '_') {
+static int hex_digit(char c) {
+    c = (char)std::tolower((unsigned char)c);
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+/* Nome no formato b_<16 hex> ou o_<16 hex>, com os sufixos opcionais do
+ * passo 11a, nesta ordem: _f<2 hex> (fase), _m<2 hex> (tela do mapa) ou
+ * _g<2 hex> (outra tela, pelo modo do jogo; passo 11b), e _p<0-7> (paleta). */
+static bool parse_tile_name(const std::string& name, char* kind, uint64_t* hash,
+                            uint16_t* context = nullptr, uint8_t* pal = nullptr) {
+    if (name.size() < 18 || (name[0] != 'b' && name[0] != 'o') || name[1] != '_') {
         return false;
     }
     uint64_t h = 0;
     for (size_t i = 2; i < 18; ++i) {
-        const char c = (char)std::tolower((unsigned char)name[i]);
-        int v;
-        if (c >= '0' && c <= '9') v = c - '0';
-        else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
-        else return false;
+        const int v = hex_digit(name[i]);
+        if (v < 0) return false;
         h = (h << 4) | (uint64_t)v;
+    }
+    uint16_t ctx = 0;
+    uint8_t p = PPU_NATIVE_HD_ANY_PAL;
+    size_t pos = 18;
+    const char ctx_letter = (pos + 4 <= name.size() && name[pos] == '_')
+        ? (char)std::tolower((unsigned char)name[pos + 1]) : '\0';
+    if (ctx_letter == 'f' || ctx_letter == 'm' || ctx_letter == 'g') {
+        const int hi = hex_digit(name[pos + 2]), lo = hex_digit(name[pos + 3]);
+        if (hi < 0 || lo < 0) return false;
+        const uint16_t base = ctx_letter == 'f' ? PPU_NATIVE_CTX_LEVEL
+                            : ctx_letter == 'm' ? PPU_NATIVE_CTX_MAP : PPU_NATIVE_CTX_MODE;
+        ctx = (uint16_t)(base | (unsigned)(hi * 16 + lo));
+        pos += 4;
+    }
+    if (pos + 3 <= name.size() && name[pos] == '_' &&
+        std::tolower((unsigned char)name[pos + 1]) == 'p' &&
+        name[pos + 2] >= '0' && name[pos + 2] <= '7') {
+        p = (uint8_t)(name[pos + 2] - '0');
+        pos += 3;
+    }
+    if (pos != name.size()) {
+        return false;
     }
     *kind = name[0];
     *hash = h;
+    if (context) *context = ctx;
+    if (pal) *pal = p;
     return true;
 }
 
@@ -629,7 +740,9 @@ static int load_source(HdModSource& src, int& no_ref_total) {
     for (const PendingTile& t : tiles) {
         char kind;
         uint64_t hash;
-        parse_tile_name(t.stem, &kind, &hash);
+        uint16_t context = 0;
+        uint8_t pal = PPU_NATIVE_HD_ANY_PAL;
+        parse_tile_name(t.stem, &kind, &hash, &context, &pal);
         int w = 0, h = 0, comp = 0;
         unsigned char* data = stbi_load_from_memory(t.png.data(), (int)t.png.size(), &w, &h, &comp, 4);
         if (!data || w != h || w < 8 || (w % 8) != 0) {
@@ -648,7 +761,7 @@ static int load_source(HdModSource& src, int& no_ref_total) {
         const auto it = palettes.find(t.stem);
         const uint32_t* ref = (it != palettes.end()) ? it->second.data() : nullptr;
         if (!ref) no_ref++;
-        if (ppu_native_hd_add_tile(kind, hash, w, argb.data(), ref)) {
+        if (ppu_native_hd_add_tile_ex(kind, hash, context, pal, w, argb.data(), ref)) {
             loaded++;
         } else {
             skipped++;
@@ -956,7 +1069,7 @@ uint32_t g_rec_frames = 0;
 std::vector<RecPose> g_rec_poses;
 std::unordered_set<uint64_t> g_rec_sigs;
 std::vector<PPUNativeTileDump> g_rec_tiles;
-std::unordered_map<uint64_t, uint16_t> g_rec_tile_map;   /* tile_hash -> índice */
+std::unordered_map<uint64_t, uint16_t> g_rec_tile_map;   /* tile + paleta + contexto -> índice */
 bool g_rec_rect_on = false;
 int g_rec_rx = 40, g_rec_ry = 24, g_rec_rw = 80, g_rec_rh = 96;
 std::string g_rec_last;
@@ -977,13 +1090,17 @@ inline uint8_t mirror_uvf(uint8_t uvf) {
     return (uint8_t)((uvf & 0xB8u) | (uint8_t)(7u - u) | ((uvf & 0x40u) ? 0u : 0x40u));
 }
 
+inline uint64_t rec_tile_key(const PPUNativeTileDump& t) {
+    return t.tile_hash ^ ((((uint64_t)t.context << 8) | ((uint64_t)t.pal + 1u)) * 0x9E3779B97F4A7C15ull);
+}
+
 uint16_t rec_tile_index(const PPUNativeTileDump& t) {
-    auto it = g_rec_tile_map.find(t.tile_hash);
+    auto it = g_rec_tile_map.find(rec_tile_key(t));
     if (it != g_rec_tile_map.end()) return it->second;
     if (g_rec_tiles.size() >= PPU_NATIVE_SCENE_MAX_TILES) return PPU_NATIVE_SCENE_NO_TILE;
     const uint16_t id = (uint16_t)g_rec_tiles.size();
     g_rec_tiles.push_back(t);
-    g_rec_tile_map.emplace(t.tile_hash, id);
+    g_rec_tile_map.emplace(rec_tile_key(t), id);
     return id;
 }
 
@@ -1184,17 +1301,12 @@ int hd_pack_io_sprite_rec_stop(void) {
         fprintf(stderr, "[HD] Falha ao gravar %s\n", json_path.string().c_str());
         return -1;
     }
-    fprintf(f, "{\n  \"version\": 1,\n  \"kind\": \"sprites\",\n  \"poses\": %u,\n  \"width\": %d,\n  \"height\": %d,\n  \"tiles\": [\n",
+    /* Passo 11a: a folha junta frames de várias telas, então o contexto vai
+     * só em cada entrada (o de quando o tile apareceu pela primeira vez). */
+    fprintf(f, "{\n  \"version\": 2,\n  \"kind\": \"sprites\",\n  \"poses\": %u,\n  \"width\": %d,\n  \"height\": %d,\n  \"context\": \"\",\n  \"tiles\": [\n",
             (unsigned)g_rec_poses.size(), sheet_w, sheet_h);
     for (size_t t = 0; t < g_rec_tiles.size(); ++t) {
-        const PPUNativeTileDump& d = g_rec_tiles[t];
-        char index[65];
-        for (int i = 0; i < 64; ++i) index[i] = (char)('0' + (d.index[i] & 3u));
-        index[64] = '\0';
-        fprintf(f, "    {\"name\": \"%c_%016llx\", \"kind\": \"%c\", \"palette\": [%u, %u, %u, %u], \"index\": \"%s\"}%s\n",
-                d.kind, (unsigned long long)d.tile_hash, d.kind,
-                (unsigned)d.rgba[0], (unsigned)d.rgba[1], (unsigned)d.rgba[2], (unsigned)d.rgba[3],
-                index, (t + 1 < g_rec_tiles.size()) ? "," : "");
+        write_tile_entry(f, g_rec_tiles[t], t + 1 < g_rec_tiles.size());
     }
     fprintf(f, "  ],\n");
     const std::vector<uint16_t> no_bg(count, PPU_NATIVE_SCENE_NO_TILE);

@@ -5,7 +5,8 @@ com outra extensao), para colocar em <pasta do jogo>/mods.
 
     python3 tools/hd_empacotar.py mods/hd mods/meu_mod.o2r
 
-Entram os b_<tile>.png / o_<tile>.png da pasta (e subpastas) e os pack.json.
+Entram os b_<tile>.png / o_<tile>.png da pasta (e subpastas), inclusive os
+por fase e paleta (b_<tile>_f10_p3.png, passo 11a), e os pack.json.
 Os mapas de conflito e outros arquivos ficam de fora.
 
 No jogo (Menu > Mods) cada .o2r aparece com uma caixa para ligar/desligar.
@@ -22,7 +23,9 @@ import sys
 import zipfile
 from pathlib import Path
 
-TILE = re.compile(r"^[bo]_[0-9a-fA-F]{16}\.png$")
+# Passo 11a/11b: sufixos opcionais _fXX / _mXX / _gXX (fase / tela do mapa /
+# outra tela pelo modo do jogo) e _pN (paleta).
+TILE = re.compile(r"^[bo]_[0-9a-fA-F]{16}(_[fmgFMG][0-9a-fA-F]{2})?(_[pP][0-7])?\.png$")
 
 
 def tile_vazio(path):

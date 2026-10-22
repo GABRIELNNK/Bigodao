@@ -135,6 +135,8 @@ typedef struct {
     uint32_t pal_hash;    /* FNV-1a 32 das 4 cores RGB555 */
     uint8_t index[64];    /* índice de cor (0..3) de cada pixel, linha a linha */
     uint32_t rgba[4];     /* cor de cada índice, 0xAARRGGBB */
+    uint8_t pal;          /* passo 11a: número da paleta (CGB 0..7; DMG 0/1) */
+    uint16_t context;     /* passo 11a: contexto (fase/mapa) quando foi visto */
 } PPUNativeTileDump;
 
 void ppu_native_set_tile_dump(bool enabled);
@@ -174,6 +176,7 @@ typedef struct {
     uint8_t bg_uvf[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];
     uint8_t obj_uvf[PPU_NATIVE_SCENE_MAX_W * GB_SCREEN_HEIGHT];
     uint32_t tile_count;
+    uint16_t context;     /* passo 11a: contexto do frame capturado */
     PPUNativeTileDump tiles[PPU_NATIVE_SCENE_MAX_TILES];
 } PPUNativeScene;
 
@@ -200,6 +203,37 @@ const PPUNativeScene* ppu_native_take_scene(void);
  * Copia os dados. Substitui um tile com o mesmo tipo e hash. */
 bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
                             const uint32_t* argb, const uint32_t* ref_palette);
+
+/* Passo 11a: tiles HD por contexto e paleta.
+ *
+ * O mesmo desenho de tile é reaproveitado em fases diferentes e com paletas
+ * diferentes. Um tile HD pode valer só para uma fase (ou tela do mapa) e/ou
+ * só para um número de paleta:
+ *   b_<hash>.png             todo lugar
+ *   b_<hash>_p3.png          paleta 3, qualquer fase
+ *   b_<hash>_f10.png         fase $10, qualquer paleta
+ *   b_<hash>_f10_p3.png      fase $10 com paleta 3
+ *   (_m44 no lugar de _f10 = tela do mapa da página DX $44; _g00 = outra
+ *    tela pelo modo do jogo, passo 11b)
+ * Ao desenhar, vale o mais específico: fase+paleta, paleta, fase, genérico.
+ *
+ * Contexto (passo 11b): PPU_NATIVE_CTX_LEVEL | sLevelId ($A804) nos modos
+ * ($A8C3) em que a fase está na tela: 2, 3, 4, 5, 6, 7, $0A e $0C;
+ * PPU_NATIVE_CTX_MAP | (0x41 + $A800) no modo 1 (mapa); nos outros,
+ * PPU_NATIVE_CTX_MODE | modo (_gXX: título/slots, tesouro, game over, final).
+ * 0 = nenhum (sem RAM do cartucho). */
+#define PPU_NATIVE_HD_ANY_PAL 0xFFu
+#define PPU_NATIVE_CTX_LEVEL 0x0100u
+#define PPU_NATIVE_CTX_MAP   0x0200u
+#define PPU_NATIVE_CTX_MODE  0x0400u
+bool ppu_native_hd_add_tile_ex(char kind, uint64_t tile_hash, uint16_t context, uint8_t pal,
+                               int size, const uint32_t* argb, const uint32_t* ref_palette);
+/* Contexto do último frame. */
+uint16_t ppu_native_hd_context(void);
+/* "f10", "m44", "g00" ou "" (sem contexto). out com pelo menos 8 bytes. */
+void ppu_native_hd_context_suffix(uint16_t context, char* out);
+/* Quantos tiles HD carregados são específicos (com _f/_m/_p). */
+uint32_t ppu_native_hd_variant_count(void);
 void ppu_native_hd_clear_tiles(void);
 uint32_t ppu_native_hd_tile_count(void);
 void ppu_native_hd_set_tiles_enabled(bool enabled);
