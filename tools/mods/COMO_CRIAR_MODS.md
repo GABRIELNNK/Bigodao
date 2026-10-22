@@ -157,7 +157,7 @@ O nome do PNG diz onde ele vale:
 
 `_m44` no lugar de `_f10` é a tela do mapa (página DX `$44` = Rice Beach), e `_g00` é uma das outras telas, pelo modo do jogo (`g00` título e slots, `g08` game over, `g09` final, `g0b` tesouro obtido). O número da paleta é o da paleta do Game Boy Color (0 a 7), não as cores: nos fades as cores mudam, o número não.
 
-A lista completa dos números está em **`tools/fases.csv`**. O número da fase é o interno do jogo, não o do Course: o Course 1 é `f07`. Algumas fases têm duas versões com números diferentes: o Course 1 e o Course 3 depois da inundação de Rice Beach (`f17` e `f24`) e o Course 31 com o lago esvaziado (`f2a`). A fase continua valendo nas portas, na morte, no tempo esgotado e na saída da fase.
+A lista completa dos números está em **`tools/fases.csv`**. O número da fase é o interno do jogo, não o do Course: o Course 1 é `f07`. Algumas fases têm duas versões com números diferentes: o Course 1 e o Course 3 depois da inundação de Rice Beach (`f17` e `f24`) e o Course 31 com o lago esvaziado (`f2a`). A fase continua valendo nas portas, na morte, no tempo esgotado e na saída da fase. A transição dos slots para o mapa (`m42`) usa o mesmo contexto dos slots (`g00`): a arte pintada numa vale na outra.
 
 No jogo vale o **mais específico** que existir: fase+paleta, depois paleta, depois fase, depois o genérico. Então os mods antigos, só com genéricos, continuam funcionando igual.
 

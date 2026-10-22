@@ -946,7 +946,30 @@ const char* ppu_native_mode_name(PPURendererMode mode) {
  * A fase continua na tela fora do modo 3: carga e fade (2), porta de saída
  * (4, 6), fade da morte (5), tempo esgotado (7), porta normal ($0A) e porta
  * da entrada ($0C). Sem isso a arte por fase sumia nas portas. */
+/* Passo 11c: telas que usam o mesmo cenário de outra e por isso dividem os
+ * tiles HD dela. O contexto da esquerda passa a valer como o da direita
+ * (no jogo, na captura e no menu). */
+static const uint16_t k_hd_ctx_alias[][2] = {
+    /* m42: transição dos slots para o mapa, com o mesmo fundo dos slots (g00) */
+    { PPU_NATIVE_CTX_MAP | 0x42u, PPU_NATIVE_CTX_MODE | 0x00u },
+};
+
+static uint16_t hd_context_alias(uint16_t context) {
+    for (size_t i = 0; i < sizeof(k_hd_ctx_alias) / sizeof(k_hd_ctx_alias[0]); ++i) {
+        if (k_hd_ctx_alias[i][0] == context) {
+            return k_hd_ctx_alias[i][1];
+        }
+    }
+    return context;
+}
+
+static uint16_t hd_context_from_ram_raw(const GBContext* ctx);
+
 static uint16_t hd_context_from_ram(const GBContext* ctx) {
+    return hd_context_alias(hd_context_from_ram_raw(ctx));
+}
+
+static uint16_t hd_context_from_ram_raw(const GBContext* ctx) {
     if (!ctx->eram || ctx->eram_size < 0x08C4u) {
         return 0;
     }

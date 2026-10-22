@@ -47,6 +47,7 @@ f2c,2C,LVL_UNUSED_2C,,,não usado,sLevelId ($A804)
 f2d,2D,LVL_UNUSED_2D,,,não usado,sLevelId ($A804)
 f2e,2E,LVL_UNUSED_2E,,,não usado,sLevelId ($A804)
 f2f,2F,LVL_UNUSED_2F,,,não usado,sLevelId ($A804)
+m42,42,,,,Transição dos slots para o mapa,usa o contexto g00 (mesmo fundo dos slots; passo 11c)
 m43,43,,,,Mapa geral (escolha de mundo),página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
 m44,44,,,,Mapa de Rice Beach,página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
 m46,46,,,,Mapa regional 2,página DX no mapa (modo 1); conferido; mundo não anotado; outras páginas aparecem no log [DX]
