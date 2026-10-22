@@ -1407,6 +1407,18 @@ static bool ppu_find_widescreen_block_attributes(
     return found;
 }
 
+/* Passo 13a: o tile do mundo com canto (x0, y0) esta na parte atualizada do
+ * tilemap (a tela e uma coluna/linha alem dela, passo 7f)? Decidido pelo tile
+ * inteiro: antes a divisa (camera - 8) cortava o tile no meio e parte dos
+ * pixels usava a cor da VRAM e parte a cor resolvida. Vale para o desenho e
+ * para o aprendizado do cache. */
+static inline bool ppu_ws_tile_fresh(const GBPPU* ppu, int x0, int y0) {
+    const int left = (int)ppu->frame_widescreen_scroll_x - 0x50 - 8;
+    const int top = (int)ppu->frame_widescreen_scroll_y - 0x48 - 8;
+    return x0 + 8 > left && x0 < left + GB_SCREEN_WIDTH + 16 &&
+           y0 + 8 > top && y0 < top + GB_SCREEN_HEIGHT + 16;
+}
+
 /* Passo 7g: pagina da tabela DX que bate com o que esta na tela.
  * A pagina escolhida pelo numero da fase ($A800) erra em salas com outro jogo
  * de tiles (caverna depois da porta). A cada frame, os tiles visiveis (com o
@@ -1589,6 +1601,161 @@ static bool ppu_ws_nearest_fresh_attr(const GBPPU* ppu, const GBContext* ctx, ui
     return false;
 }
 
+/* ============================================================================
+ * Passo 13b: mapa largo das laterais
+ *
+ * A cor de cada tile do mundo nas laterais (tile, atributo CGB, de onde veio
+ * a cor) é resolvida uma vez e guardada aqui; o desenho de cada pixel só lê.
+ * Depois do 13a a resolução já era por tile; o mapa só evita refazê-la a
+ * cada pixel e a cada linha, e é o que um desenho na GPU vai ler.
+ *
+ * Uma entrada vale enquanto nada que a resolução usa mudou: a geração
+ * (g_ws_map_gen) muda quando o cache de atributos é remontado (câmera, LCDC,
+ * modo, escrita no tilemap, frame novo), quando os blocos aprendidos são
+ * zerados (troca de sala) e no carregamento de savestate. O bloco, o tile e a
+ * fase ($A800) são conferidos na leitura, porque o jogo pode mudar o layout
+ * (WRAM) ou a tabela de blocos (ERAM) no meio do frame sem nenhum aviso.
+ *
+ * Origem (source), a mesma do diagnóstico 7h: 0 VRAM perto da tela, 1 cache
+ * do frame, 2 tabela DX calibrada, 3 bloco aprendido, 4 tabela pela fase,
+ * 5 palpite do tile, 6 nada, 7 mesmo tile na tela.
+ * Camada (layer): reservada para a profundidade do modo 3D (0 = fundo).
+ * ========================================================================== */
+typedef struct {
+    uint32_t gen;        /* 0 = vazio */
+    int16_t tx, ty;      /* tile do mundo (world >> 3) */
+    uint8_t block_id;
+    uint8_t tile_idx;
+    uint8_t level;       /* $A800 quando foi resolvido */
+    uint8_t attr;        /* atributo CGB (paleta, banco, flips, prioridade) */
+    uint8_t source;
+    uint8_t layer;
+    bool map_current;    /* atributo veio da VRAM (vale a prioridade do BG) */
+} WsMapTile;
+
+#define WS_MAP_SIDE 64u   /* janela das laterais < 64 tiles nas duas direções */
+static WsMapTile g_ws_map[WS_MAP_SIDE * WS_MAP_SIDE];
+static uint32_t g_ws_map_gen = 1;
+
+static void ppu_ws_map_invalidate(void) {
+    if (++g_ws_map_gen == 0) {
+        g_ws_map_gen = 1;
+        memset(g_ws_map, 0, sizeof(g_ws_map));
+    }
+}
+
+/* Resolução de um tile (código do 7e-7n/13a, sem mudança de regra). */
+static void ppu_ws_resolve_tile(const GBPPU* ppu,
+                                const GBContext* ctx,
+                                int tile_x0,
+                                int tile_y0,
+                                uint8_t block_id,
+                                size_t tile_in_block,
+                                uint8_t tile_idx,
+                                const WidescreenBlockAttributeCache* attribute_cache,
+                                WsMapTile* out) {
+    const bool cgb_mode = ppu_is_cgb_mode(ctx);
+    const uint16_t tilemap_addr = get_bg_tilemap_addr(ppu->latched_lcdc);
+    const uint16_t map_entry = (uint16_t)(tilemap_addr +
+        (((uint32_t)tile_y0 >> 3) & 31u) * 32u +
+        (((uint32_t)tile_x0 >> 3) & 31u));
+    uint8_t attr = cgb_mode ? vram_read_bank(ctx, 1, map_entry) : 0;
+    /* Passo 7f: o tilemap da VRAM so esta atualizado na tela e uma coluna/
+     * linha alem dela; mais longe ele guarda restos de onde a camera passou.
+     * Conferir so o numero do tile nao basta (o tile liso e usado por varios
+     * blocos com paletas diferentes): fora dessa faixa, nao usa a VRAM.
+     * Passo 13a: decidido pelo canto do tile. */
+    const bool map_fresh = ppu_ws_tile_fresh(ppu, tile_x0, tile_y0);
+    const bool has_current_map_attribute =
+        !cgb_mode || (map_fresh && vram_read_bank(ctx, 0, map_entry) == tile_idx);
+
+    /* Passo 7e: primeiro o que o jogo mostrou na tela para este bloco (cache
+     * do frame e blocos aprendidos); a tabela da ROM DX e o palpite por tile
+     * ficam para blocos que ainda nao apareceram. A tabela e indexada so pela
+     * fase ($A800) e erra em salas com outro jogo de tiles (ex.: a caverna
+     * depois de uma porta), pintando o bloco com a paleta de outro. */
+    int attr_source = 0;   /* passo 7h: 0 = VRAM perto da tela */
+    if (cgb_mode && !has_current_map_attribute) {
+        bool found = attribute_cache &&
+            ppu_find_widescreen_block_attributes(
+                attribute_cache, block_id, tile_in_block,
+                tile_x0, tile_y0, &attr);   /* passo 13a: distancia do tile */
+        attr_source = found ? 1 : 6;
+        uint8_t rom_attr;
+        /* Passo 7g: a tabela DX na pagina que bate com a tela vem antes do
+         * que foi aprendido (que pode ser de outra sala). */
+        if (!found && g_dx_page >= 0 &&
+            ppu_dx_attribute_from_page(ctx, g_dx_page, tile_idx, &rom_attr)) {
+            attr = rom_attr;
+            found = true;
+            attr_source = 2;
+            /* Passo 7k: a tela mostra este tile com outra paleta (e so com ela). */
+            if (g_dx_screen_state[tile_idx] == 1 &&
+                (g_dx_screen_attr[tile_idx] & OAM_CGB_PALETTE) != rom_attr) {
+                attr = g_dx_screen_attr[tile_idx];
+                attr_source = 7;
+            }
+        }
+        if (!found && ppu->ws_block_known[block_id][tile_in_block]) {
+            attr = ppu->ws_block_attr[block_id][tile_in_block];
+            found = true;
+            attr_source = 3;
+        }
+        if (!found && ppu_ws_nearest_fresh_attr(ppu, ctx, tilemap_addr, tile_idx,
+                                                tile_x0, tile_y0, &attr)) {
+            found = true;
+            attr_source = 7;   /* passo 7j */
+        }
+        if (!found) {
+            if (ppu_dx_attribute_from_rom(ctx, tile_idx, &rom_attr)) {
+                attr = rom_attr;
+                attr_source = 4;
+            } else if (ppu->ws_tile_known[tile_idx]) {
+                attr = ppu->ws_tile_attr[tile_idx];
+                attr_source = 5;
+            }
+        }
+    }
+    out->attr = attr;
+    out->source = (uint8_t)attr_source;
+    out->map_current = has_current_map_attribute;
+    out->layer = 0;
+}
+
+/* Entrada do mapa largo para o tile do mundo com canto (tile_x0, tile_y0),
+ * resolvida agora se não estiver lá ou estiver velha. */
+static const WsMapTile* ppu_ws_map_tile(const GBPPU* ppu,
+                                        const GBContext* ctx,
+                                        int tile_x0,
+                                        int tile_y0,
+                                        uint8_t block_id,
+                                        size_t tile_in_block,
+                                        uint8_t tile_idx,
+                                        const WidescreenBlockAttributeCache* attribute_cache) {
+    static WsMapTile scratch;
+    const int tx = tile_x0 >> 3, ty = tile_y0 >> 3;
+    const uint8_t level = ctx->eram_size > 0x800u ? ctx->eram[0x800] : 0u;
+    if (!attribute_cache) {   /* sem cache não guarda (não acontece hoje) */
+        ppu_ws_resolve_tile(ppu, ctx, tile_x0, tile_y0, block_id, tile_in_block,
+                            tile_idx, attribute_cache, &scratch);
+        return &scratch;
+    }
+    WsMapTile* e = &g_ws_map[((unsigned)ty & (WS_MAP_SIDE - 1u)) * WS_MAP_SIDE +
+                             ((unsigned)tx & (WS_MAP_SIDE - 1u))];
+    if (e->gen != g_ws_map_gen || e->tx != tx || e->ty != ty ||
+        e->block_id != block_id || e->tile_idx != tile_idx || e->level != level) {
+        ppu_ws_resolve_tile(ppu, ctx, tile_x0, tile_y0, block_id, tile_in_block,
+                            tile_idx, attribute_cache, e);
+        e->gen = g_ws_map_gen;
+        e->tx = (int16_t)tx;
+        e->ty = (int16_t)ty;
+        e->block_id = block_id;
+        e->tile_idx = tile_idx;
+        e->level = level;
+    }
+    return e;
+}
+
 static bool ppu_fetch_warioland_world_pixel(
     const GBPPU* ppu,
     const GBContext* ctx,
@@ -1612,106 +1779,20 @@ static bool ppu_fetch_warioland_world_pixel(
     const int tile_x = (world_x >> 3) & 1;
     const int tile_y = (world_y >> 3) & 1;
     const uint8_t tile_idx = ctx->eram[block_offset + (size_t)tile_y * 2u + tile_x];
+    const size_t tile_in_block = (size_t)tile_y * 2u + tile_x;
+
+    /* Passo 13b: cor do tile pelo mapa largo (resolvida uma vez por tile). */
+    const WsMapTile* mt = ppu_ws_map_tile(ppu, ctx, world_x & ~7, world_y & ~7,
+                                          block_id, tile_in_block, tile_idx,
+                                          attribute_cache);
+    const uint8_t attr = mt->attr;
+    const int attr_source = mt->source;
+
     int pixel_x = world_x & 7;
     int pixel_y = world_y & 7;
-    const bool cgb_mode = ppu_is_cgb_mode(ctx);
-    const uint16_t tilemap_addr = get_bg_tilemap_addr(ppu->latched_lcdc);
-    const uint16_t map_entry = (uint16_t)(tilemap_addr +
-        (((uint32_t)world_y >> 3) & 31u) * 32u +
-        (((uint32_t)world_x >> 3) & 31u));
-    uint8_t attr = cgb_mode ? vram_read_bank(ctx, 1, map_entry) : 0;
-    /* Passo 7f: o tilemap da VRAM so esta atualizado na tela e uma coluna/
-     * linha alem dela; mais longe ele guarda restos de onde a camera passou.
-     * Conferir so o numero do tile nao basta (o tile liso e usado por varios
-     * blocos com paletas diferentes): fora dessa faixa, nao usa a VRAM. */
-    const int fresh_left = (int)ppu->frame_widescreen_scroll_x - 0x50 - 8;
-    const int fresh_top = (int)ppu->frame_widescreen_scroll_y - 0x48 - 8;
-    const bool map_fresh = world_x >= fresh_left && world_x < fresh_left + GB_SCREEN_WIDTH + 16 &&
-                           world_y >= fresh_top && world_y < fresh_top + GB_SCREEN_HEIGHT + 16;
-    bool has_current_map_attribute =
-        !cgb_mode || (map_fresh && vram_read_bank(ctx, 0, map_entry) == tile_idx);
-
-    /*
-    // tile descoloridos: log temporario para verificar se o atributo do tile no mapa corresponde ao atributo do tile na ROM DX    
-    if (cgb_mode && has_current_map_attribute) {
-        uint8_t rom_attr;
-        if (ppu_dx_attribute_from_rom(ctx, tile_idx, &rom_attr) &&
-            rom_attr != (attr & 7)) {
-            static int n = 0;
-            if (n++ < 20) {
-                fprintf(stderr, "[ATTR-CHECK] fase=%02X tile=%02X vram=%d rom=%d\n",
-                        ctx->eram[0x800], tile_idx, attr & 7, rom_attr);
-            }
-        }
-    }
-    // fim log
-    */
-
-    const size_t tile_in_block = (size_t)tile_y * 2u + tile_x;
-    
-    /*
-    if (cgb_mode && !has_current_map_attribute && attribute_cache) {
-        ppu_find_widescreen_block_attributes(
-            attribute_cache,
-            block_id,
-            tile_in_block,
-            world_x,
-            world_y,
-            &attr);
-    }*/
-
-    // correção: se o tile atual não tiver atributo, tenta buscar no ROM DX ou no cache de atributos
-    /* Passo 7e: primeiro o que o jogo mostrou na tela para este bloco (cache
-     * do frame e blocos aprendidos); a tabela da ROM DX e o palpite por tile
-     * ficam para blocos que ainda nao apareceram. A tabela e indexada so pela
-     * fase ($A800) e erra em salas com outro jogo de tiles (ex.: a caverna
-     * depois de uma porta), pintando o bloco com a paleta de outro. */
-    int attr_source = 0;   /* passo 7h: 0 = VRAM perto da tela */
-    if (cgb_mode && !has_current_map_attribute) {
-        bool found = attribute_cache &&
-            ppu_find_widescreen_block_attributes(
-                attribute_cache, block_id, tile_in_block,
-                world_x, world_y, &attr);
-        attr_source = found ? 1 : 6;
-        uint8_t rom_attr;
-        /* Passo 7g: a tabela DX na pagina que bate com a tela vem antes do
-         * que foi aprendido (que pode ser de outra sala). */
-        if (!found && g_dx_page >= 0 &&
-            ppu_dx_attribute_from_page(ctx, g_dx_page, tile_idx, &rom_attr)) {
-            attr = rom_attr;
-            found = true;
-            attr_source = 2;
-            /* Passo 7k: a tela mostra este tile com outra paleta (e so com ela). */
-            if (g_dx_screen_state[tile_idx] == 1 &&
-                (g_dx_screen_attr[tile_idx] & OAM_CGB_PALETTE) != rom_attr) {
-                attr = g_dx_screen_attr[tile_idx];
-                attr_source = 7;
-            }
-        }
-        if (!found && ppu->ws_block_known[block_id][tile_in_block]) {
-            attr = ppu->ws_block_attr[block_id][tile_in_block];
-            found = true;
-            attr_source = 3;
-        }
-        if (!found && ppu_ws_nearest_fresh_attr(ppu, ctx, tilemap_addr, tile_idx,
-                                                world_x, world_y, &attr)) {
-            found = true;
-            attr_source = 7;   /* passo 7j */
-        }
-        if (!found) {
-            if (ppu_dx_attribute_from_rom(ctx, tile_idx, &rom_attr)) {
-                attr = rom_attr;
-                attr_source = 4;
-            } else if (ppu->ws_tile_known[tile_idx]) {
-                attr = ppu->ws_tile_attr[tile_idx];
-                attr_source = 5;
-            }
-        }
-    }  
-
     const uint8_t tile_bank = (attr & OAM_CGB_BANK) ? 1u : 0u;
     pixel->palette = attr & OAM_CGB_PALETTE;
-    pixel->priority = has_current_map_attribute && (attr & OAM_PRIORITY) != 0;
+    pixel->priority = mt->map_current && (attr & OAM_PRIORITY) != 0;
     if (attr & OAM_FLIP_X) {
         pixel_x = 7 - pixel_x;
     }
@@ -2344,16 +2425,16 @@ static void ppu_build_widescreen_block_attribute_cache_fast(
         const uint8_t* row0 = map0 + map_y * 32;
         const uint8_t* row1 = map1 + map_y * 32;
 
-        if (world_y < reference_y - 8 || world_y >= reference_y + GB_SCREEN_HEIGHT + 8) {
-            continue;   /* passo 7f: linha do tilemap fora da tela = resto antigo */
+        if (!ppu_ws_tile_fresh(ppu, reference_x, world_y)) {
+            continue;   /* passo 7f/13a: linha do tilemap fora da tela = resto antigo */
         }
         for (int map_x = 0; map_x < 32; ++map_x) {
             const int world_x = world_xs[map_x];
             if (world_x < 0 || world_x >= 0x1000) {
                 continue;
             }
-            if (world_x < reference_x - 8 || world_x >= reference_x + GB_SCREEN_WIDTH + 8) {
-                continue;   /* passo 7f: coluna do tilemap fora da tela = resto antigo */
+            if (!ppu_ws_tile_fresh(ppu, world_x, reference_y)) {
+                continue;   /* passo 7f/13a: coluna do tilemap fora da tela = resto antigo */
             }
 
             const uint8_t block_id = ctx->wram[layout_row + (size_t)(world_x >> 4)] & 0x7Fu;
@@ -2428,6 +2509,7 @@ static const WidescreenBlockAttributeCache* ppu_ws_attribute_cache_for_line(
         g_ws_attr_key.game_mode != game_mode ||
         g_ws_attr_key.map_generation != map_generation) {
         ppu_build_widescreen_block_attribute_cache_fast(ppu, ctx, &g_ws_attr_cache);
+        ppu_ws_map_invalidate();   /* passo 13b */
         g_ws_attr_key.valid = true;
         g_ws_attr_key.scroll_x = ppu->frame_widescreen_scroll_x;
         g_ws_attr_key.scroll_y = ppu->frame_widescreen_scroll_y;
@@ -2460,6 +2542,7 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
             memset(ppu->ws_block_known, 0, sizeof(ppu->ws_block_known));
             memset(ppu->ws_tile_known, 0, sizeof(ppu->ws_tile_known));
             g_dx_page = -1;   /* passo 7g */
+            ppu_ws_map_invalidate();   /* passo 13b */
         }
         ppu->ws_prev_game_mode = mode_now;
     }
@@ -3456,4 +3539,5 @@ void ppu_reset_widescreen_heuristics(const GBContext* ctx) {
     g_ws_attr_key.valid = false;
     s_ws_near_frame = UINT64_MAX;
     g_ws_lcd_spans_seen = ctx ? ctx->total_lcd_off_span_count : 0;
+    ppu_ws_map_invalidate();   /* passo 13b */
 }
