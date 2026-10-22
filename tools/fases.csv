@@ -47,13 +47,13 @@ f2c,2C,LVL_UNUSED_2C,,,não usado,sLevelId ($A804)
 f2d,2D,LVL_UNUSED_2D,,,não usado,sLevelId ($A804)
 f2e,2E,LVL_UNUSED_2E,,,não usado,sLevelId ($A804)
 f2f,2F,LVL_UNUSED_2F,,,não usado,sLevelId ($A804)
-m42,42,,,,Transição dos slots para o mapa,usa o contexto g00 (mesmo fundo dos slots; passo 11c)
+m42,42,,,,Transição dos slots para o mapa,"página DX no mapa (modo 1); usa o contexto g00: mesmo fundo dos slots, a arte pintada numa vale na outra (passo 11c)"
 m43,43,,,,Mapa geral (escolha de mundo),página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
 m44,44,,,,Mapa de Rice Beach,página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
 m46,46,,,,Mapa regional 2,página DX no mapa (modo 1); conferido; mundo não anotado; outras páginas aparecem no log [DX]
 m4a,4A,,,,Mapa regional especial 1,página DX no mapa (modo 1); conferido; mundo não anotado; outras páginas aparecem no log [DX]
 m4c,4C,,,,Tela do fim de fase,página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
-m4d,4D,,,,Tela do tesouro / fim de fase,página DX no mapa (modo 1); conferido; outras páginas aparecem no log [DX]
+m4d,4D,,,,Transição do contador de moedas no fim da fase para o mapa regional,"página DX no mapa (modo 1); usa o contexto f19 (arte do Course 05); laterais do widescreen sem cenário: preto ou desfoque, conforme Laterais sem cenario (passo 11e)"
 g00,00,,,,Título e escolha de slot,modo do jogo $A8C3
 g08,08,,,,Game over,modo do jogo $A8C3
 g09,09,,,,Final (menos a parte no mapa),modo do jogo $A8C3

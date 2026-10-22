@@ -448,6 +448,10 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
  *   Modo 2 sub 01..03 (FADEBG, FADEOBJ, STARTLEVEL): a fase ja esta na tela,
  *   com o layout da fase pronto -> 21/22 como no modo 3. */
 #define WL_GAME_MODE_2_COURSE_SCREEN 14
+/* Passo 11e: 15 = modo 1 com a página DX $4D ($A800 = 0C): contador de moedas
+ * no fim da fase, indo para o mapa regional. Laterais sem cenário (preto ou o
+ * fundo ambiente do 8a). */
+#define WL_GAME_MODE_2_COIN_TALLY 15
 #define WL_GAME_MODE_2_LEVEL_LOAD 23
 static bool gb_wl_map_mode_is_init(uint8_t map_id) {
     switch (map_id) {
@@ -494,6 +498,9 @@ static uint8_t gb_wl_game_mode_2(const GBContext* ctx) {
     if (mode == 1 && ctx->eram[0x08C4] == 0x01) {   /* passo 7v: COURSE No.XX */
         return WL_GAME_MODE_2_COURSE_SCREEN;
     }
+    if (mode == 1 && ctx->eram[0x0800] == 0x0C) {   /* passo 11e: m4d */
+        return WL_GAME_MODE_2_COIN_TALLY;
+    }
     if (mode == 1) {   /* passo 7t / 7u */
         const uint8_t map_id = ctx->eram[0x079C];
         if (gb_wl_map_mode_is_init(map_id)) {
@@ -525,6 +532,8 @@ static bool gb_mode_2_wants_widescreen(uint8_t game_mode_2) {
         case WL_GAME_MODE_2_MAP_CLEAR:   /* 13: mapa se preparando, tela antiga (passo 7t) */
             return false;
         case WL_GAME_MODE_2_COURSE_SCREEN:   /* 14: tela COURSE No.XX (passo 7v) */
+            return false;
+        case WL_GAME_MODE_2_COIN_TALLY:      /* 15: contador de moedas, m4d (passo 11e) */
             return false;
         case WL_GAME_MODE_2_LEVEL_LOAD:      /* 23: carregando a fase (passo 7v) */
             return false;

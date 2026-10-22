@@ -946,17 +946,25 @@ const char* ppu_native_mode_name(PPURendererMode mode) {
  * A fase continua na tela fora do modo 3: carga e fade (2), porta de saída
  * (4, 6), fade da morte (5), tempo esgotado (7), porta normal ($0A) e porta
  * da entrada ($0C). Sem isso a arte por fase sumia nas portas. */
-/* Passo 11c: telas que usam o mesmo cenário de outra e por isso dividem os
- * tiles HD dela. O contexto da esquerda passa a valer como o da direita
- * (no jogo, na captura e no menu). */
+/* Passo 11c/11d: telas que usam o mesmo cenário de outra e por isso dividem
+ * os tiles HD dela. O contexto da esquerda passa a valer como o da direita
+ * (no jogo, na captura e no menu). HD_CTX_LAST_LEVEL = a fase que acabou de
+ * ser jogada (sLevelId, $A804, que o jogo mantém até escolher outra). */
+#define HD_CTX_LAST_LEVEL 0xFFFFu
 static const uint16_t k_hd_ctx_alias[][2] = {
     /* m42: transição dos slots para o mapa, com o mesmo fundo dos slots (g00) */
     { PPU_NATIVE_CTX_MAP | 0x42u, PPU_NATIVE_CTX_MODE | 0x00u },
+    /* m4d: contador de moedas no fim da fase, indo para o mapa regional, com
+     * o cenário da fase (depois do Course 05: f19) */
+    { PPU_NATIVE_CTX_MAP | 0x4Du, PPU_NATIVE_CTX_LEVEL | 0x19u },
 };
 
-static uint16_t hd_context_alias(uint16_t context) {
+static uint16_t hd_context_alias(const GBContext* ctx, uint16_t context) {
     for (size_t i = 0; i < sizeof(k_hd_ctx_alias) / sizeof(k_hd_ctx_alias[0]); ++i) {
         if (k_hd_ctx_alias[i][0] == context) {
+            if (k_hd_ctx_alias[i][1] == HD_CTX_LAST_LEVEL) {
+                return (uint16_t)(PPU_NATIVE_CTX_LEVEL | ctx->eram[0x0804]);
+            }
             return k_hd_ctx_alias[i][1];
         }
     }
@@ -966,7 +974,7 @@ static uint16_t hd_context_alias(uint16_t context) {
 static uint16_t hd_context_from_ram_raw(const GBContext* ctx);
 
 static uint16_t hd_context_from_ram(const GBContext* ctx) {
-    return hd_context_alias(hd_context_from_ram_raw(ctx));
+    return hd_context_alias(ctx, hd_context_from_ram_raw(ctx));
 }
 
 static uint16_t hd_context_from_ram_raw(const GBContext* ctx) {
