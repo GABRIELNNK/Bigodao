@@ -4082,12 +4082,52 @@ static void build_base_row(int y, const uint32_t* src, bool src_is_wide, int bas
     }
 }
 
+/* Passo 14e-2: linha base 1x com a paleta alternativa, igual ao caminho
+ * "Palette remap" de render_frame_internal (que não usa HD nem o fundo
+ * ambiente): o quadro (esticando as bordas se vier com 160 px; preto nas
+ * laterais sem cenário só quando vem com 256) e as 4 cores do DMG trocadas
+ * pelas da paleta escolhida. */
+static void remap_base_row(int y, const uint32_t* src, int src_pixel_count, int base_width,
+                           bool black_fill, uint32_t* row) {
+    uint32_t source_palette[4];
+    for (int shade = 0; shade < 4; ++shade) {
+        source_palette[shade] = ppu_get_dmg_shade_rgb((uint8_t)shade);
+    }
+    for (int x = 0; x < base_width; x++) {
+        uint32_t src_pixel = 0;
+        if (base_width == GB_WIDESCREEN_WIDTH && src_pixel_count == GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT) {
+            if (x < GB_WIDESCREEN_MARGIN) {
+                src_pixel = src[y * GB_SCREEN_WIDTH + 0];
+            } else if (x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH) {
+                src_pixel = src[y * GB_SCREEN_WIDTH + (GB_SCREEN_WIDTH - 1)];
+            } else {
+                src_pixel = src[y * GB_SCREEN_WIDTH + (x - GB_WIDESCREEN_MARGIN)];
+            }
+        } else if (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE) {
+            if (black_fill && (x < GB_WIDESCREEN_MARGIN || x >= GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH)) {
+                src_pixel = 0xFF000000;
+            } else {
+                src_pixel = src[y * base_width + x];
+            }
+        } else {
+            src_pixel = src[y * base_width + x];
+        }
+        int color_idx = -1;
+        for (int shade = 0; shade < 4; ++shade) {
+            if (src_pixel == source_palette[shade] || src_pixel == g_palettes[0][shade]) {
+                color_idx = shade;
+                break;
+            }
+        }
+        row[x] = color_idx >= 0 ? g_palettes[g_palette_idx][color_idx] : src_pixel;
+    }
+}
+
 /* Passo 14c-2: a GPU monta a tela quando a opção está ligada e nada que só a
  * CPU faz está em uso (paleta alternativa, filtro de pós-processamento,
  * 120 fps). */
 static const char* gpu_screen_blocker(void) {
     if (!g_use_gl) return "precisa do Video OpenGL";
-    if (g_palette_idx != 0) return "paleta alternativa em uso (so a CPU faz)";
     if (ppu_native_get_mode() == PPU_RENDERER_EMULATED) return "renderizador Emulado em uso";
     if (!g_gpu_screen_error.empty()) return g_gpu_screen_error.c_str();
     return NULL;
@@ -4139,19 +4179,25 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     (void)framebuffer_is_widescreen;
     const bool src_is_wide = (src_pixel_count == GB_WIDESCREEN_FRAMEBUFFER_SIZE);
     const bool black_fill = g_widescreen_mode && gb_platform_should_black_fill_non_side_scrolling(g_registered_ctx);
-    const bool ws_ambient = black_fill && g_ws_fill_mode != WS_FILL_BLACK && base_width == GB_WIDESCREEN_WIDTH;
+    const bool remap = g_palette_idx != 0;   /* passo 14e-2: paleta alternativa (sem HD, como na CPU) */
+    const bool ws_ambient = !remap && black_fill && g_ws_fill_mode != WS_FILL_BLACK &&
+                            base_width == GB_WIDESCREEN_WIDTH;
     if (ws_ambient) {
         ws_ambient_update(src, src_is_wide, true, g_frame_count);
     }
     for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
-        build_base_row(y, src, src_is_wide, base_width, black_fill, ws_ambient,
-                       &g_scr_base[(size_t)y * base_width]);
+        if (remap) {
+            remap_base_row(y, src, src_pixel_count, base_width, black_fill, &g_scr_base[(size_t)y * base_width]);
+        } else {
+            build_base_row(y, src, src_is_wide, base_width, black_fill, ws_ambient,
+                           &g_scr_base[(size_t)y * base_width]);
+        }
     }
     GpuScreenInput in = {};
     in.base = g_scr_base;
     in.wide = base_width == GB_WIDESCREEN_WIDTH;
     in.scale = scale;
-    in.hd_center = g_gpu_center_ok && g_use_hd_frame;
+    in.hd_center = !remap && g_gpu_center_ok && g_use_hd_frame;
     in.hd_margins = in.hd_center && g_gpu_margins_ok && in.wide && src_is_wide && !black_fill;
     in.amb_q = (ws_ambient && scale > 1) ? &g_ws_amb_q[0][0][0] : NULL;
     if (!gpu_ppu_compose_screen(&in) || !gpu_ppu_apply_filter((int)g_post_filter_mode)) {   /* passo 14e-1: filtro */
@@ -4337,6 +4383,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     void* ip_tex_pixels = pixels;
     const int ip_tex_pitch = pitch;
     const bool ip_capture = ip_capture_wanted(count_guest_frame);
+    if (count_guest_frame) g_gpu_last_screen_ok = false;   /* passo 14e-2: vale só o deste quadro */
     if (ip_capture) {
         pixels = ip_comp_buffer(&pitch);
     } else {
@@ -4526,17 +4573,6 @@ static void render_frame_internal(const uint32_t* framebuffer,
             gpu_compare_screen(pixels, pitch, texture_width, texture_height, base_width, scale,
                                hd_frame != NULL, hd_margins != NULL, ws_ambient && scale > 1);
         }
-        if (gpu_shown && g_gpu_compare) {   /* passo 14c-2: mostra a da GPU se ela montou este quadro */
-            if (gpu_screen && g_gpu_last_screen_ok) {
-                g_gpu_screen_valid = true;
-                g_gpu_screen_w = texture_width;
-                g_gpu_screen_h = texture_height;
-            } else if (count_guest_frame) {
-                g_gpu_screen_valid = false;
-            }
-            gpu_shown = g_gpu_screen_valid && g_gpu_screen_w == texture_width &&
-                        g_gpu_screen_h == texture_height;
-        }
     } else {    
         /* Palette remap path */
         uint32_t source_palette[4];
@@ -4584,18 +4620,37 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 }
             }
         }
+        /* Passo 14e-2: conferir a tela com a paleta alternativa montada pela GPU. */
+        if (g_gpu_compare && g_use_gl && count_guest_frame) {
+            for (int y = 0; y < base_height; y++) {
+                remap_base_row(y, src, src_pixel_count, base_width, black_fill_non_side_scrolling,
+                               &g_scr_base[(size_t)y * base_width]);
+            }
+            gpu_compare_screen(pixels, pitch, texture_width, texture_height, base_width, scale,
+                               false, false, false);
+        }
+    }
+
+    if (gpu_shown && g_gpu_compare) {   /* passo 14c-2: mostra a da GPU se ela montou este quadro */
+        if (count_guest_frame) {
+            g_gpu_screen_valid = g_gpu_last_screen_ok;
+            g_gpu_screen_w = texture_width;
+            g_gpu_screen_h = texture_height;
+        }
+        gpu_shown = g_gpu_screen_valid && g_gpu_screen_w == texture_width &&
+                    g_gpu_screen_h == texture_height;
     }
 
     // Aplica o filtro de pós-processamento ativo diretamente no buffer escalado
     post_processing_apply(g_post_filter_mode, (uint32_t*)pixels, texture_width, texture_height, pitch);
-    if (g_gpu_compare && g_use_gl && g_palette_idx == 0 && count_guest_frame && g_gpu_last_screen_ok) {
+    if (g_gpu_compare && g_use_gl && count_guest_frame && g_gpu_last_screen_ok) {
         gpu_compare_filter(pixels, pitch, texture_width, texture_height);   /* passo 14e-1 */
     }
 
     if (ip_capture) {   /* passo 10a */
         ip_finish_capture(ip_tex_pixels, ip_tex_pitch, texture_width, texture_height,
                           scale, base_width, black_fill_non_side_scrolling);
-        if (g_gpu_compare && g_use_gl && g_palette_idx == 0) {   /* passo 14d-1 (14e-1: com filtro também) */
+        if (g_gpu_compare && g_use_gl) {   /* passo 14d-1 (14e-1: com filtro; 14e-2: com paleta) */
             ip_gpu_compare_layers(texture_width, texture_height, scale);
         }
     }
@@ -5004,7 +5059,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     }
                     /* Passo 14c-1: tela inteira */
                     if (st.s_compared + st.s_skipped == 0) {
-                        ImGui::TextWrapped("Tela inteira: confere com a paleta original (Graphics).");
+                        ImGui::TextWrapped("Tela inteira: confere em quadro novo do jogo.");
                     } else {
                         ImGui::Text("Tela inteira %dx%d: conferidas %llu  iguais: %llu  com diferenca: %llu",
                                     st.s_w, st.s_h, (unsigned long long)st.s_compared,
