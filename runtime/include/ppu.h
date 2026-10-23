@@ -342,6 +342,11 @@ int ppu_get_dx_page(void);   /* pagina calibrada da tabela DX, ou -1 */
 /* Passo 12a: zera o estado das laterais que não vai no savestate. Chamado ao
  * carregar um savestate (e pelo gabarito). */
 void ppu_reset_widescreen_heuristics(const GBContext* ctx);
+/* Passo 3D-1b: linha da faixa do nome da regiao no mapa regional (no 3D vira HUD). */
+bool ppu_ws_map_band_line(const GBContext* ctx, int ly);
+/* Passo 3D-2: modos em que a fase está na tela com o layout de blocos na WRAM
+ * (sGameMode 2 e 3). */
+bool ppu_widescreen_uses_level_layout(const GBContext* ctx);
 
 #ifdef __cplusplus
 }

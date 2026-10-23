@@ -239,6 +239,17 @@ static int g_gpu_screen_w = 0, g_gpu_screen_h = 0;
 static bool g_gpu_screen_shown = false;  /* o último quadro mostrado veio da GPU */
 static bool g_gpu_frame_on_gpu = false;  /* passo 14d-1: o quadro do jogo atual está na tela da GPU */
 static std::string g_gpu_screen_error;
+/* Passo 3D-1: modo 3D em camadas (Graphics > "Modo 3D"). */
+static int g_3d_mode = 0;          /* 0 = desligado, 1 = camadas (pref display.mode3d) */
+static int g_3d_tilt = 15;         /* graus (pref display.tilt3d) */
+static int g_3d_depth = 100;       /* % (pref display.depth3d) */
+static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
+static bool g_3d_valid = false;    /* as camadas da GPU têm o quadro atual */
+static int g_3d_w = 0, g_3d_h = 0;
+static bool g_3d_shown = false;    /* o último quadro foi desenhado em 3D */
+static VidTex* g_3d_vtex = NULL;   /* passo 3D-3: a imagem 3D (fora da tela) embrulhada */
+static unsigned g_3d_vtex_id = 0;
+static bool g3d_active(void);
 static bool g_gpu_center_ok = false;    /* passo 14c-1: a GPU montou o centro HD deste quadro */
 static bool g_gpu_margins_ok = false;   /* e as laterais HD */
 static bool g_gpu_compare = false;
@@ -348,8 +359,11 @@ static void gpu_compare_frame_1x(const PPUNativeGpuFrame* fr);
 static void gpu_compare_frame(void) {
     g_gpu_center_ok = false;   /* passo 14c-1 */
     g_gpu_margins_ok = false;
+    g_frame3d = NULL;
     const PPUNativeGpuFrame* fr = ppu_native_gpu_take_frame();
     if (!fr) return;
+    g_frame3d = fr;   /* passo 3D-1: as camadas são montadas na apresentação */
+    if (!g_gpu_compare && g3d_active()) return;
     if (!g_gpu_compare) {   /* passo 14c-2: só monta (sem ler de volta) para a tela */
         if (!fr->cgb || fr->log_overflow || fr->hd_scale < 2 || !fr->hd_on) return;
         g_gpu_center_ok = gpu_ppu_compose_hd(fr);
@@ -2123,6 +2137,20 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_video_backend_pref = (strtol(value, NULL, 10) == 1) ? 1 : 0;
                     continue;
                 }
+                if (strcmp(key, "display.mode3d") == 0) {   /* passo 3D-1 */
+                    g_3d_mode = (strtol(value, NULL, 10) == 1) ? 1 : 0;
+                    continue;
+                }
+                if (strcmp(key, "display.tilt3d") == 0) {
+                    long v = strtol(value, NULL, 10);
+                    g_3d_tilt = (int)(v < 0 ? 0 : (v > 35 ? 35 : v));
+                    continue;
+                }
+                if (strcmp(key, "display.depth3d") == 0) {
+                    long v = strtol(value, NULL, 10);
+                    g_3d_depth = (int)(v < 0 ? 0 : (v > 200 ? 200 : v));
+                    continue;
+                }
                 if (strcmp(key, "display.gpu_screen") == 0) {   /* passo 14c-2 */
                     g_gpu_screen_pref = (strtol(value, NULL, 10) == 1) ? 1 : 0;
                     continue;
@@ -2291,6 +2319,9 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
     fprintf(file, "display.fps_mode=%d\n", g_fps_mode);   /* passo 10a */
     fprintf(file, "display.gpu_screen=%d\n", g_gpu_screen_pref);   /* passo 14c-2 */
+    fprintf(file, "display.mode3d=%d\n", g_3d_mode);                /* passo 3D-1 */
+    fprintf(file, "display.tilt3d=%d\n", g_3d_tilt);
+    fprintf(file, "display.depth3d=%d\n", g_3d_depth);
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
@@ -3052,6 +3083,9 @@ static void reset_runtime_display_defaults(void) {
     g_internal_res_scale = 4;                         /* passo 14p */
     g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
     g_gpu_screen_pref = 1;                            /* passo 14c-3: a GPU monta a tela */
+    g_3d_mode = 0;                                    /* passo 3D-1 */
+    g_3d_tilt = 15;
+    g_3d_depth = 100;
     g_gpu_screen_error.clear();
     g_renderer_reset_pending = true;
     update_render_filter();
@@ -3449,7 +3483,8 @@ static bool ip_mid_ready_note(void) {
 }
 
 static bool ip_capture_wanted(bool count_guest_frame) {
-    return g_fps_mode == 1 && count_guest_frame && !g_ip_mid_draw && vid_ready();
+    return g_fps_mode == 1 && count_guest_frame && !g_ip_mid_draw && vid_ready() &&
+           !g3d_active();   /* passo 3D-1: no 3D só o quadro do jogo */
 }
 
 /* Buffer onde o quadro e montado (no lugar da textura travada). */
@@ -4137,6 +4172,19 @@ static bool gpu_screen_active(void) {
     return g_gpu_screen_pref == 1 && !g_benchmark_mode && gpu_screen_blocker() == NULL;
 }
 
+/* Passo 3D-1: por que o 3D não está valendo (NULL = está). */
+static const char* g3d_blocker(void) {
+    if (g_gpu_screen_pref != 1) return "precisa de Montagem da tela: GPU";
+    if (const char* w = gpu_screen_blocker()) return w;
+    if (g_gpu_compare) return "a comparacao da GPU esta ligada (a tela fica em 2D)";
+    if (g_palette_idx != 0) return "paleta alternativa em uso";
+    return NULL;
+}
+
+static bool g3d_active(void) {
+    return g_3d_mode == 1 && !g_benchmark_mode && g3d_blocker() == NULL;
+}
+
 /* Embrulha a textura da tela da GPU para o vid_copy (refeito se ela mudar). */
 static VidTex* gpu_screen_vtex(void) {
     int w = 0, h = 0;
@@ -4161,6 +4209,7 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     const int base_width = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
     const int w = base_width * scale, h = GB_SCREEN_HEIGHT * scale;
     if (!count_guest_frame) {
+        if (g3d_active()) return g_3d_valid && g_3d_w == w && g_3d_h == h;   /* passo 3D-1 */
         return g_gpu_screen_valid && g_gpu_screen_w == w && g_gpu_screen_h == h;
     }
     g_ip_tex_stale = false;   /* a tela da GPU sempre tem o quadro do jogo */
@@ -4200,6 +4249,20 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     in.hd_center = !remap && g_gpu_center_ok && g_use_hd_frame;
     in.hd_margins = in.hd_center && g_gpu_margins_ok && in.wide && src_is_wide && !black_fill;
     in.amb_q = (ws_ambient && scale > 1) ? &g_ws_amb_q[0][0][0] : NULL;
+    in.black_fill = black_fill;
+    if (g3d_active()) {   /* passo 3D-1: camadas (o filtro de pós-processamento não vale aqui) */
+        GpuScreenInput in3 = in;
+        in3.hd_margins = in.wide && src_is_wide && !black_fill;
+        g_3d_valid = g_frame3d && gpu_ppu_compose_3d(g_frame3d, &in3);
+        g_frame3d = NULL;
+        if (g_3d_valid) {
+            g_3d_w = w;
+            g_3d_h = h;
+            return true;
+        }
+    } else {
+        g_3d_valid = false;
+    }
     if (!gpu_ppu_compose_screen(&in) || !gpu_ppu_apply_filter((int)g_post_filter_mode)) {   /* passo 14e-1: filtro */
         g_gpu_screen_valid = false;
         return false;
@@ -4684,9 +4747,36 @@ static void render_frame_internal(const uint32_t* framebuffer,
         ip_draw_mid();   /* passo 10c: primeiro o meio do caminho entre o anterior e este */
         g_ip_pending_main = true;
     } else {
-        VidTex* gt = gpu_shown ? gpu_screen_vtex() : NULL;   /* passo 14c-2 */
-        vid_copy(gt ? gt : g_texture, NULL, &g_game_viewport);
-        g_gpu_screen_shown = gt != NULL;
+        bool drawn3d = false;
+        if (gpu_shown && g3d_active() && g_3d_valid) {   /* passo 3D-1 */
+            Gpu3DView v = {};
+            vgl_rect_to_fb(&g_game_viewport, &v.vp_x, &v.vp_y, &v.vp_w, &v.vp_h);
+            v.tilt_deg = (float)g_3d_tilt;
+            v.yaw_deg = 0.0f;
+            v.depth = (float)g_3d_depth / 100.0f;
+            v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
+            drawn3d = gpu_ppu_draw_3d(&v);
+            if (drawn3d) {   /* passo 3D-3: desenhado fora da tela, com profundidade */
+                int tw = 0, th = 0;
+                const unsigned id = gpu_ppu_3d_texture(&tw, &th);
+                if (id && (!g_3d_vtex || g_3d_vtex_id != id || g_3d_vtex->gl == NULL)) {
+                    if (g_3d_vtex) vid_tex_destroy(g_3d_vtex);
+                    g_3d_vtex = new VidTex();
+                    g_3d_vtex->gl = vgl_tex_wrap(id, tw, th);
+                    g_3d_vtex_id = id;
+                }
+                drawn3d = id && g_3d_vtex && g_3d_vtex->gl;
+                if (drawn3d) vid_copy(g_3d_vtex, NULL, &g_game_viewport);
+            }
+        }
+        g_3d_shown = drawn3d;
+        if (!drawn3d) {
+            VidTex* gt = gpu_shown ? gpu_screen_vtex() : NULL;   /* passo 14c-2 */
+            vid_copy(gt ? gt : g_texture, NULL, &g_game_viewport);
+            g_gpu_screen_shown = gt != NULL;
+        } else {
+            g_gpu_screen_shown = true;
+        }
     }
 
     vid_imgui_new_frame();   /* passo 14a */
@@ -5461,6 +5551,27 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 }
             }
         }
+        {   /* Passo 3D-1: modo 3D em camadas */
+            static const char* k3DNames[] = {"Desligado", "Camadas"};
+            int m3 = g_3d_mode;
+            if (ImGui::Combo("Modo 3D", &m3, k3DNames, IM_ARRAYSIZE(k3DNames))) {
+                g_3d_mode = m3;
+                save_runtime_preferences();
+            }
+            if (g_3d_mode == 1) {
+                if (ImGui::SliderInt("Inclinacao 3D (graus)", &g_3d_tilt, 0, 35)) save_runtime_preferences();
+                if (ImGui::SliderInt("Profundidade 3D (%)", &g_3d_depth, 0, 200)) save_runtime_preferences();
+                const char* why = g3d_blocker();
+                if (why) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "3D parado: %s.", why);
+                } else {
+                    ImGui::TextDisabled("Em uso: %s", g_3d_shown ? "3D (camadas)" : "2D (esperando o quadro)");
+                    if (g_post_filter_mode != GB_POST_FILTER_NONE || g_fps_mode == 1) {
+                        ImGui::TextDisabled("No 3D o filtro de pos-processamento e o quadro do meio (120 fps) ficam desligados.");
+                    }
+                }
+            }
+        }
 
         ImGui::Checkbox("Show Overlay", &g_show_overlay);
         ImGui::Checkbox("Smooth Slow Frames", &g_smooth_lcd_transitions);
@@ -5983,6 +6094,11 @@ void gb_platform_shutdown(void) {
                     (unsigned long long)st.s_skipped,
                     (unsigned long long)st.ip_equal, (unsigned long long)st.ip_compared,
                     (unsigned long long)st.f_equal, (unsigned long long)st.f_compared);
+        }
+        if (g_3d_vtex) {   /* passo 3D-3 */
+            vid_tex_destroy(g_3d_vtex);
+            g_3d_vtex = NULL;
+            g_3d_vtex_id = 0;
         }
         if (g_gpu_vtex) {   /* passo 14c-2 */
             vid_tex_destroy(g_gpu_vtex);

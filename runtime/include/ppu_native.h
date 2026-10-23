@@ -235,7 +235,9 @@ typedef struct {
     PPUNativeGpuWrite log[PPU_NATIVE_GPU_LOG_MAX];       /* escritas durante as linhas, na ordem */
     uint32_t log_count;
     bool log_overflow;                                  /* passou de PPU_NATIVE_GPU_LOG_MAX */
-    uint8_t line[GB_SCREEN_HEIGHT][8];                  /* lcdc scx scy wx win_line win opri 0 */
+    uint8_t line[GB_SCREEN_HEIGHT][12];                 /* lcdc scx scy wx win_line win opri hud;
+                                                         * passo 3D-2: mundo do ponto x = 0 (int16),
+                                                         * mundo y da linha (int16) */
     uint32_t pal[GB_SCREEN_HEIGHT][64];                 /* 0xAARRGGBB: 0-31 fundo, 32-63 sprites */
     uint8_t oam[GB_SCREEN_HEIGHT][160];                 /* OAM como cada linha viu */
     uint32_t cpu[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];   /* quadro da CPU (centro) */
@@ -281,6 +283,10 @@ typedef struct {
      * fade_lut[coluna][v] = (uint8_t)(v * keep), como a CPU escurece a borda;
      * fade_conflict = a mesma coluna veio com dois keep no quadro (não
      * acontece hoje). cpu_hd_margin = laterais HD da CPU ou NULL. */
+    /* Passo 3D-2: layout de blocos da fase (WRAM C000-DFFF, 256 x 32 blocos de
+     * 16x16), quando a fase está na tela (level_layout). */
+    bool level_layout;
+    uint8_t layout[0x2000];
     bool margin_on;
     uint32_t margin[144][PPU_NATIVE_GPU_MARGIN_W * 2][4];
     uint8_t fade_lut[PPU_NATIVE_GPU_MARGIN_W][256];
@@ -366,6 +372,8 @@ typedef struct {
     uint8_t obj_raw;    /* 0 quando obj_tile veio da caixa */
     uint8_t obj_pal;
     bool fade;
+    uint8_t bg_block;   /* passo 3D-2: bloco da fase + 1 (0 = fora do layout) */
+    uint8_t bg_block_down;   /* passo 3D-2b: bloco logo abaixo + 1 */
 } PPUNativeMarginPixel;
 
 /* ppu.c pergunta antes de montar os registros (só gasta tempo quando há HD,

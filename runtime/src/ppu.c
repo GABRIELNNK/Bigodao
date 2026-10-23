@@ -1333,6 +1333,8 @@ typedef struct {
     /* Passo 5d: origem do pixel, para as laterais em HD */
     uint16_t tile_ref;  /* 1 + banco * 384 + tile (cache do ppu_native); 0 = sem tile */
     uint8_t uvf;        /* coluna | linha << 3 | 0x40 flip X | 0x80 flip Y */
+    uint8_t block;      /* passo 3D-2: bloco da fase + 1 (0 = fora do layout) */
+    uint8_t block_down; /* passo 3D-2b: bloco logo abaixo + 1 (ondas sobre a água) */
 } WidescreenBackgroundPixel;
 
 typedef struct {
@@ -1824,12 +1826,16 @@ static bool ppu_fetch_warioland_world_pixel(
     }
     pixel->tile_ref = ws_tile_ref(tile_bank, tile_addr);
     pixel->uvf = ws_uvf((unsigned)world_x & 7u, (unsigned)world_y & 7u, attr);
+    pixel->block = (uint8_t)(block_id + 1u);   /* passo 3D-2 */
+    pixel->block_down = (block_y + 1) < 0x20
+        ? (uint8_t)((ctx->wram[layout_offset + 0x100u] & 0x7Fu) + 1u) : 0u;   /* passo 3D-2b */
     return true;
 }
 
 /* O layout de blocos da fase (WRAM/ERAM) só existe nos modos 2 e 3.
- * No mapa (modo 1) e nas outras telas, as margens vêm do tilemap da VRAM. */
-static bool ppu_widescreen_uses_level_layout(const GBContext* ctx) {
+ * No mapa (modo 1) e nas outras telas, as margens vêm do tilemap da VRAM.
+ * Passo 3D-2: exportada (o 3D usa o layout para achar o chão). */
+bool ppu_widescreen_uses_level_layout(const GBContext* ctx) {
     if (!ctx || !ctx->eram || ctx->eram_size <= 0x08C3u) {
         return false;
     }
@@ -1857,7 +1863,7 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     const GBContext* ctx,
     int extended_x,
     const WidescreenBlockAttributeCache* attribute_cache) {
-    WidescreenBackgroundPixel pixel = {0, 0, false, 0, 0, 0};
+    WidescreenBackgroundPixel pixel = {0, 0, false, 0, 0, 0, 0, 0};
     const uint8_t lcdc = ppu->latched_lcdc;
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
     const bool bg_visible = cgb_mode ? true : ((lcdc & LCDC_BG_ENABLE) != 0);
@@ -2522,6 +2528,15 @@ static const WidescreenBlockAttributeCache* ppu_ws_attribute_cache_for_line(
     return &g_ws_attr_cache;
 }
 
+/* Passo 7p / 3D-1b: no mapa regional (game_mode = 1, fora do mapa geral =
+ * pagina DX 43), a ultima fileira de tiles da tela e a faixa com o nome da
+ * regiao. As laterais a continuam (7p/7q) e o 3D a trata como HUD. */
+bool ppu_ws_map_band_line(const GBContext* ctx, int ly) {
+    return ctx && ctx->eram && ctx->eram_size > 0x08C3u &&
+           ctx->eram[0x08C3] == 1 && (0x41 + ctx->eram[0x0800]) != 0x43 &&
+           ly >= GB_SCREEN_HEIGHT - 8 && ly < GB_SCREEN_HEIGHT;
+}
+
 static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
                                                 const GBContext* ctx,
                                                 uint32_t* out_row,
@@ -2564,9 +2579,7 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
     /* Passo 7p: no mapa regional (game_mode = 1, fora do mapa geral = pagina DX 43),
      * a ultima fileira de tiles da tela (faixa com o nome da regiao) continua
      * branca pelas laterais. */
-    const bool ws_map_band = ctx && ctx->eram && ctx->eram_size > 0x08C3u &&
-        ctx->eram[0x08C3] == 1 && (0x41 + ctx->eram[0x0800]) != 0x43 &&
-        ppu->ly >= GB_SCREEN_HEIGHT - 8;
+    const bool ws_map_band = ppu_ws_map_band_line(ctx, ppu->ly);   /* passo 3D-1b: função */
     /* Passo 7q: a faixa continua com a cor da borda da tela original
      * (a cor da faixa do centro varia de mapa para mapa). */
     uint32_t ws_map_band_left = 0xFFFFFFFFu, ws_map_band_right = 0xFFFFFFFFu;
@@ -2668,6 +2681,8 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
             r->rgba = out_row[dest_x];
             r->bg_rgba = bg_unfaded;
             r->bg_tile = bg.tile_ref;
+            r->bg_block = bg.block;   /* passo 3D-2 */
+            r->bg_block_down = bg.block_down;
             r->bg_uvf = bg.uvf;
             r->bg_raw = bg.raw_color;
             r->bg_pal = bg.palette;

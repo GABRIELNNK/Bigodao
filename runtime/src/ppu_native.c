@@ -792,7 +792,19 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
         l[4] = st->window_line;
         l[5] = (st->flags & PPU_NATIVE_LINE_WINDOW) ? 1u : 0u;
         l[6] = ppu->opri;
-        l[7] = 0;
+        l[7] = ppu_ws_map_band_line(ctx, y) ? 1u : 0u;   /* passo 3D-1b: linha de HUD */
+        {   /* passo 3D-2: posição no mundo (como as laterais: câmera - 80/72 + tremor do SCX/SCY) */
+            const int bx = (int)st->world_scroll_x - 0x50, by = (int)st->world_scroll_y - 0x48;
+            int dx = ((int)st->scx - (bx & 0xFF)) & 0xFF;
+            int dy = ((int)st->scy - (by & 0xFF)) & 0xFF;
+            if (dx >= 128) dx -= 256;
+            if (dy >= 128) dy -= 256;
+            const int16_t wx0 = (int16_t)(bx + dx), wy = (int16_t)(by + dy + y);
+            l[8] = (uint8_t)((uint16_t)wx0 & 0xFFu);
+            l[9] = (uint8_t)((uint16_t)wx0 >> 8);
+            l[10] = (uint8_t)((uint16_t)wy & 0xFFu);
+            l[11] = (uint8_t)((uint16_t)wy >> 8);
+        }
         for (unsigned p = 0; p < 8u; ++p) {
             for (unsigned c = 0; c < 4u; ++c) {
                 g_gpu.pal[y][p * 4u + c] = cgb ? rgb(bg_cols[p][c]) : 0xFF000000u;
@@ -1244,6 +1256,8 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
         g_gpu.hd_scale = g_hd_scale;
         g_gpu.cpu_hd = (g_hd_scale > 1 && g_cpu_hd) ? g_hd : NULL;
         g_gpu.margin_on = (g_gpu_margin_lines == (uint32_t)NATIVE_H);   /* passo 14b-4 */
+        g_gpu.level_layout = ppu_widescreen_uses_level_layout(ctx) && ctx->wram;   /* passo 3D-2 */
+        if (g_gpu.level_layout) memcpy(g_gpu.layout, ctx->wram, sizeof(g_gpu.layout));
         g_gpu.cpu_hd_margin = g_hd_m_valid_scale > 1 ? g_hd_m : NULL;
         if (hd) {
             gpu_hd_fill_slots();
@@ -1843,8 +1857,8 @@ void ppu_native_margin_line(const GBPPU* ppu, const GBContext* ctx,
                 ? hd_lookup('o', tile_from_ref(ctx, r->obj_tile), r->obj_pal) : NULL;
             s[0] = bh ? (uint32_t)(bh - g_hd_tiles) + 1u : 0u;
             s[1] = oh ? (uint32_t)(oh - g_hd_tiles) + 1u : 0u;
-            s[2] = 0u;
-            s[3] = 0u;
+            s[2] = r->bg_block;   /* passo 3D-2 */
+            s[3] = r->bg_block_down;   /* passo 3D-2b */
             if (r->fade) {
                 if (g_gpu_fade_keep[m] < 0.0) {
                     memcpy(g_gpu.fade_lut[m], margin_fade_lut(m, r->keep), 256);

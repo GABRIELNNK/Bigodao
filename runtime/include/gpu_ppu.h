@@ -48,6 +48,7 @@ typedef struct {
     bool hd_center;          /* usar o centro HD da GPU */
     bool hd_margins;         /* usar as laterais HD da GPU */
     const uint16_t* amb_q;   /* 256x144x4 (fundo ambiente * 256) ou NULL */
+    bool black_fill;         /* passo 3D-1: laterais sem cenário (vão para longe) */
 } GpuScreenInput;
 bool gpu_ppu_compose_screen(const GpuScreenInput* in);
 bool gpu_ppu_read_screen(uint32_t* argb, int* w, int* h);
@@ -59,6 +60,26 @@ unsigned int gpu_ppu_screen_texture(int* w, int* h);
  * dele, gpu_ppu_screen_texture e as camadas do 120 fps usam a tela filtrada. */
 bool gpu_ppu_apply_filter(int mode);
 bool gpu_ppu_read_final(uint32_t* argb);
+
+/* Passo 3D-1: modo 3D em camadas. gpu_ppu_compose_3d monta a tela em três
+ * imagens (cor, só o fundo, classe por ponto: 0 longe, 1 fundo, 2 HUD,
+ * 3 sprite) a partir do quadro capturado e da base 1x (in->hd_margins = usar
+ * as laterais do ppu.c; in->scale = escala da textura). gpu_ppu_draw_3d
+ * desenha na janela, no retângulo do jogo (pixels do framebuffer, origem
+ * embaixo), com a câmera inclinada; com inclinação 0 fica igual ao 2D. */
+typedef struct {
+    int vp_x, vp_y, vp_w, vp_h;
+    float tilt_deg;   /* olhando de cima para baixo */
+    float yaw_deg;
+    float depth;      /* 1 = profundidade padrão */
+    bool linear;
+} Gpu3DView;
+bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* frame, const GpuScreenInput* in);
+bool gpu_ppu_draw_3d(const Gpu3DView* view);
+/* Passo 3D-3: o 3D é desenhado fora da tela (com profundidade) no tamanho do
+ * retângulo do jogo; esta é a imagem pronta para ir à janela (RGBA, linha 0 = topo). */
+unsigned int gpu_ppu_3d_texture(int* w, int* h);
+bool gpu_ppu_read_3d(int which, uint32_t* argb, int* w, int* h);
 
 /* Passo 14d-1: camadas do 120 fps a partir da última tela da GPU (mesmo
  * tamanho). runs: 256x144 pares (início + 1, fim) do trecho de pontos de

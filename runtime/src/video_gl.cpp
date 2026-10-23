@@ -37,7 +37,9 @@ bool load_fns(std::string& missing) {
     L(DeleteBuffers) L(BindBuffer) L(BufferData) L(VertexAttribPointer)
     L(EnableVertexAttribArray) L(DrawArrays)
     L(GenFramebuffers) L(DeleteFramebuffers) L(BindFramebuffer) L(FramebufferTexture2D)
-    L(CheckFramebufferStatus) L(TexImage3D) L(TexSubImage3D) L(GetIntegerv) L(Uniform2i)
+    L(CheckFramebufferStatus) L(TexImage3D) L(TexSubImage3D) L(GetIntegerv) L(Uniform2i) L(Uniform1f) L(Uniform4f) L(UniformMatrix4fv) L(Uniform2f)
+    L(GenRenderbuffers) L(DeleteRenderbuffers) L(BindRenderbuffer) L(RenderbufferStorage)
+    L(FramebufferRenderbuffer) L(DepthFunc) L(DepthMask) L(DrawArraysInstanced)
 #undef L
     return ok;
 }
@@ -341,6 +343,18 @@ void vgl_copy(VglTex* tex, const SDL_Rect* src, const SDL_Rect* dst) {
     SDL_FRect d = dst ? SDL_FRect{(float)dst->x, (float)dst->y, (float)dst->w, (float)dst->h}
                       : SDL_FRect{0.0f, 0.0f, (float)g_win_w, (float)g_win_h};
     vgl_copy_f(tex, src, &d);
+}
+
+/* Passo 3D-1: retângulo da janela (coordenadas de vgl_copy) em pixels do
+ * framebuffer, origem embaixo à esquerda (para glViewport). */
+void vgl_rect_to_fb(const SDL_Rect* r, int* x, int* y, int* w, int* h) {
+    const float sx = (float)g_fb_w / (float)g_win_w, sy = (float)g_fb_h / (float)g_win_h;
+    const int fx = (int)(r->x * sx + 0.5f), fw = (int)(r->w * sx + 0.5f), fh = (int)(r->h * sy + 0.5f);
+    const int fy = g_fb_h - (int)((r->y + r->h) * sy + 0.5f);
+    if (x) *x = fx;
+    if (y) *y = fy;
+    if (w) *w = fw;
+    if (h) *h = fh;
 }
 
 void vgl_set_clip(const SDL_Rect* clip) {

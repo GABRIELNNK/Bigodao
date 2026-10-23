@@ -40,6 +40,8 @@ constexpr GLenum kR8UI = 0x8232, kRedInteger = 0x8D94, kRGBA8UI = 0x8D7C, kRGBAI
 constexpr GLenum kRG8UI = 0x8238, kRG16UI = 0x823A, kRGInteger = 0x8228, kUnsignedShort = 0x1403;
 constexpr GLenum kR16UI = 0x8234, kRGBA16UI = 0x8D76, kTexture2DArray = 0x8C1A;
 constexpr GLenum kRGBA32UI = 0x8D70, kUnsignedInt = 0x1405;
+constexpr GLenum kRenderbuffer = 0x8D41, kDepthComponent24 = 0x81A6, kDepthAttachment = 0x8D00;   /* 3D-3 */
+constexpr GLenum kDepthBufferBit = 0x0100, kLequal = 0x0203, kBack = 0x0405;
 constexpr GLenum kMaxTextureSize = 0x0D33, kMaxArrayTextureLayers = 0x88FF;
 constexpr GLenum kUnpackAlignment = 0x0CF5, kUnpackRowLength = 0x0CF2, kPackAlignment = 0x0D05;
 constexpr GLenum kColorBufferBit = 0x4000, kBlend = 0x0BE2, kScissorTest = 0x0C11;
@@ -89,6 +91,18 @@ struct Fns {
     VGL_FN(GLint, GetUniformLocation, (GLuint, const GLchar*))
     VGL_FN(void, Uniform1i, (GLint, GLint))
     VGL_FN(void, Uniform2i, (GLint, GLint, GLint))   /* passo 14e-1 */
+    VGL_FN(void, Uniform1f, (GLint, GLfloat))        /* passo 3D-1 */
+    VGL_FN(void, Uniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat))
+    VGL_FN(void, UniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*))
+    VGL_FN(void, Uniform2f, (GLint, GLfloat, GLfloat))   /* passo 3D-3 */
+    VGL_FN(void, GenRenderbuffers, (GLsizei, GLuint*))
+    VGL_FN(void, DeleteRenderbuffers, (GLsizei, const GLuint*))
+    VGL_FN(void, BindRenderbuffer, (GLenum, GLuint))
+    VGL_FN(void, RenderbufferStorage, (GLenum, GLenum, GLsizei, GLsizei))
+    VGL_FN(void, FramebufferRenderbuffer, (GLenum, GLenum, GLenum, GLuint))
+    VGL_FN(void, DepthFunc, (GLenum))
+    VGL_FN(void, DepthMask, (GLboolean))
+    VGL_FN(void, DrawArraysInstanced, (GLenum, GLint, GLsizei, GLsizei))
     VGL_FN(void, GenVertexArrays, (GLsizei, GLuint*))
     VGL_FN(void, DeleteVertexArrays, (GLsizei, const GLuint*))
     VGL_FN(void, BindVertexArray, (GLuint))
