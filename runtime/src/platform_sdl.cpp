@@ -22,6 +22,7 @@
 #ifdef GB_HAS_SDL2
 #include <SDL.h>
 #include <atomic>
+#include <cmath>   /* passo 14p: fabsf */
 #include <cerrno>
 #include <cctype>
 #include <cstdio>
@@ -40,6 +41,7 @@
 #endif
 #include <vector>
 #include "imgui.h"
+#include "imgui_internal.h"   /* passo 14p: rolar a lista arrastando */
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_sdlrenderer2.h"
 #include "backends/imgui_impl_opengl3.h"   /* passo 14a */
@@ -66,8 +68,10 @@ struct VidTex {
     VglTex* gl = nullptr;
 };
 static bool g_use_gl = false;            /* caminho em uso nesta execução */
-static int g_video_backend_pref = 0;     /* 0 = SDL_Renderer, 1 = OpenGL (próxima abertura) */
+static int g_video_backend_pref = 1;     /* 0 = SDL_Renderer, 1 = OpenGL (próxima abertura); OpenGL padrão (passo 14p) */
 static std::string g_video_status;       /* o que abriu (menu) */
+
+static bool g_game_reset_pending = false;   /* passo 14p: botão Reset do menu */
 
 static bool vid_ready(void) {
     return g_use_gl ? vgl_ready() : g_renderer != NULL;
@@ -180,6 +184,45 @@ static void vid_present(void) {
 }
 
 static VidTex* g_texture = NULL;
+
+/* Passo 14p: arrastar o dedo (ou o mouse) para cima/baixo sobre a lista de
+ * configurações rola a lista, como no celular, sem precisar pegar a barra.
+ * Chamado dentro da janela que rola (antes do EndChild). O arraste conta
+ * quando passa de 10 px e é mais vertical que horizontal: aí o clique que
+ * começou nele é cancelado (botão/caixa não dispara ao soltar) e a lista
+ * acompanha o dedo. Arraste na horizontal continua mexendo nos sliders. */
+static void imgui_drag_to_scroll(void) {
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    ImGuiIO& io = ImGui::GetIO();
+    static bool active = false;
+    static ImGuiID owner = 0;
+    if (!io.MouseDown[0]) {
+        active = false;
+        return;
+    }
+    if (active) {
+        if (owner == win->ID) {
+            ImGui::SetScrollY(win, win->Scroll.y - io.MouseDelta.y);
+        }
+        return;
+    }
+    if (win->ScrollMax.y <= 0.0f || !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 10.0f)) {
+        return;
+    }
+    if (!win->InnerRect.Contains(io.MouseClickedPos[0]) || g.HoveredWindow == NULL ||
+        g.HoveredWindow->RootWindow != win->RootWindow) {
+        return;   /* começou fora da lista, ou há um popup por cima */
+    }
+    const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+    if (fabsf(d.y) < fabsf(d.x) * 1.2f) {
+        return;   /* mais horizontal: slider */
+    }
+    active = true;
+    owner = win->ID;
+    ImGui::ClearActiveID();
+    ImGui::SetScrollY(win, win->Scroll.y - d.y);   /* inclui o caminho até passar dos 10 px */
+}
 static int g_scale = 5;
 static int g_windowed_width = GB_SCREEN_WIDTH * 5;
 static int g_windowed_height = GB_SCREEN_HEIGHT * 5;
@@ -224,7 +267,7 @@ static double g_last_vsync_end_ms = 0.0;
 static int g_texture_scale = 1;          /* escala com que a textura foi criada */
 
 // Supersampling
-static int g_internal_res_scale = 1; // 1x (Nativo), 2x, 3x, 4x
+static int g_internal_res_scale = 4; // 1x (Nativo), 2x, 3x, 4x — 4x padrão (passo 14p)
 static const char* g_internal_res_names[] = {
     "1x (Nativo GB - 160x144)",
     "2x Internal (320x288)",
@@ -306,7 +349,7 @@ typedef struct GBInputBinding {
     int16_t code;
 } GBInputBinding;
 static GBRenderScalingMode g_render_scaling_mode = GB_RENDER_SCALING_PIXEL_PERFECT;
-static GBRenderFilterMode g_render_filter_mode = GB_RENDER_FILTER_NEAREST;
+static GBRenderFilterMode g_render_filter_mode = GB_RENDER_FILTER_LINEAR;   /* passo 14p: linear padrão */
 static SDL_GameControllerType g_controller_type = SDL_CONTROLLER_TYPE_UNKNOWN;
 static GBControllerLabelProfile g_controller_label_profile = GB_CONTROLLER_LABEL_GENERIC;
 static std::string g_controller_name;
@@ -344,12 +387,7 @@ static constexpr int GB_FAST_FORWARD_SPEED_PERCENT = 250;
 static constexpr int GB_MAX_SHORTCUT_SPEED_PERCENT = 500;
 static int g_savestate_slot = 0;
 static std::string g_savestate_status;
-static const char* g_render_scaling_mode_names[] = {
-    "Pixel Perfect",
-    "Aspect Fit",
-    "Aspect Fill",
-    "Stretch",
-};
+/* Passo 14p: nomes do Scaling Mode removidos com a opção do menu. */
 static const char* g_render_filter_names[] = {
     "Nearest",
     "Linear",
@@ -997,11 +1035,7 @@ static bool env_flag_enabled(const char* name) {
 }
 
 static bool platform_default_fullscreen(void) {
-#if defined(__ANDROID__)
-    return true;
-#else
-    return false;
-#endif
+    return true;   /* passo 14p: tela cheia padrão em todos (antes só no Android) */
 }
 
 static bool platform_uses_app_storage_for_relative_paths(void) {
@@ -2749,7 +2783,10 @@ static void reset_runtime_display_defaults(void) {
     g_show_overlay = false;
     g_max_speed_mode = false;
     g_render_scaling_mode = GB_RENDER_SCALING_PIXEL_PERFECT;
-    g_render_filter_mode = GB_RENDER_FILTER_NEAREST;
+    g_render_filter_mode = GB_RENDER_FILTER_LINEAR;   /* passo 14p */
+    g_internal_res_scale = 4;                         /* passo 14p */
+    g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
+    g_renderer_reset_pending = true;
     update_render_filter();
 
     vid_set_vsync(false);   /* passo 14a */
@@ -3983,6 +4020,26 @@ static void render_frame_internal(const uint32_t* framebuffer,
         if (ImGui::Button("Resume")) {
             g_show_menu = false;
         }
+        ImGui::SameLine();   /* passo 14p: reiniciar o jogo (com confirmação) */
+        if (ImGui::Button("Reset")) {
+            ImGui::OpenPopup("Reiniciar o jogo?");
+        }
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal("Reiniciar o jogo?", NULL,
+                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+            ImGui::TextUnformatted("O jogo volta para a tela de titulo.");
+            ImGui::TextUnformatted("O save do cartucho continua; o que nao foi salvo se perde.");
+            if (ImGui::Button("Reiniciar")) {
+                g_game_reset_pending = true;
+                g_show_menu = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancelar")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
         ImGui::Separator();
         ImGui::TextWrapped("Toggle menu: %s", controller_menu_hint_text());
 #if defined(__ANDROID__)
@@ -4384,14 +4441,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
             set_fullscreen_enabled(fullscreen);
         }
 
-        int scaling_mode = (int)g_render_scaling_mode;
-        if (ImGui::Combo("Scaling Mode",
-                         &scaling_mode,
-                         g_render_scaling_mode_names,
-                         IM_ARRAYSIZE(g_render_scaling_mode_names))) {
-            g_render_scaling_mode = (GBRenderScalingMode)scaling_mode;
-            update_game_viewport();
-        }
+        /* Passo 14p: "Scaling Mode" saiu do menu. O viewport sempre cabe na
+         * janela mantendo a proporção (update_game_viewport); a escolha não
+         * era usada. */
 
         bool widescreen = g_widescreen_mode;
         if (ImGui::Checkbox("Widescreen (16:9)", &widescreen)) {
@@ -4760,6 +4812,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
 
+        imgui_drag_to_scroll();   /* passo 14p */
         ImGui::EndChild();
         ImGui::Separator();
 
@@ -4769,6 +4822,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             (float)footer_button_count;
         if (ImGui::Button("Reset Display", ImVec2(footer_button_width, 0.0f))) {
             reset_runtime_display_defaults();
+            save_runtime_preferences();   /* passo 14p: os padrões ficam gravados */
         }
 
         if (g_launcher_return_enabled) {
@@ -4866,10 +4920,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
             ImGui::Text("%s", overlay_menu_hint_text());
             ImGui::Text("%s", overlay_visibility_hint_text());
-            ImGui::Text("Viewport: %d x %d (%s)",
+            ImGui::Text("Viewport: %d x %d",
                         g_game_viewport.w,
-                        g_game_viewport.h,
-                        g_render_scaling_mode_names[(int)g_render_scaling_mode]);
+                        g_game_viewport.h);
             if (g_timing_frame_count > 0) {
                 float avg_render = (float)(g_timing_render_total / g_timing_frame_count);
                 float avg_vsync = (float)(g_timing_vsync_total / g_timing_frame_count);
@@ -6295,6 +6348,21 @@ uint8_t gb_platform_get_joypad(void) {
 void gb_platform_vsync(uint32_t frame_cycles) {
     /* Passo 12a: gabarito entre um quadro e outro. O jogo volta ao estado de
      * antes; o resto é o mesmo que depois de carregar um savestate. */
+    /* Passo 14p: Reset do menu, entre um quadro e outro. Reinicia como na
+     * abertura (gb_context_reset); a RAM do cartucho (save) fica. */
+    if (g_game_reset_pending && g_registered_ctx) {
+        g_game_reset_pending = false;
+        gb_context_reset(g_registered_ctx, true);
+        ppu_native_invalidate_all();
+        ppu_reset_widescreen_heuristics(g_registered_ctx);
+        ip_invalidate();
+        reset_audio_output_buffer(true);
+        g_last_guest_framebuffer_valid = false;
+        g_last_guest_widescreen_framebuffer_valid = false;
+        g_present_count = g_registered_ctx->completed_frames;
+        g_last_frame_time = SDL_GetTicks();
+        fprintf(stderr, "[SDL] Jogo reiniciado pelo menu.\n");
+    }
     if (g_registered_ctx && gabarito_process(g_registered_ctx)) {
         reset_audio_output_buffer(true);
         g_last_guest_framebuffer_valid = false;
