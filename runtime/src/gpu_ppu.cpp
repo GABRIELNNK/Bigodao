@@ -1,6 +1,6 @@
 /**
  * @file gpu_ppu.cpp
- * @brief Centro do quadro montado pela GPU (passos 14b-1 a 14b-3). Veja gpu_ppu.h.
+ * @brief Centro e laterais do quadro montados pela GPU (passos 14b-1 a 14b-4). Veja gpu_ppu.h.
  */
 #include "gpu_ppu.h"
 #include "video_gl.h"
@@ -47,6 +47,14 @@ GLuint g_tex_atlas = 0;    /* RGBA8UI 2D array */
 GLuint g_tex_tldir = 0;    /* RG16UI 768x1: (início + 1, quantidade) das trocas de tile HD */
 GLuint g_tex_tl = 0;       /* R16UI 17 x PPU_NATIVE_GPU_TL_MAX: linha + 1, 16 slots */
 GLint g_loc_hastl = -1;
+/* Passo 14b-4: laterais do widescreen (registros por ponto vindos de ppu.c) */
+constexpr int kMW = PPU_NATIVE_GPU_MARGIN_W;
+GLuint g_tex_mrec = 0;     /* RGBA32UI 192x144 (2 por ponto) */
+GLuint g_tex_fade = 0;     /* R8UI 256x96 */
+GLuint g_fbo_m = 0, g_out_m = 0;   /* laterais HD (96*N x 144*N) */
+int g_out_m_scale = 0;
+GLint g_loc_margin = -1;
+uint32_t g_margin_serial = 0xFFFFFFFFu;
 bool g_has_tl = false, g_had_tl = false;
 int g_atlas_side = 2048;
 int g_atlas_layers = 0;
@@ -81,6 +89,9 @@ const char* kFragment =
     "uniform usampler2D u_tldir;\n" /* 768x1 RG16UI: tiles redesenhados no meio do quadro */
     "uniform usampler2D u_tl;\n"    /* 17xN R16UI: (linha + 1, 16 slots) */
     "uniform int u_hastl;\n"
+    "uniform usampler2D u_mrec;\n"  /* 192x144 RGBA32UI: registros das laterais (passo 14b-4) */
+    "uniform usampler2D u_fade;\n"  /* 256x96 R8UI: escurecimento da borda por coluna */
+    "uniform int u_margin;\n"
     "uniform int u_haslog;\n"
     "uniform int u_scale;\n"
     "uniform int u_hd;\n"
@@ -162,7 +173,49 @@ const char* kFragment =
     "    if (!r.on) return c;\n"
     "    return min(((c * r.mul) >> 16u) + r.add, uvec3(255u));\n"
     "}\n"
+    /* Passo 14b-4: laterais, como margin_hd do ppu_native (registros de ppu.c) */
+    "uvec3 unpack_rgb(uint v) { return uvec3((v >> 16) & 255u, (v >> 8) & 255u, v & 255u); }\n"
+    "uvec3 fade3(bool on, int m, uvec3 c) {\n"
+    "    if (!on) return c;\n"
+    "    return uvec3(texelFetch(u_fade, ivec2(int(c.r), m), 0).r, texelFetch(u_fade, ivec2(int(c.g), m), 0).r,\n"
+    "                 texelFetch(u_fade, ivec2(int(c.b), m), 0).r);\n"
+    "}\n"
+    "int uvf_flags(uint f) { return ((f & 0x40u) != 0u ? 0x20 : 0) | ((f & 0x80u) != 0u ? 0x40 : 0); }\n"
+    "void margin_main() {\n"
+    "    int n = u_scale;\n"
+    "    int X = int(gl_FragCoord.x), Y = int(gl_FragCoord.y);\n"
+    "    int m = X / n, y = Y / n;\n"
+    "    int sx = X - m * n, sy = Y - y * n;\n"
+    "    g_y = y;\n"
+    "    uvec4 r = texelFetch(u_mrec, ivec2(2 * m, y), 0);\n"
+    "    uvec4 hs = texelFetch(u_mrec, ivec2(2 * m + 1, y), 0);\n"
+    "    uvec3 rgba = unpack_rgb(r.x);\n"
+    "    if (u_hd == 0) { o_color = vec4(vec3(rgba) / 255.0, 1.0); return; }\n"
+    "    bool fade = ((r.x >> 30) & 1u) != 0u;\n"
+    "    uvec3 bg_rgba = unpack_rgb(r.y), obj_rgba = unpack_rgb(r.z);\n"
+    "    uint bg_uvf = r.y >> 24, obj_uvf = r.z >> 24;\n"
+    "    int bg_raw = int(r.w & 3u), obj_raw = int((r.w >> 2) & 3u);\n"
+    "    uint bs = hs.x, os = hs.y;\n"   /* tile HD que a CPU achou para este ponto */
+    "    bool ot = ((r.w >> 4) & 1u) != 0u;\n"
+    "    if (obj_raw == 0 && os == 0u) ot = false;\n"   /* caixa sem HD: não muda nada */
+    "    if (bs == 0u && os == 0u) { o_color = vec4(vec3(rgba) / 255.0, 1.0); return; }\n"
+    "    uvec3 c = fade3(fade, m, bg_rgba);\n"
+    "    if (bs != 0u) {\n"
+    "        uvec4 h = hd_texel(bs, int(bg_uvf & 7u), int((bg_uvf >> 3) & 7u), uvf_flags(bg_uvf), sx, sy, n);\n"
+    "        if (h.a != 0u) c = fade3(fade, m, rc_apply(rc_setup(bs, bg_raw, bg_rgba), h));\n"
+    "    }\n"
+    "    if (ot) {\n"
+    "        if (os != 0u) {\n"
+    "            uvec4 h = hd_texel(os, int(obj_uvf & 7u), int((obj_uvf >> 3) & 7u), uvf_flags(obj_uvf), sx, sy, n);\n"
+    "            if (h.a >= 128u) c = rc_apply(rc_setup(os, obj_raw, obj_rgba), h);\n"
+    "        } else {\n"
+    "            c = obj_rgba;\n"
+    "        }\n"
+    "    }\n"
+    "    o_color = vec4(vec3(c) / 255.0, 1.0);\n"
+    "}\n"
     "void main() {\n"
+    "    if (u_margin != 0) { margin_main(); return; }\n"
     "    int n = u_scale;\n"
     "    int X = int(gl_FragCoord.x), Y = int(gl_FragCoord.y);\n"
     "    int x = X / n, y = Y / n;\n"
@@ -446,17 +499,19 @@ bool upload_frame(const PPUNativeGpuFrame* f) {
 
 void bind_inputs(void) {
     const GLenum targets[] = {kTexture2D, kTexture2D, kTexture2D, kTexture2D, kTexture2D, kTexture2D,
-                              kTexture2D, kTexture2D, kTexture2D, kTexture2DArray, kTexture2D, kTexture2D};
+                              kTexture2D, kTexture2D, kTexture2D, kTexture2DArray, kTexture2D, kTexture2D,
+                              kTexture2D, kTexture2D};
     const GLuint texs[] = {g_tex_vram, g_tex_line, g_tex_oam, g_tex_pal, g_tex_dirty, g_tex_log,
-                           g_tex_slot, g_tex_meta, g_tex_ref, g_tex_atlas, g_tex_tldir, g_tex_tl};
-    for (int i = 0; i < 12; ++i) {
+                           g_tex_slot, g_tex_meta, g_tex_ref, g_tex_atlas, g_tex_tldir, g_tex_tl,
+                           g_tex_mrec, g_tex_fade};
+    for (int i = 0; i < 14; ++i) {
         gl.ActiveTexture(kTexture0 + (GLenum)i);
         gl.BindTexture(targets[i], texs[i]);
     }
     gl.ActiveTexture(kTexture0);
 }
 
-bool draw(GLuint fbo, int w, int h, int scale, bool hd) {
+bool draw(GLuint fbo, int w, int h, int scale, bool hd, bool margin = false) {
     gl.BindFramebuffer(kFramebuffer, fbo);
     gl.Viewport(0, 0, w, h);
     gl.Disable(kBlend);
@@ -469,6 +524,7 @@ bool draw(GLuint fbo, int w, int h, int scale, bool hd) {
     gl.Uniform1i(g_loc_scale, scale);
     gl.Uniform1i(g_loc_hd, hd ? 1 : 0);
     gl.Uniform1i(g_loc_hastl, (hd && g_has_tl) ? 1 : 0);
+    gl.Uniform1i(g_loc_margin, margin ? 1 : 0);
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
     gl.BindFramebuffer(kFramebuffer, 0);
@@ -506,12 +562,14 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     if (!g_prog) return fail(e);
     gl.UseProgram(g_prog);
     const char* names[] = {"u_vram", "u_line", "u_oam", "u_pal", "u_dirty", "u_log",
-                           "u_slot", "u_meta", "u_ref", "u_atlas", "u_tldir", "u_tl"};
-    for (int i = 0; i < 12; ++i) gl.Uniform1i(gl.GetUniformLocation(g_prog, names[i]), i);
+                           "u_slot", "u_meta", "u_ref", "u_atlas", "u_tldir", "u_tl",
+                           "u_mrec", "u_fade"};
+    for (int i = 0; i < 14; ++i) gl.Uniform1i(gl.GetUniformLocation(g_prog, names[i]), i);
     g_loc_haslog = gl.GetUniformLocation(g_prog, "u_haslog");
     g_loc_scale = gl.GetUniformLocation(g_prog, "u_scale");
     g_loc_hd = gl.GetUniformLocation(g_prog, "u_hd");
     g_loc_hastl = gl.GetUniformLocation(g_prog, "u_hastl");
+    g_loc_margin = gl.GetUniformLocation(g_prog, "u_margin");
     gl.GenVertexArrays(1, &g_vao);
     gl.PixelStorei(kUnpackAlignment, 1);
     gl.PixelStorei(kUnpackRowLength, 0);
@@ -526,6 +584,9 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     g_tex_ref = make_tex(kRGBA8UI, 1024, 128, kRGBAInteger, kUnsignedByte);
     g_tex_tldir = make_tex(kRG16UI, 768, 1, kRGInteger, kUnsignedShort);
     g_tex_tl = make_tex(kR16UI, 17, PPU_NATIVE_GPU_TL_MAX, kRedInteger, kUnsignedShort);
+    g_tex_mrec = make_tex(kRGBA32UI, kMW * 2, kH, kRGBAInteger, kUnsignedInt);
+    g_tex_fade = make_tex(kR8UI, 256, kMW, kRedInteger, kUnsignedByte);
+    g_margin_serial = 0xFFFFFFFFu;
     g_dirty.assign(0x4000 * 2, 0);
     g_logtex.assign((size_t)kLogW * kLogH * 2, 0);
     g_count.assign(0x4000, 0);
@@ -556,16 +617,19 @@ void gpu_ppu_shutdown(void) {
     if (vgl_ready() && gl.DeleteTextures) {
         const GLuint texs[] = {g_tex_vram, g_tex_line, g_tex_oam, g_tex_pal, g_out, g_out_hd,
                                g_tex_dirty, g_tex_log, g_tex_slot, g_tex_meta, g_tex_ref, g_tex_atlas,
-                               g_tex_tldir, g_tex_tl};
+                               g_tex_tldir, g_tex_tl, g_tex_mrec, g_tex_fade, g_out_m};
         for (GLuint t : texs) if (t) gl.DeleteTextures(1, &t);
         if (g_fbo) gl.DeleteFramebuffers(1, &g_fbo);
         if (g_fbo_hd) gl.DeleteFramebuffers(1, &g_fbo_hd);
+        if (g_fbo_m) gl.DeleteFramebuffers(1, &g_fbo_m);
         if (g_vao) gl.DeleteVertexArrays(1, &g_vao);
         if (g_prog) gl.DeleteProgram(g_prog);
     }
     g_tex_vram = g_tex_line = g_tex_oam = g_tex_pal = g_out = g_out_hd = 0;
     g_tex_dirty = g_tex_log = g_tex_slot = g_tex_meta = g_tex_ref = g_tex_atlas = 0;
     g_tex_tldir = g_tex_tl = 0;
+    g_tex_mrec = g_tex_fade = g_out_m = g_fbo_m = 0;
+    g_out_m_scale = 0;
     g_fbo = g_fbo_hd = g_vao = g_prog = 0;
     g_out_hd_scale = 0;
     g_dirty_addrs.clear();
@@ -608,6 +672,40 @@ bool gpu_ppu_read_hd(uint32_t* argb, int* scale) {
     if (!g_ready || !argb || g_out_hd_scale < 2) return false;
     if (scale) *scale = g_out_hd_scale;
     return read_target(g_fbo_hd, kW * g_out_hd_scale, kH * g_out_hd_scale, argb);
+}
+
+/* Passo 14b-4: laterais HD (96*N x 144*N), dos registros de ppu.c. */
+bool gpu_ppu_compose_margins_hd(const PPUNativeGpuFrame* f) {
+    if (!g_ready || !f || !f->cgb || f->log_overflow || !f->margin_on) return false;
+    const int n = f->hd_scale;
+    if (n < 2 || n > kMaxScale) return false;
+    if (n != g_out_m_scale) {
+        if (g_out_m) gl.DeleteTextures(1, &g_out_m);
+        if (g_fbo_m) gl.DeleteFramebuffers(1, &g_fbo_m);
+        g_out_m = g_fbo_m = 0;
+        if (!make_target(&g_fbo_m, &g_out_m, kMW * n, kH * n)) return false;
+        g_out_m_scale = n;
+    }
+    if (f->hd_on) rebuild_atlas();
+    upload_frame(f);
+    if (g_margin_serial != f->serial) {
+        gl.PixelStorei(kUnpackAlignment, 1);
+        gl.PixelStorei(kUnpackRowLength, 0);
+        gl.ActiveTexture(kTexture0 + 12);
+        upload(g_tex_mrec, kMW * 2, kH, kRGBAInteger, kUnsignedInt, f->margin);
+        gl.ActiveTexture(kTexture0 + 13);
+        upload(g_tex_fade, 256, kMW, kRedInteger, kUnsignedByte, f->fade_lut);
+        gl.ActiveTexture(kTexture0);
+        gl.PixelStorei(kUnpackAlignment, 4);
+        g_margin_serial = f->serial;
+    }
+    return draw(g_fbo_m, kMW * n, kH * n, n, f->hd_on && g_atlas_ok, true);
+}
+
+bool gpu_ppu_read_margins_hd(uint32_t* argb, int* scale) {
+    if (!g_ready || !argb || g_out_m_scale < 2) return false;
+    if (scale) *scale = g_out_m_scale;
+    return read_target(g_fbo_m, kMW * g_out_m_scale, kH * g_out_m_scale, argb);
 }
 
 const char* gpu_ppu_atlas_info(void) {

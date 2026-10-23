@@ -39,6 +39,7 @@ constexpr GLenum kRGBA = 0x1908, kRGBA8 = 0x8058, kUnsignedByte = 0x1401;
 constexpr GLenum kR8UI = 0x8232, kRedInteger = 0x8D94, kRGBA8UI = 0x8D7C, kRGBAInteger = 0x8D99;
 constexpr GLenum kRG8UI = 0x8238, kRG16UI = 0x823A, kRGInteger = 0x8228, kUnsignedShort = 0x1403;
 constexpr GLenum kR16UI = 0x8234, kRGBA16UI = 0x8D76, kTexture2DArray = 0x8C1A;
+constexpr GLenum kRGBA32UI = 0x8D70, kUnsignedInt = 0x1405;
 constexpr GLenum kMaxTextureSize = 0x0D33, kMaxArrayTextureLayers = 0x88FF;
 constexpr GLenum kUnpackAlignment = 0x0CF5, kUnpackRowLength = 0x0CF2, kPackAlignment = 0x0D05;
 constexpr GLenum kColorBufferBit = 0x4000, kBlend = 0x0BE2, kScissorTest = 0x0C11;

@@ -218,6 +218,7 @@ bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
  * (line_plus1 = última linha já desenhada + 1; 0 = antes da linha 0). */
 #define PPU_NATIVE_GPU_LOG_MAX 8192
 #define PPU_NATIVE_GPU_TL_MAX 2048   /* passo 14b-3: trocas de tile HD no meio do quadro */
+#define PPU_NATIVE_GPU_MARGIN_W (2 * GB_WIDESCREEN_MARGIN)   /* passo 14b-4 */
 typedef struct {
     uint16_t addr;        /* 0x0000-0x3FFF: banco * 0x2000 + (endereço - 0x8000) */
     uint8_t line_plus1;
@@ -260,10 +261,32 @@ typedef struct {
     uint16_t hd_tl[PPU_NATIVE_GPU_TL_MAX][17];
     uint32_t hd_tl_count;
     bool hd_tl_overflow;
+    /* Passo 14b-4: laterais do widescreen. margin_on = as 144 linhas vieram
+     * de ppu.c neste quadro. Cada ponto m (48 da esquerda e depois 48 da
+     * direita) é o PPUNativeMarginPixel compactado em margin[y][2m] e
+     * margin[y][2m + 1]:
+     *   [2m][0] rgba & 0xFFFFFF | bg_pal << 24 | obj_pal << 27 | fade << 30
+     *   [2m][1] bg_rgba & 0xFFFFFF | bg_uvf << 24
+     *   [2m][2] obj_rgba & 0xFFFFFF | obj_uvf << 24
+     *   [2m][3] bg_raw | obj_raw << 2 | tem_sprite << 4
+     *   [2m+1][0] tile HD do fundo (entrada + 1, 0 = sem HD)
+     *   [2m+1][1] tile HD do sprite (idem)
+     * O tile HD é o que a CPU usou na mesma hora (hd_lookup quando ppu.c
+     * manda a linha), então não depende de quando a VRAM foi escrita.
+     * fade_lut[coluna][v] = (uint8_t)(v * keep), como a CPU escurece a borda;
+     * fade_conflict = a mesma coluna veio com dois keep no quadro (não
+     * acontece hoje). cpu_hd_margin = laterais HD da CPU ou NULL. */
+    bool margin_on;
+    uint32_t margin[144][PPU_NATIVE_GPU_MARGIN_W * 2][4];
+    uint8_t fade_lut[PPU_NATIVE_GPU_MARGIN_W][256];
+    bool fade_conflict;
+    const uint32_t* cpu_hd_margin;
 } PPUNativeGpuFrame;
 
 /* Passo 14b-3: tabela de tiles HD carregados, para a GPU montar o atlas. */
 uint32_t ppu_native_hd_pack_generation(void);   /* muda quando entra ou sai tile HD */
+/* Passo 14b-4: última linha desenhada no quadro atual (-1 = nenhuma); para testes. */
+int ppu_native_gpu_last_line(void);
 uint32_t ppu_native_hd_table_capacity(void);
 /* Entrada i da tabela: false se vazia. ref = NULL sem paleta de referência. */
 bool ppu_native_hd_table_entry(uint32_t i, int* size, const uint32_t** px, const uint32_t** ref);

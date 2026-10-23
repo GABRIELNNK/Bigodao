@@ -32,6 +32,10 @@ bool gpu_ppu_read(uint32_t* argb);
 bool gpu_ppu_compose_hd(const PPUNativeGpuFrame* frame);
 /* Lê o último centro HD; scale recebe o N. argb precisa de 160*N*144*N. */
 bool gpu_ppu_read_hd(uint32_t* argb, int* scale);
+/* Passo 14b-4: laterais do widescreen em HD (96*N x 144*N, 48 da esquerda e
+ * 48 da direita lado a lado), dos registros que ppu.c manda por ponto. */
+bool gpu_ppu_compose_margins_hd(const PPUNativeGpuFrame* frame);
+bool gpu_ppu_read_margins_hd(uint32_t* argb, int* scale);
 /* Texto curto sobre o atlas de tiles HD (para o menu). */
 const char* gpu_ppu_atlas_info(void);
 

@@ -208,12 +208,63 @@ struct GpuCompareStats {
     int hd_scale = 0, hd_x = -1, hd_y = -1;
     uint32_t hd_cpu = 0, hd_gpu = 0;
     double hd_ms_total = 0.0;
+    /* Passo 14b-4: laterais do widescreen em HD */
+    uint64_t m_compared = 0, m_equal = 0, m_fade_conflict = 0;
+    uint32_t m_last_diff = 0;
+    int m_x = -1, m_y = -1;
+    uint32_t m_cpu = 0, m_gpu = 0;
+    double m_ms_total = 0.0;
 };
 static bool g_gpu_compare = false;
 static GpuCompareStats g_gpu_stats;
 static std::string g_gpu_error;
 static std::vector<uint32_t> g_gpu_read;
 static std::vector<uint32_t> g_gpu_read_hd;   /* passo 14b-3 */
+static std::vector<uint32_t> g_gpu_read_m;    /* passo 14b-4 */
+
+/* Passo 14b-4: laterais HD da GPU contra as da CPU (só quando a CPU as
+ * desenhou: widescreen ligado, escala acima de 1x, tiles HD). x na
+ * diferença: 0..47 esquerda, 48..95 direita (vezes a escala). */
+static void gpu_compare_margins_hd(const PPUNativeGpuFrame* fr) {
+    if (!fr->margin_on || !fr->cpu_hd_margin || fr->hd_scale < 2) return;
+    const int n = fr->hd_scale;
+    const int w = PPU_NATIVE_GPU_MARGIN_W * n, h = GB_SCREEN_HEIGHT * n;
+    const uint64_t t0 = SDL_GetPerformanceCounter();
+    g_gpu_read_m.resize((size_t)w * h);
+    int got = 0;
+    if (!gpu_ppu_compose_margins_hd(fr) || !gpu_ppu_read_margins_hd(g_gpu_read_m.data(), &got) ||
+        got != n) {
+        g_gpu_error = "a GPU nao conseguiu montar as laterais em HD";
+        return;
+    }
+    GpuCompareStats& st = g_gpu_stats;
+    st.m_ms_total += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
+                     (double)SDL_GetPerformanceFrequency();
+    if (fr->fade_conflict) st.m_fade_conflict++;
+    uint32_t diff = 0;
+    int fx = -1, fy = -1;
+    for (int i = 0; i < w * h; ++i) {
+        if (((g_gpu_read_m[(size_t)i] ^ fr->cpu_hd_margin[i]) & 0x00FFFFFFu) != 0) {
+            if (!diff) { fx = i % w; fy = i / w; }
+            diff++;
+        }
+    }
+    st.m_compared++;
+    if (!diff) {
+        st.m_equal++;
+        return;
+    }
+    st.m_last_diff = diff;
+    st.m_x = fx;
+    st.m_y = fy;
+    st.m_cpu = fr->cpu_hd_margin[(size_t)fy * w + fx];
+    st.m_gpu = g_gpu_read_m[(size_t)fy * w + fx];
+    if (st.m_compared - st.m_equal <= 20u) {
+        fprintf(stderr, "[GPU-LAT] %ux: %u pontos diferentes, primeiro (%d,%d) %s cpu %08X gpu %08X%s\n",
+                n, diff, fx, fy, fx < w / 2 ? "esquerda" : "direita", st.m_cpu, st.m_gpu,
+                fr->fade_conflict ? " (escurecimento com dois valores na coluna)" : "");
+    }
+}
 
 /* Passo 14b-3: o centro em HD da GPU contra o da CPU. Quadros com tile
  * redesenhado no meio (animações) contam à parte: a GPU troca o tile HD pela
@@ -273,6 +324,7 @@ static void gpu_compare_frame(void) {
     if (fr->log_overflow) { g_gpu_stats.skipped_overflow++; return; }   /* passo 14b-2 */
     gpu_compare_frame_1x(fr);
     gpu_compare_frame_hd(fr);   /* passo 14b-3 */
+    gpu_compare_margins_hd(fr); /* passo 14b-4 */
 }
 
 static void gpu_compare_frame_1x(const PPUNativeGpuFrame* fr) {
@@ -4468,6 +4520,25 @@ static void render_frame_internal(const uint32_t* framebuffer,
                         if (st.hd_x >= 0) {
                             ImGui::TextWrapped("  Ultima diferenca HD: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
                                                st.hd_last_diff, st.hd_x, st.hd_y, st.hd_cpu, st.hd_gpu);
+                        }
+                    }
+                    /* Passo 14b-4: laterais */
+                    if (st.m_compared == 0) {
+                        ImGui::TextWrapped("Laterais HD: so conferem com widescreen, Internal Resolution "
+                                           "acima de 1x e tiles HD ligados.");
+                    } else {
+                        ImGui::Text("Laterais HD: conferidas %llu  iguais: %llu  com diferenca: %llu",
+                                    (unsigned long long)st.m_compared, (unsigned long long)st.m_equal,
+                                    (unsigned long long)(st.m_compared - st.m_equal));
+                        ImGui::Text("  GPU laterais (montar + ler de volta): %.2f ms por quadro",
+                                    st.m_ms_total / (double)st.m_compared);
+                        if (st.m_fade_conflict) {
+                            ImGui::Text("  Escurecimento com dois valores na coluna: %llu quadros",
+                                        (unsigned long long)st.m_fade_conflict);
+                        }
+                        if (st.m_x >= 0) {
+                            ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                                               st.m_last_diff, st.m_x, st.m_y, st.m_cpu, st.m_gpu);
                         }
                     }
                     ImGui::TextWrapped("Atlas: %s", gpu_ppu_atlas_info());

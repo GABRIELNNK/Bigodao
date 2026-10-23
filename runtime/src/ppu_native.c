@@ -51,6 +51,8 @@ static bool g_gpu_ready = false;
 static bool g_gpu_mid = false;   /* VRAM escrita durante as linhas deste quadro */
 /* Passo 14b-2a: diagnóstico das escritas no meio do quadro */
 static int g_gpu_last_line = -1;               /* última linha desenhada neste quadro */
+static uint32_t g_gpu_margin_lines = 0;        /* passo 14b-4: linhas de lateral neste quadro */
+static double g_gpu_fade_keep[2 * GB_WIDESCREEN_MARGIN];
 static const uint8_t* g_gpu_vram_ptr = NULL;   /* passo 14b-2: VRAM do contexto (valor escrito) */
 static uint32_t g_gpu_mid_writes = 0, g_gpu_mid_tile = 0, g_gpu_mid_map = 0;
 static uint8_t g_gpu_mid_line_seen[GB_SCREEN_HEIGHT + 1];
@@ -1061,6 +1063,9 @@ static void begin_frame(const GBContext* ctx, uint8_t first_line) {
         g_gpu.log_count = 0;
         g_gpu.log_overflow = false;
         g_gpu_vram_ptr = ctx->vram;
+        g_gpu_margin_lines = 0;   /* passo 14b-4 */
+        g_gpu.fade_conflict = false;
+        for (int m = 0; m < 2 * GB_WIDESCREEN_MARGIN; ++m) g_gpu_fade_keep[m] = -1.0;
     }
     const uint16_t hd_ctx = hd_context_from_ram(ctx);
     if (hd_ctx != g_hd_ctx) {
@@ -1233,6 +1238,8 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
         g_gpu.hd_on = hd;
         g_gpu.hd_scale = g_hd_scale;
         g_gpu.cpu_hd = (g_hd_scale > 1) ? g_hd : NULL;
+        g_gpu.margin_on = (g_gpu_margin_lines == (uint32_t)NATIVE_H);   /* passo 14b-4 */
+        g_gpu.cpu_hd_margin = g_hd_m_valid_scale > 1 ? g_hd_m : NULL;
         if (hd) {
             gpu_hd_fill_slots();
         }
@@ -1373,6 +1380,11 @@ static void gpu_hd_fill_slots(void) {
         memcpy(g_gpu.hd_tl[pos], g_gpu_tl_tmp[k], sizeof(g_gpu_tl_tmp[k]));
     }
     g_gpu.hd_tl_count = n;
+}
+
+/* Passo 14b-4: para testes (linha que a GPU considera já desenhada). */
+int ppu_native_gpu_last_line(void) {
+    return g_gpu_last_line;
 }
 
 /* Passo 14b-3 */
@@ -1666,7 +1678,7 @@ static inline bool margin_hd_active(void) {
 
 bool ppu_native_margins_wanted(void) {
     return g_mode != PPU_RENDERER_EMULATED && g_frame_open &&
-           (margin_hd_active() ||
+           (margin_hd_active() || g_gpu_on ||   /* passo 14b-4: g_gpu_on */
             (g_scene_state == SCENE_CAPTURING && g_scene_w == (unsigned)GB_WIDESCREEN_WIDTH));
 }
 
@@ -1795,6 +1807,40 @@ void ppu_native_margin_line(const GBPPU* ppu, const GBContext* ctx,
     }
     if (g_scene_state == SCENE_CAPTURING && g_scene_w == (unsigned)GB_WIDESCREEN_WIDTH) {
         margin_capture(ppu, ctx, y, px);
+    }
+    if (g_gpu_on) {   /* passo 14b-4: a linha de laterais para a GPU */
+        const bool hd_tiles = g_hd_tiles_enabled && g_hd_tile_count > 0;
+        const bool cgb = is_cgb(ctx);
+        for (int m = 0; m < MARGIN_W; ++m) {
+            const PPUNativeMarginPixel* r = &px[m];
+            uint32_t* o = g_gpu.margin[y][2 * m];
+            uint32_t* s = g_gpu.margin[y][2 * m + 1];
+            o[0] = (r->rgba & 0xFFFFFFu) | ((uint32_t)(r->bg_pal & 7u) << 24) |
+                   ((uint32_t)(r->obj_pal & 7u) << 27) | (r->fade ? (1u << 30) : 0u);
+            o[1] = (r->bg_rgba & 0xFFFFFFu) | ((uint32_t)r->bg_uvf << 24);
+            o[2] = (r->obj_rgba & 0xFFFFFFu) | ((uint32_t)r->obj_uvf << 24);
+            o[3] = (uint32_t)(r->bg_raw & 3u) | ((uint32_t)(r->obj_raw & 3u) << 2) |
+                   (r->obj_tile ? (1u << 4) : 0u);
+            /* mesma busca de margin_hd */
+            const HdTile* bh = (hd_tiles && r->bg_tile)
+                ? hd_lookup('b', tile_from_ref(ctx, r->bg_tile), cgb ? (uint8_t)(r->bg_pal & 7u) : 0u)
+                : NULL;
+            const HdTile* oh = (hd_tiles && r->obj_tile)
+                ? hd_lookup('o', tile_from_ref(ctx, r->obj_tile), r->obj_pal) : NULL;
+            s[0] = bh ? (uint32_t)(bh - g_hd_tiles) + 1u : 0u;
+            s[1] = oh ? (uint32_t)(oh - g_hd_tiles) + 1u : 0u;
+            s[2] = 0u;
+            s[3] = 0u;
+            if (r->fade) {
+                if (g_gpu_fade_keep[m] < 0.0) {
+                    memcpy(g_gpu.fade_lut[m], margin_fade_lut(m, r->keep), 256);
+                    g_gpu_fade_keep[m] = r->keep;
+                } else if (g_gpu_fade_keep[m] != r->keep) {
+                    g_gpu.fade_conflict = true;
+                }
+            }
+        }
+        g_gpu_margin_lines++;
     }
     if (margin_hd_active()) {
         margin_hd(ctx, y, px);
