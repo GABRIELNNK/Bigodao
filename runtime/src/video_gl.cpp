@@ -10,108 +10,21 @@
 #include <string>
 #include <vector>
 
-/* Tipos e constantes do OpenGL definidos aqui (valores do padrão), para não
- * depender de qual cabeçalho de GL cada plataforma tem. As funções vêm do
- * SDL_GL_GetProcAddress com nomes próprios (vgl::), sem colidir com nada. */
-#if defined(_WIN32)
-#define VGL_APIENTRY __stdcall
-#else
-#define VGL_APIENTRY
-#endif
+#include "video_gl_fns.h"
 
-namespace {
+using namespace vglx;
 
-typedef unsigned int GLenum;
-typedef unsigned int GLuint;
-typedef int GLint;
-typedef int GLsizei;
-typedef float GLfloat;
-typedef char GLchar;
-typedef unsigned char GLboolean;
-typedef unsigned char GLubyte;
-typedef unsigned int GLbitfield;
-typedef std::ptrdiff_t GLsizeiptr;
-
-constexpr GLenum kTexture2D = 0x0DE1, kTexMinFilter = 0x2801, kTexMagFilter = 0x2800;
-constexpr GLenum kNearest = 0x2600, kLinear = 0x2601;
-constexpr GLenum kTexWrapS = 0x2802, kTexWrapT = 0x2803, kClampToEdge = 0x812F;
-constexpr GLenum kRGBA = 0x1908, kRGBA8 = 0x8058, kUnsignedByte = 0x1401;
-constexpr GLenum kUnpackAlignment = 0x0CF5, kUnpackRowLength = 0x0CF2, kPackAlignment = 0x0D05;
-constexpr GLenum kColorBufferBit = 0x4000, kBlend = 0x0BE2, kScissorTest = 0x0C11;
-constexpr GLenum kDepthTest = 0x0B71, kCullFace = 0x0B44;
-constexpr GLenum kSrcAlpha = 0x0302, kOneMinusSrcAlpha = 0x0303, kOne = 1;
-constexpr GLenum kTriangleStrip = 0x0005, kFloat = 0x1406;
-constexpr GLenum kArrayBuffer = 0x8892, kStreamDraw = 0x88E0;
-constexpr GLenum kVertexShader = 0x8B31, kFragmentShader = 0x8B30;
-constexpr GLenum kCompileStatus = 0x8B81, kLinkStatus = 0x8B82, kInfoLogLength = 0x8B84;
-constexpr GLenum kTexture0 = 0x84C0, kVersion = 0x1F02, kRenderer = 0x1F01;
-
-struct Fns {
-#define VGL_FN(ret, name, args) ret(VGL_APIENTRY* name) args = nullptr;
-    VGL_FN(GLenum, GetError, (void))
-    VGL_FN(const GLubyte*, GetString, (GLenum))
-    VGL_FN(void, Viewport, (GLint, GLint, GLsizei, GLsizei))
-    VGL_FN(void, Scissor, (GLint, GLint, GLsizei, GLsizei))
-    VGL_FN(void, Enable, (GLenum))
-    VGL_FN(void, Disable, (GLenum))
-    VGL_FN(void, BlendFuncSeparate, (GLenum, GLenum, GLenum, GLenum))
-    VGL_FN(void, ClearColor, (GLfloat, GLfloat, GLfloat, GLfloat))
-    VGL_FN(void, Clear, (GLbitfield))
-    VGL_FN(void, GenTextures, (GLsizei, GLuint*))
-    VGL_FN(void, DeleteTextures, (GLsizei, const GLuint*))
-    VGL_FN(void, BindTexture, (GLenum, GLuint))
-    VGL_FN(void, ActiveTexture, (GLenum))
-    VGL_FN(void, TexParameteri, (GLenum, GLenum, GLint))
-    VGL_FN(void, TexImage2D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*))
-    VGL_FN(void, TexSubImage2D, (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*))
-    VGL_FN(void, PixelStorei, (GLenum, GLint))
-    VGL_FN(void, ReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*))
-    VGL_FN(GLuint, CreateShader, (GLenum))
-    VGL_FN(void, DeleteShader, (GLuint))
-    VGL_FN(void, ShaderSource, (GLuint, GLsizei, const GLchar* const*, const GLint*))
-    VGL_FN(void, CompileShader, (GLuint))
-    VGL_FN(void, GetShaderiv, (GLuint, GLenum, GLint*))
-    VGL_FN(void, GetShaderInfoLog, (GLuint, GLsizei, GLsizei*, GLchar*))
-    VGL_FN(GLuint, CreateProgram, (void))
-    VGL_FN(void, DeleteProgram, (GLuint))
-    VGL_FN(void, AttachShader, (GLuint, GLuint))
-    VGL_FN(void, BindAttribLocation, (GLuint, GLuint, const GLchar*))
-    VGL_FN(void, LinkProgram, (GLuint))
-    VGL_FN(void, GetProgramiv, (GLuint, GLenum, GLint*))
-    VGL_FN(void, GetProgramInfoLog, (GLuint, GLsizei, GLsizei*, GLchar*))
-    VGL_FN(void, UseProgram, (GLuint))
-    VGL_FN(GLint, GetUniformLocation, (GLuint, const GLchar*))
-    VGL_FN(void, Uniform1i, (GLint, GLint))
-    VGL_FN(void, GenVertexArrays, (GLsizei, GLuint*))
-    VGL_FN(void, DeleteVertexArrays, (GLsizei, const GLuint*))
-    VGL_FN(void, BindVertexArray, (GLuint))
-    VGL_FN(void, GenBuffers, (GLsizei, GLuint*))
-    VGL_FN(void, DeleteBuffers, (GLsizei, const GLuint*))
-    VGL_FN(void, BindBuffer, (GLenum, GLuint))
-    VGL_FN(void, BufferData, (GLenum, GLsizeiptr, const void*, GLenum))
-    VGL_FN(void, VertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*))
-    VGL_FN(void, EnableVertexAttribArray, (GLuint))
-    VGL_FN(void, DrawArrays, (GLenum, GLint, GLsizei))
-#undef VGL_FN
-};
+namespace vglx {
 
 Fns gl;
-SDL_GLContext g_ctx = nullptr;
-bool g_ready = false;
-bool g_es = false;
-GLuint g_prog = 0, g_vao = 0, g_vbo = 0;
-std::string g_desc;
-/* Por quadro: tamanhos da janela (coordenadas de destino) e do framebuffer. */
-int g_win_w = 1, g_win_h = 1, g_fb_w = 1, g_fb_h = 1;
-bool g_clip_on = false;
 
 template <typename T>
-bool load(T& fn, const char* name) {
+static bool load(T& fn, const char* name) {
     fn = reinterpret_cast<T>(SDL_GL_GetProcAddress(name));
     return fn != nullptr;
 }
 
-bool load_all(std::string& missing) {
+bool load_fns(std::string& missing) {
     bool ok = true;
 #define L(n) if (!load(gl.n, "gl" #n)) { ok = false; missing += " gl" #n; }
     L(GetError) L(GetString) L(Viewport) L(Scissor) L(Enable) L(Disable) L(BlendFuncSeparate)
@@ -123,11 +36,13 @@ bool load_all(std::string& missing) {
     L(Uniform1i) L(GenVertexArrays) L(DeleteVertexArrays) L(BindVertexArray) L(GenBuffers)
     L(DeleteBuffers) L(BindBuffer) L(BufferData) L(VertexAttribPointer)
     L(EnableVertexAttribArray) L(DrawArrays)
+    L(GenFramebuffers) L(DeleteFramebuffers) L(BindFramebuffer) L(FramebufferTexture2D)
+    L(CheckFramebufferStatus) L(TexImage3D) L(TexSubImage3D) L(GetIntegerv)
 #undef L
     return ok;
 }
 
-GLuint compile(GLenum type, const std::string& src, std::string& err) {
+GLuint compile_shader(GLenum type, const std::string& src, std::string& err) {
     GLuint s = gl.CreateShader(type);
     const char* p = src.c_str();
     gl.ShaderSource(s, 1, &p, nullptr);
@@ -135,7 +50,7 @@ GLuint compile(GLenum type, const std::string& src, std::string& err) {
     GLint ok = 0;
     gl.GetShaderiv(s, kCompileStatus, &ok);
     if (!ok) {
-        char log[1024] = "";
+        char log[2048] = "";
         gl.GetShaderInfoLog(s, sizeof(log), nullptr, log);
         err = std::string("shader: ") + log;
         gl.DeleteShader(s);
@@ -143,6 +58,44 @@ GLuint compile(GLenum type, const std::string& src, std::string& err) {
     }
     return s;
 }
+
+GLuint link_program(const std::string& vs_src, const std::string& fs_src,
+                    const char* const* attrib_names, int attrib_count, std::string& err) {
+    const GLuint vs = compile_shader(kVertexShader, vs_src, err);
+    if (!vs) return 0;
+    const GLuint fs = compile_shader(kFragmentShader, fs_src, err);
+    if (!fs) { gl.DeleteShader(vs); return 0; }
+    GLuint prog = gl.CreateProgram();
+    gl.AttachShader(prog, vs);
+    gl.AttachShader(prog, fs);
+    for (int i = 0; i < attrib_count; ++i) gl.BindAttribLocation(prog, (GLuint)i, attrib_names[i]);
+    gl.LinkProgram(prog);
+    gl.DeleteShader(vs);
+    gl.DeleteShader(fs);
+    GLint linked = 0;
+    gl.GetProgramiv(prog, kLinkStatus, &linked);
+    if (!linked) {
+        char log[2048] = "";
+        gl.GetProgramInfoLog(prog, sizeof(log), nullptr, log);
+        err = std::string("link: ") + log;
+        gl.DeleteProgram(prog);
+        return 0;
+    }
+    return prog;
+}
+
+}  // namespace vglx
+
+namespace {
+
+SDL_GLContext g_ctx = nullptr;
+bool g_ready = false;
+bool g_es = false;
+GLuint g_prog = 0, g_vao = 0, g_vbo = 0;
+std::string g_desc;
+/* Por quadro: tamanhos da janela (coordenadas de destino) e do framebuffer. */
+int g_win_w = 1, g_win_h = 1, g_fb_w = 1, g_fb_h = 1;
+bool g_clip_on = false;
 
 /* A textura guarda os bytes de 0xAARRGGBB na ordem da memória (B, G, R, A em
  * little-endian), enviados como RGBA: o shader devolve .bgra. */
@@ -158,6 +111,12 @@ const char* kFragmentBody =
     "void main() { o_color = texture(u_tex, v_uv).bgra; }\n";
 
 }  // namespace
+
+const char* vglx::shader_header(void) {
+    return g_es ? "#version 300 es\nprecision highp float;\nprecision highp int;\n"
+                  "precision highp usampler2D;\nprecision highp sampler2D;\n"
+                : "#version 330 core\n";
+}
 
 struct VglTex {
     GLuint id = 0;
@@ -202,29 +161,13 @@ bool vgl_init(SDL_Window* window, char* err, size_t err_size) {
     if (!g_ctx) return fail(std::string("SDL_GL_CreateContext: ") + SDL_GetError());
     SDL_GL_MakeCurrent(window, g_ctx);
     std::string missing;
-    if (!load_all(missing)) return fail("funcoes do OpenGL faltando:" + missing);
+    if (!load_fns(missing)) return fail("funcoes do OpenGL faltando:" + missing);
 
-    const std::string head = g_es ? "#version 300 es\nprecision mediump float;\n" : "#version 330 core\n";
     std::string e;
-    const GLuint vs = compile(kVertexShader, head + kVertexBody, e);
-    if (!vs) return fail(e);
-    const GLuint fs = compile(kFragmentShader, head + kFragmentBody, e);
-    if (!fs) { gl.DeleteShader(vs); return fail(e); }
-    g_prog = gl.CreateProgram();
-    gl.AttachShader(g_prog, vs);
-    gl.AttachShader(g_prog, fs);
-    gl.BindAttribLocation(g_prog, 0, "a_pos");
-    gl.BindAttribLocation(g_prog, 1, "a_uv");
-    gl.LinkProgram(g_prog);
-    gl.DeleteShader(vs);
-    gl.DeleteShader(fs);
-    GLint linked = 0;
-    gl.GetProgramiv(g_prog, kLinkStatus, &linked);
-    if (!linked) {
-        char log[1024] = "";
-        gl.GetProgramInfoLog(g_prog, sizeof(log), nullptr, log);
-        return fail(std::string("link: ") + log);
-    }
+    static const char* const kAttribs[] = {"a_pos", "a_uv"};
+    g_prog = link_program(std::string(shader_header()) + kVertexBody,
+                          std::string(shader_header()) + kFragmentBody, kAttribs, 2, e);
+    if (!g_prog) return fail(e);
     gl.UseProgram(g_prog);
     gl.Uniform1i(gl.GetUniformLocation(g_prog, "u_tex"), 0);
     gl.GenVertexArrays(1, &g_vao);

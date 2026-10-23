@@ -44,6 +44,24 @@ static uint8_t g_tile_shadow[2][TILE_DATA_BYTES];
 static bool g_cache_ready = false;
 
 static uint32_t g_frame[NATIVE_W * NATIVE_H];
+/* Passo 14b: captura para a GPU */
+static PPUNativeGpuFrame g_gpu;
+static bool g_gpu_on = false;
+static bool g_gpu_ready = false;
+static bool g_gpu_mid = false;   /* VRAM escrita durante as linhas deste quadro */
+/* Passo 14b-2a: diagnóstico das escritas no meio do quadro */
+static int g_gpu_last_line = -1;               /* última linha desenhada neste quadro */
+static const uint8_t* g_gpu_vram_ptr = NULL;   /* passo 14b-2: VRAM do contexto (valor escrito) */
+static uint32_t g_gpu_mid_writes = 0, g_gpu_mid_tile = 0, g_gpu_mid_map = 0;
+static uint8_t g_gpu_mid_line_seen[GB_SCREEN_HEIGHT + 1];
+static int g_gpu_mid_first = -1, g_gpu_mid_last = -1;
+
+static void gpu_mid_reset(void) {
+    g_gpu_mid = false;
+    g_gpu_mid_writes = g_gpu_mid_tile = g_gpu_mid_map = 0;
+    memset(g_gpu_mid_line_seen, 0, sizeof(g_gpu_mid_line_seen));
+    g_gpu_mid_first = g_gpu_mid_last = -1;
+}
 static PPUNativeLineState g_lines[NATIVE_H];
 static bool g_frame_open = false;
 
@@ -103,6 +121,7 @@ typedef struct {
 } HdTile;
 #define HD_TABLE_CAP 32768u   /* potência de 2 (passo 11a: era 16384) */
 static HdTile g_hd_tiles[HD_TABLE_CAP];
+static uint32_t g_hd_pack_gen = 1;   /* passo 14b-3: muda quando entra ou sai tile HD */
 static uint32_t g_hd_tile_count = 0;
 static bool g_hd_tiles_enabled = true;
 static uint32_t g_hd_generation = 1;               /* muda quando o pacote muda */
@@ -250,6 +269,27 @@ uint32_t ppu_native_vram_map_generation(void) {
 }
 
 void ppu_native_on_vram_write(uint8_t bank, uint16_t offset) {
+    if (g_gpu_on && g_frame_open) {
+        g_gpu_mid = true;   /* passo 14b */
+        {   /* passo 14b-2: registro da escrita (o gancho vem depois da escrita) */
+            const uint16_t a = (uint16_t)((bank & 1u) * BANK1_OFFSET + (offset & 0x1FFFu));
+            if (g_gpu.log_count < PPU_NATIVE_GPU_LOG_MAX && g_gpu_vram_ptr) {
+                PPUNativeGpuWrite* w = &g_gpu.log[g_gpu.log_count++];
+                w->addr = a;
+                w->line_plus1 = (uint8_t)(g_gpu_last_line + 1);
+                w->value = g_gpu_vram_ptr[a];
+            } else {
+                g_gpu.log_overflow = true;
+            }
+        }
+        g_gpu_mid_writes++;   /* passo 14b-2a */
+        if (offset < TILE_DATA_BYTES) g_gpu_mid_tile++;
+        else g_gpu_mid_map++;
+        const int l = g_gpu_last_line < 0 ? 0 : g_gpu_last_line;
+        if (l <= GB_SCREEN_HEIGHT) g_gpu_mid_line_seen[l] = 1;
+        if (g_gpu_mid_first < 0 || l < g_gpu_mid_first) g_gpu_mid_first = l;
+        if (l > g_gpu_mid_last) g_gpu_mid_last = l;
+    }
     if (offset < TILE_DATA_BYTES) {
         g_tile_dirty[bank & 1u][offset >> 4] = true;
     } else {
@@ -724,7 +764,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     uint8_t last_obj_pal = 0xFFu;
     const bool capturing = (g_scene_state == SCENE_CAPTURING);
     const bool hd_tiles = g_hd_scale > 1 && g_hd_tiles_enabled && g_hd_tile_count > 0;
-    if (g_dump_enabled || capturing || hd_tiles) {
+    if (g_dump_enabled || capturing || hd_tiles || g_gpu_on) {   /* passo 14b: g_gpu_on */
         const unsigned count = cgb ? 8u : 2u;
         for (unsigned p = 0; p < count; ++p) {
             line_palette_colors(ppu, cgb, compat, false, (uint8_t)p, st->bgp, bg_cols[p]);
@@ -733,6 +773,27 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                                 p ? st->obp1 : st->obp0, obj_cols[p]);
             obj_hash[p] = palette_hash(obj_cols[p]);
         }
+    }
+
+    if (g_gpu_on) {   /* passo 14b: o que esta linha usou */
+        g_gpu_last_line = y;   /* passo 14b-2a */
+        g_gpu_vram_ptr = ctx->vram;   /* passo 14b-2 */
+        uint8_t* l = g_gpu.line[y];
+        l[0] = st->lcdc;
+        l[1] = st->scx;
+        l[2] = st->scy;
+        l[3] = st->wx;
+        l[4] = st->window_line;
+        l[5] = (st->flags & PPU_NATIVE_LINE_WINDOW) ? 1u : 0u;
+        l[6] = ppu->opri;
+        l[7] = 0;
+        for (unsigned p = 0; p < 8u; ++p) {
+            for (unsigned c = 0; c < 4u; ++c) {
+                g_gpu.pal[y][p * 4u + c] = cgb ? rgb(bg_cols[p][c]) : 0xFF000000u;
+                g_gpu.pal[y][32u + p * 4u + c] = cgb ? rgb(obj_cols[p][c]) : 0xFF000000u;
+            }
+        }
+        memcpy(g_gpu.oam[y], ctx->oam, 160);
     }
 
     const bool bg_on = cgb || (st->lcdc & LCDC_BG_ENABLE) != 0;
@@ -995,6 +1056,12 @@ static uint16_t hd_context_from_ram_raw(const GBContext* ctx) {
 
 static void begin_frame(const GBContext* ctx, uint8_t first_line) {
     g_frame_open = true;
+    if (g_gpu_on && ctx->vram) {   /* passo 14b-2: VRAM do início do quadro + registro vazio */
+        memcpy(g_gpu.vram, ctx->vram, sizeof(g_gpu.vram));
+        g_gpu.log_count = 0;
+        g_gpu.log_overflow = false;
+        g_gpu_vram_ptr = ctx->vram;
+    }
     const uint16_t hd_ctx = hd_context_from_ram(ctx);
     if (hd_ctx != g_hd_ctx) {
         g_hd_ctx = hd_ctx;
@@ -1105,6 +1172,8 @@ void ppu_native_end_line(GBPPU* ppu, const GBContext* ctx) {
     }
 }
 
+static void gpu_hd_fill_slots(void);   /* passo 14b-3 */
+
 void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
     if (g_mode == PPU_RENDERER_EMULATED || !ppu) {
         return;
@@ -1155,6 +1224,32 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
     if (g_scene_state == SCENE_CAPTURING) {
         g_scene_state = (g_frame_open && g_hd_frame_full) ? SCENE_READY : SCENE_REQUESTED;
     }
+    if (g_gpu_on && g_frame_open && g_hd_frame_full && ctx && ctx->vram) {   /* passo 14b */
+        /* passo 14b-2: g_gpu.vram já é a do início do quadro (begin_frame) */
+        memcpy(g_gpu.cpu, g_frame, sizeof(g_gpu.cpu));
+        /* Passo 14b-3: qual tile HD vale para cada tile da VRAM e paleta. */
+        const bool hd = g_hd_scale > 1 && g_hd_tiles_enabled && g_hd_tile_count > 0;
+        g_gpu.serial++;
+        g_gpu.hd_on = hd;
+        g_gpu.hd_scale = g_hd_scale;
+        g_gpu.cpu_hd = (g_hd_scale > 1) ? g_hd : NULL;
+        if (hd) {
+            gpu_hd_fill_slots();
+        }
+        g_gpu.cgb = is_cgb(ctx);
+        g_gpu.vram_changed_mid_frame = g_gpu_mid;
+        g_gpu.mid_writes = g_gpu_mid_writes;   /* passo 14b-2a */
+        g_gpu.mid_tile_writes = g_gpu_mid_tile;
+        g_gpu.mid_map_writes = g_gpu_mid_map;
+        uint16_t lines = 0;
+        for (int i = 0; i <= GB_SCREEN_HEIGHT; ++i) lines = (uint16_t)(lines + g_gpu_mid_line_seen[i]);
+        g_gpu.mid_lines = lines;
+        g_gpu.mid_first_line = (uint8_t)(g_gpu_mid_first < 0 ? 0 : g_gpu_mid_first);
+        g_gpu.mid_last_line = (uint8_t)(g_gpu_mid_last < 0 ? 0 : g_gpu_mid_last);
+        g_gpu_ready = true;
+    }
+    gpu_mid_reset();   /* passo 14b-2a (inclui g_gpu_mid = false) */
+    g_gpu_last_line = -1;
     g_frame_open = false;
 
     /* Publica o centro no framebuffer normal e no meio do widescreen.
@@ -1167,6 +1262,157 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
                    GB_SCREEN_WIDTH * sizeof(uint32_t));
         }
     }
+}
+
+/* Passo 14b-3: tile HD de cada tile da VRAM para a GPU. A busca é a mesma
+ * do desenho (hd_resolve com o hash do tile), feita sobre a VRAM do início do
+ * quadro; os tiles escritos no meio do quadro ganham uma linha do tempo
+ * (hd_tl), refeita a partir do registro de escritas. */
+static uint64_t g_gpu_slot_hash[2u * NATIVE_TILES];
+static uint32_t g_gpu_slot_gen[2u * NATIVE_TILES];
+static bool g_gpu_slot_valid[2u * NATIVE_TILES];
+static uint16_t g_gpu_slot_cache[2u * NATIVE_TILES][16];
+static uint8_t g_gpu_tl_tile[0x3000];          /* cópia de trabalho dos tiles */
+static uint16_t g_gpu_tl_pending[2u * NATIVE_TILES];   /* line_plus1 + 1 da troca pendente, 0 = nenhuma */
+static uint16_t g_gpu_tl_gi[PPU_NATIVE_GPU_TL_MAX];
+static uint16_t g_gpu_tl_tmp[PPU_NATIVE_GPU_TL_MAX][17];
+
+static inline uint64_t gpu_tile_hash(const uint8_t* src) {
+    uint64_t h = 1469598103934665603ull;          /* FNV-1a 64, como decode_tile */
+    for (unsigned i = 0; i < 16u; ++i) {
+        h ^= src[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+static void gpu_slots_for(unsigned gi, const uint8_t* src, uint16_t out[16]) {
+    const uint64_t h = gpu_tile_hash(src);
+    if (!g_gpu_slot_valid[gi] || g_gpu_slot_hash[gi] != h || g_gpu_slot_gen[gi] != g_hd_generation) {
+        for (unsigned k = 0; k < 2u; ++k) {
+            for (uint8_t pal = 0; pal < 8u; ++pal) {
+                const HdTile* t = hd_resolve(k ? 'o' : 'b', h, pal);
+                g_gpu_slot_cache[gi][k * 8u + pal] = t ? (uint16_t)((t - g_hd_tiles) + 1) : 0u;
+            }
+        }
+        g_gpu_slot_hash[gi] = h;
+        g_gpu_slot_gen[gi] = g_hd_generation;
+        g_gpu_slot_valid[gi] = true;
+    }
+    memcpy(out, g_gpu_slot_cache[gi], 16u * sizeof(uint16_t));
+}
+
+static inline const uint8_t* gpu_start_tile(unsigned gi) {
+    return g_gpu.vram + (gi / NATIVE_TILES) * BANK1_OFFSET + (gi % NATIVE_TILES) * 16u;
+}
+
+static void gpu_tl_emit(unsigned gi, unsigned* n) {
+    if (*n >= PPU_NATIVE_GPU_TL_MAX) {
+        g_gpu.hd_tl_overflow = true;
+        return;
+    }
+    uint16_t* e = g_gpu_tl_tmp[*n];
+    e[0] = (uint16_t)(g_gpu_tl_pending[gi] - 1u);
+    const unsigned w = (gi / NATIVE_TILES) * TILE_DATA_BYTES + (gi % NATIVE_TILES) * 16u;
+    gpu_slots_for(gi, &g_gpu_tl_tile[w], e + 1);
+    g_gpu_tl_gi[*n] = (uint16_t)gi;
+    (*n)++;
+}
+
+static void gpu_hd_fill_slots(void) {
+    uint16_t s[16];
+    for (unsigned gi = 0; gi < 2u * NATIVE_TILES; ++gi) {
+        gpu_slots_for(gi, gpu_start_tile(gi), s);
+        for (unsigned c = 0; c < 16u; ++c) g_gpu.hd_slot[c][gi] = s[c];
+    }
+    /* linha do tempo dos tiles escritos no meio do quadro */
+    memset(g_gpu.hd_tl_dir, 0, sizeof(g_gpu.hd_tl_dir));
+    g_gpu.hd_tl_count = 0;
+    g_gpu.hd_tl_overflow = false;
+    bool any = false;
+    for (uint32_t i = 0; i < g_gpu.log_count; ++i) {
+        if ((g_gpu.log[i].addr & 0x1FFFu) < TILE_DATA_BYTES) { any = true; break; }
+    }
+    if (!any) return;
+    memcpy(g_gpu_tl_tile, g_gpu.vram, TILE_DATA_BYTES);
+    memcpy(g_gpu_tl_tile + TILE_DATA_BYTES, g_gpu.vram + BANK1_OFFSET, TILE_DATA_BYTES);
+    memset(g_gpu_tl_pending, 0, sizeof(g_gpu_tl_pending));
+    unsigned n = 0;
+    for (uint32_t i = 0; i < g_gpu.log_count; ++i) {
+        const PPUNativeGpuWrite* w = &g_gpu.log[i];
+        const unsigned bank = (w->addr & 0x3FFFu) >= BANK1_OFFSET ? 1u : 0u;
+        const unsigned off = w->addr & 0x1FFFu;
+        if (off >= TILE_DATA_BYTES) continue;
+        const unsigned gi = bank * NATIVE_TILES + off / 16u;
+        /* a linha L vê as escritas com line_plus1 <= L: troca nova quando a linha muda */
+        const uint16_t mark = (uint16_t)(w->line_plus1 + 1u);
+        if (g_gpu_tl_pending[gi] && g_gpu_tl_pending[gi] != mark) {
+            gpu_tl_emit(gi, &n);
+        }
+        g_gpu_tl_tile[bank * TILE_DATA_BYTES + off] = w->value;
+        g_gpu_tl_pending[gi] = mark;
+    }
+    for (unsigned gi = 0; gi < 2u * NATIVE_TILES; ++gi) {
+        if (g_gpu_tl_pending[gi]) gpu_tl_emit(gi, &n);
+    }
+    /* agrupa por tile, mantendo a ordem das linhas */
+    uint16_t count[2u * NATIVE_TILES];
+    memset(count, 0, sizeof(count));
+    for (unsigned k = 0; k < n; ++k) count[g_gpu_tl_gi[k]]++;
+    unsigned start = 0;
+    for (unsigned gi = 0; gi < 2u * NATIVE_TILES; ++gi) {
+        if (!count[gi]) continue;
+        g_gpu.hd_tl_dir[gi][0] = (uint16_t)(start + 1u);
+        g_gpu.hd_tl_dir[gi][1] = count[gi];
+        start += count[gi];
+        count[gi] = 0;
+    }
+    for (unsigned k = 0; k < n; ++k) {
+        const unsigned gi = g_gpu_tl_gi[k];
+        const unsigned pos = g_gpu.hd_tl_dir[gi][0] - 1u + count[gi]++;
+        memcpy(g_gpu.hd_tl[pos], g_gpu_tl_tmp[k], sizeof(g_gpu_tl_tmp[k]));
+    }
+    g_gpu.hd_tl_count = n;
+}
+
+/* Passo 14b-3 */
+uint32_t ppu_native_hd_pack_generation(void) {
+    return g_hd_pack_gen;
+}
+
+uint32_t ppu_native_hd_table_capacity(void) {
+    return HD_TABLE_CAP;
+}
+
+bool ppu_native_hd_table_entry(uint32_t i, int* size, const uint32_t** px, const uint32_t** ref) {
+    if (i >= HD_TABLE_CAP || g_hd_tiles[i].key == 0 || !g_hd_tiles[i].px) {
+        return false;
+    }
+    const HdTile* t = &g_hd_tiles[i];
+    if (size) *size = t->size;
+    if (px) *px = t->px;
+    if (ref) *ref = t->has_ref ? t->ref : NULL;
+    return true;
+}
+
+/* Passo 14b */
+void ppu_native_gpu_capture(bool enabled) {
+    g_gpu_on = enabled;
+    g_gpu_ready = false;
+    gpu_mid_reset();
+    g_gpu_last_line = -1;
+}
+
+bool ppu_native_gpu_capture_enabled(void) {
+    return g_gpu_on;
+}
+
+const PPUNativeGpuFrame* ppu_native_gpu_take_frame(void) {
+    if (!g_gpu_ready) {
+        return NULL;
+    }
+    g_gpu_ready = false;
+    return &g_gpu;
 }
 
 const PPUNativeCompareStats* ppu_native_compare_stats(void) {
@@ -1325,6 +1571,7 @@ bool ppu_native_hd_add_tile_ex(char kind, uint64_t tile_hash, uint16_t context, 
         t->ref[c] = ref_palette ? ref_palette[c] : 0u;
     }
     g_hd_generation++;
+    g_hd_pack_gen++;   /* passo 14b-3 */
     return true;
 }
 
@@ -1336,6 +1583,7 @@ void ppu_native_hd_clear_tiles(void) {
     g_hd_tile_count = 0;
     g_hd_variant_count = 0;
     g_hd_generation++;
+    g_hd_pack_gen++;   /* passo 14b-3 */
 }
 
 uint32_t ppu_native_hd_tile_count(void) {

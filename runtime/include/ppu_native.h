@@ -204,6 +204,75 @@ const PPUNativeScene* ppu_native_take_scene(void);
 bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
                             const uint32_t* argb, const uint32_t* ref_palette);
 
+/* ----------------------------------------------------------------------------
+ * Passo 14b: entrada para a GPU montar o centro (160x144) e conferir com a CPU
+ *
+ * Com a captura ligada, cada linha guarda o que o desenho dela usou
+ * (registradores, cores já convertidas, OAM) e o fim do quadro guarda a VRAM
+ * inteira e o quadro que a CPU desenhou. A VRAM é a do fim do quadro: se ela
+ * foi escrita enquanto as linhas eram desenhadas, o quadro é marcado e não dá
+ * para conferir (a GPU veria a VRAM nova em todas as linhas).
+ * -------------------------------------------------------------------------- */
+/* Passo 14b-2: escritas na VRAM durante as linhas. A GPU parte da VRAM do
+ * início do quadro e, para a linha y, aplica as escritas com line_plus1 <= y
+ * (line_plus1 = última linha já desenhada + 1; 0 = antes da linha 0). */
+#define PPU_NATIVE_GPU_LOG_MAX 8192
+#define PPU_NATIVE_GPU_TL_MAX 2048   /* passo 14b-3: trocas de tile HD no meio do quadro */
+typedef struct {
+    uint16_t addr;        /* 0x0000-0x3FFF: banco * 0x2000 + (endereço - 0x8000) */
+    uint8_t line_plus1;
+    uint8_t value;        /* valor escrito */
+} PPUNativeGpuWrite;
+
+typedef struct {
+    uint8_t vram[0x4000];                               /* 2 bancos de 8 KB, no INÍCIO do quadro (14b-2) */
+    PPUNativeGpuWrite log[PPU_NATIVE_GPU_LOG_MAX];       /* escritas durante as linhas, na ordem */
+    uint32_t log_count;
+    bool log_overflow;                                  /* passou de PPU_NATIVE_GPU_LOG_MAX */
+    uint8_t line[GB_SCREEN_HEIGHT][8];                  /* lcdc scx scy wx win_line win opri 0 */
+    uint32_t pal[GB_SCREEN_HEIGHT][64];                 /* 0xAARRGGBB: 0-31 fundo, 32-63 sprites */
+    uint8_t oam[GB_SCREEN_HEIGHT][160];                 /* OAM como cada linha viu */
+    uint32_t cpu[GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT];   /* quadro da CPU (centro) */
+    bool cgb;                                           /* a GPU só monta CGB por enquanto */
+    bool vram_changed_mid_frame;
+    /* Passo 14b-2a: diagnóstico das escritas na VRAM durante as linhas. A
+     * linha é a última já desenhada quando a escrita aconteceu (as linhas até
+     * ela usaram o valor antigo). */
+    uint32_t mid_writes;          /* total */
+    uint32_t mid_tile_writes;     /* 0x8000-0x97FF (desenho dos tiles) */
+    uint32_t mid_map_writes;      /* 0x9800-0x9FFF (mapas e atributos) */
+    uint16_t mid_lines;           /* em quantas linhas diferentes */
+    uint8_t mid_first_line, mid_last_line;
+    /* Passo 14b-3: tiles HD. hd_slot[tipo * 8 + paleta][banco * 384 + tile] =
+     * entrada da tabela de tiles HD + 1 (0 = sem HD) para o desenho do tile no
+     * início do quadro (fase+paleta, paleta, fase, genérico). cpu_hd aponta
+     * para o centro HD que a CPU desenhou (160*hd_scale x 144*hd_scale), válido
+     * até o próximo quadro. */
+    uint32_t serial;              /* muda a cada quadro publicado */
+    bool hd_on;
+    int hd_scale;
+    const uint32_t* cpu_hd;
+    uint16_t hd_slot[16][768];
+    /* Tiles redesenhados no meio do quadro (animações): a partir da linha
+     * hd_tl[i][0] - 1 o tile passa a usar hd_tl[i][1 + tipo * 8 + paleta].
+     * hd_tl_dir[tile] = (início + 1, quantidade) em hd_tl, na ordem das linhas. */
+    uint16_t hd_tl_dir[768][2];
+    uint16_t hd_tl[PPU_NATIVE_GPU_TL_MAX][17];
+    uint32_t hd_tl_count;
+    bool hd_tl_overflow;
+} PPUNativeGpuFrame;
+
+/* Passo 14b-3: tabela de tiles HD carregados, para a GPU montar o atlas. */
+uint32_t ppu_native_hd_pack_generation(void);   /* muda quando entra ou sai tile HD */
+uint32_t ppu_native_hd_table_capacity(void);
+/* Entrada i da tabela: false se vazia. ref = NULL sem paleta de referência. */
+bool ppu_native_hd_table_entry(uint32_t i, int* size, const uint32_t** px, const uint32_t** ref);
+
+void ppu_native_gpu_capture(bool enabled);
+bool ppu_native_gpu_capture_enabled(void);
+/* Devolve o quadro pronto uma vez (NULL se não houver). */
+const PPUNativeGpuFrame* ppu_native_gpu_take_frame(void);
+
 /* Passo 11a: tiles HD por contexto e paleta.
  *
  * O mesmo desenho de tile é reaproveitado em fases diferentes e com paletas

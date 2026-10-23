@@ -46,6 +46,7 @@
 #include "backends/imgui_impl_sdlrenderer2.h"
 #include "backends/imgui_impl_opengl3.h"   /* passo 14a */
 #include "video_gl.h"                       /* passo 14a */
+#include "gpu_ppu.h"                        /* passo 14b */
 
 
 namespace fs = std::filesystem;
@@ -184,6 +185,162 @@ static void vid_present(void) {
 }
 
 static VidTex* g_texture = NULL;
+
+/* Passo 14b-1: o centro montado pela GPU, conferido com o da CPU. */
+struct GpuCompareStats {
+    uint64_t compared = 0, equal = 0, skipped_mid = 0, skipped_mode = 0;
+    uint64_t skipped_overflow = 0;   /* passo 14b-2: registro de escritas cheio */
+    /* Passo 14b-2a: quadros com VRAM escrita no meio, conferidos mesmo assim */
+    uint64_t mid_compared = 0, mid_equal = 0;
+    uint64_t mid_writes = 0, mid_tile = 0, mid_map = 0, mid_lines = 0;
+    uint64_t mid_bad_tile_frames = 0, mid_bad_map_frames = 0;   /* diferentes: só tiles / só mapa */
+    int last_mid_first = -1, last_mid_last = -1;
+    uint32_t last_mid_diff = 0;
+    int last_mid_x = -1, last_mid_y = -1;
+    uint32_t last_diff = 0;
+    int first_x = -1, first_y = -1;
+    uint32_t first_cpu = 0, first_gpu = 0;
+    double ms_total = 0.0;
+    /* Passo 14b-3: centro em HD (quando o Internal Resolution passa de 1x) */
+    uint64_t hd_compared = 0, hd_equal = 0, hd_with_tiles = 0;
+    uint64_t hd_mid_compared = 0, hd_mid_equal = 0;   /* tiles escritos no meio do quadro */
+    uint32_t hd_last_diff = 0;
+    int hd_scale = 0, hd_x = -1, hd_y = -1;
+    uint32_t hd_cpu = 0, hd_gpu = 0;
+    double hd_ms_total = 0.0;
+};
+static bool g_gpu_compare = false;
+static GpuCompareStats g_gpu_stats;
+static std::string g_gpu_error;
+static std::vector<uint32_t> g_gpu_read;
+static std::vector<uint32_t> g_gpu_read_hd;   /* passo 14b-3 */
+
+/* Passo 14b-3: o centro em HD da GPU contra o da CPU. Quadros com tile
+ * redesenhado no meio (animações) contam à parte: a GPU troca o tile HD pela
+ * linha do tempo que o ppu_native monta (hd_tl), e é bom ver isso separado. */
+static void gpu_compare_frame_hd(const PPUNativeGpuFrame* fr) {
+    if (fr->hd_scale < 2 || !fr->cpu_hd) return;
+    const int n = fr->hd_scale;
+    const int w = GB_SCREEN_WIDTH * n, h = GB_SCREEN_HEIGHT * n;
+    const uint64_t t0 = SDL_GetPerformanceCounter();
+    g_gpu_read_hd.resize((size_t)w * h);
+    int got = 0;
+    if (!gpu_ppu_compose_hd(fr) || !gpu_ppu_read_hd(g_gpu_read_hd.data(), &got) || got != n) {
+        g_gpu_error = "a GPU nao conseguiu montar o quadro em HD";
+        return;
+    }
+    GpuCompareStats& st = g_gpu_stats;
+    st.hd_ms_total += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
+                      (double)SDL_GetPerformanceFrequency();
+    uint32_t diff = 0;
+    int fx = -1, fy = -1;
+    for (int i = 0; i < w * h; ++i) {
+        if (((g_gpu_read_hd[(size_t)i] ^ fr->cpu_hd[i]) & 0x00FFFFFFu) != 0) {
+            if (!diff) { fx = i % w; fy = i / w; }
+            diff++;
+        }
+    }
+    st.hd_scale = n;
+    const bool mid_tiles = fr->vram_changed_mid_frame && fr->mid_tile_writes > 0;
+    if (mid_tiles) {
+        st.hd_mid_compared++;
+        if (!diff) st.hd_mid_equal++;
+    } else {
+        st.hd_compared++;
+        if (fr->hd_on) st.hd_with_tiles++;
+        if (!diff) st.hd_equal++;
+    }
+    if (!diff) return;
+    st.hd_last_diff = diff;
+    st.hd_x = fx;
+    st.hd_y = fy;
+    st.hd_cpu = fr->cpu_hd[(size_t)fy * w + fx];
+    st.hd_gpu = g_gpu_read_hd[(size_t)fy * w + fx];
+    const uint64_t bad = (st.hd_compared - st.hd_equal) + (st.hd_mid_compared - st.hd_mid_equal);
+    if (bad <= 20u) {
+        fprintf(stderr, "[GPU-HD] %ux: %u pontos diferentes, primeiro (%d,%d) cpu %08X gpu %08X%s\n",
+                n, diff, fx, fy, st.hd_cpu, st.hd_gpu,
+                mid_tiles ? " (tile escrito no meio do quadro)" : "");
+    }
+}
+
+static void gpu_compare_frame_1x(const PPUNativeGpuFrame* fr);
+
+static void gpu_compare_frame(void) {
+    const PPUNativeGpuFrame* fr = ppu_native_gpu_take_frame();
+    if (!fr) return;
+    if (!fr->cgb) { g_gpu_stats.skipped_mode++; return; }
+    if (fr->log_overflow) { g_gpu_stats.skipped_overflow++; return; }   /* passo 14b-2 */
+    gpu_compare_frame_1x(fr);
+    gpu_compare_frame_hd(fr);   /* passo 14b-3 */
+}
+
+static void gpu_compare_frame_1x(const PPUNativeGpuFrame* fr) {
+    const bool mid = fr->vram_changed_mid_frame;
+    if (mid) {   /* passo 14b-2a: confere à parte, para ver se a escrita muda algo na tela */
+        g_gpu_stats.skipped_mid++;
+        g_gpu_stats.mid_writes += fr->mid_writes;
+        g_gpu_stats.mid_tile += fr->mid_tile_writes;
+        g_gpu_stats.mid_map += fr->mid_map_writes;
+        g_gpu_stats.mid_lines += fr->mid_lines;
+        g_gpu_stats.last_mid_first = fr->mid_first_line;
+        g_gpu_stats.last_mid_last = fr->mid_last_line;
+    }
+    const uint64_t t0 = SDL_GetPerformanceCounter();
+    g_gpu_read.resize((size_t)GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT);
+    if (!gpu_ppu_compose(fr) || !gpu_ppu_read(g_gpu_read.data())) {
+        g_gpu_error = "a GPU nao conseguiu montar o quadro";
+        return;
+    }
+    g_gpu_stats.ms_total += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
+                            (double)SDL_GetPerformanceFrequency();
+    uint32_t diff = 0;
+    int fx = -1, fy = -1;
+    for (int i = 0; i < GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT; ++i) {
+        if (((g_gpu_read[(size_t)i] ^ fr->cpu[i]) & 0x00FFFFFFu) != 0) {
+            if (!diff) { fx = i % GB_SCREEN_WIDTH; fy = i / GB_SCREEN_WIDTH; }
+            diff++;
+        }
+    }
+    if (mid) {   /* passo 14b-2a */
+        g_gpu_stats.mid_compared++;
+        if (!diff) {
+            g_gpu_stats.mid_equal++;
+        } else {
+            if (fr->mid_map_writes == 0) g_gpu_stats.mid_bad_tile_frames++;
+            if (fr->mid_tile_writes == 0) g_gpu_stats.mid_bad_map_frames++;
+            g_gpu_stats.last_mid_diff = diff;
+            g_gpu_stats.last_mid_x = fx;
+            g_gpu_stats.last_mid_y = fy;
+            const uint64_t badm = g_gpu_stats.mid_compared - g_gpu_stats.mid_equal;
+            if (badm <= 20u) {
+                fprintf(stderr, "[GPU-MID] %u pontos diferentes, primeiro (%d,%d) | escritas %u "
+                        "(tiles %u, mapa %u) em %u linhas, da %u a %u\n",
+                        diff, fx, fy, fr->mid_writes, fr->mid_tile_writes, fr->mid_map_writes,
+                        fr->mid_lines, fr->mid_first_line, fr->mid_last_line);
+            }
+        }
+        return;
+    }
+    g_gpu_stats.compared++;
+    g_gpu_stats.last_diff = diff;
+    if (!diff) {
+        g_gpu_stats.equal++;
+        return;
+    }
+    g_gpu_stats.first_x = fx;
+    g_gpu_stats.first_y = fy;
+    g_gpu_stats.first_cpu = fr->cpu[fy * GB_SCREEN_WIDTH + fx];
+    g_gpu_stats.first_gpu = g_gpu_read[(size_t)(fy * GB_SCREEN_WIDTH + fx)];
+    const uint64_t bad = g_gpu_stats.compared - g_gpu_stats.equal;
+    if (bad <= 20u) {
+        const uint8_t* l = fr->line[fy];
+        fprintf(stderr, "[GPU-CMP] %u pontos diferentes, primeiro (%d,%d) cpu %08X gpu %08X | "
+                "lcdc %02X scx %u scy %u wx %u win_line %u janela %u\n",
+                diff, fx, fy, g_gpu_stats.first_cpu, g_gpu_stats.first_gpu,
+                l[0], l[1], l[2], l[3], l[4], l[5]);
+    }
+}
 
 /* Passo 14p: arrastar o dedo (ou o mouse) para cima/baixo sobre a lista de
  * configurações rola a lista, como no celular, sem precisar pegar a barra.
@@ -4241,6 +4398,86 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     ppu_native_reset_tile_dump();
                 }
             }
+            /* Passo 14b-1: centro pela GPU x CPU. */
+            if (ImGui::TreeNode("Comparar GPU (14b)")) {
+                if (!g_use_gl) {
+                    ImGui::TextWrapped("Precisa do Video OpenGL (Graphics > Video).");
+                } else {
+                    bool on = g_gpu_compare;
+                    if (ImGui::Checkbox("Montar o centro tambem na GPU e comparar", &on)) {
+                        char err[256] = "";
+                        if (on && !gpu_ppu_init(err, sizeof(err))) {
+                            g_gpu_error = err;
+                            on = false;
+                        }
+                        g_gpu_compare = on;
+                        ppu_native_gpu_capture(on);
+                    }
+                    if (!g_gpu_error.empty()) {
+                        ImGui::TextWrapped("Erro: %s", g_gpu_error.c_str());
+                    }
+                    const GpuCompareStats& st = g_gpu_stats;
+                    ImGui::Text("Conferidos: %llu  iguais: %llu  com diferenca: %llu",
+                                (unsigned long long)st.compared, (unsigned long long)st.equal,
+                                (unsigned long long)(st.compared - st.equal));
+                    ImGui::Text("Sem escrita no meio: conferidos acima. Com escrita no meio: %llu (abaixo)",
+                                (unsigned long long)st.skipped_mid);
+                    ImGui::Text("Pulados: registro de escritas cheio %llu, nao CGB %llu",
+                                (unsigned long long)st.skipped_overflow, (unsigned long long)st.skipped_mode);
+                    if (st.skipped_mid > 0) {   /* passo 14b-2a: diagnóstico */
+                        const double n = (double)st.skipped_mid;
+                        ImGui::Text("  Conferidos mesmo assim: %llu, iguais: %llu, diferentes: %llu",
+                                    (unsigned long long)st.mid_compared, (unsigned long long)st.mid_equal,
+                                    (unsigned long long)(st.mid_compared - st.mid_equal));
+                        ImGui::Text("  Diferentes so com escrita em tiles: %llu, so no mapa: %llu",
+                                    (unsigned long long)st.mid_bad_tile_frames,
+                                    (unsigned long long)st.mid_bad_map_frames);
+                        ImGui::Text("  Por quadro: %.1f escritas (tiles %.1f, mapa %.1f) em %.1f linhas",
+                                    (double)st.mid_writes / n, (double)st.mid_tile / n,
+                                    (double)st.mid_map / n, (double)st.mid_lines / n);
+                        ImGui::Text("  Ultimo: linhas %d a %d", st.last_mid_first, st.last_mid_last);
+                        if (st.last_mid_x >= 0) {
+                            ImGui::Text("  Ultima diferenca: %u pontos, primeiro (%d,%d)",
+                                        st.last_mid_diff, st.last_mid_x, st.last_mid_y);
+                        }
+                    }
+                    if (st.compared > 0) {
+                        ImGui::Text("GPU (montar + ler de volta): %.2f ms por quadro",
+                                    st.ms_total / (double)st.compared);
+                    }
+                    if (st.first_x >= 0) {
+                        ImGui::TextWrapped("Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                                           st.last_diff, st.first_x, st.first_y, st.first_cpu, st.first_gpu);
+                    }
+                    /* Passo 14b-3: HD */
+                    ImGui::Separator();
+                    if (st.hd_compared + st.hd_mid_compared == 0) {
+                        ImGui::TextWrapped("HD: so confere com Internal Resolution acima de 1x.");
+                    } else {
+                        ImGui::Text("HD %dx: conferidos %llu  iguais: %llu  com diferenca: %llu",
+                                    st.hd_scale, (unsigned long long)st.hd_compared,
+                                    (unsigned long long)st.hd_equal,
+                                    (unsigned long long)(st.hd_compared - st.hd_equal));
+                        ImGui::Text("  Com tiles HD na tela: %llu", (unsigned long long)st.hd_with_tiles);
+                        ImGui::Text("  Tile escrito no meio: %llu, iguais: %llu, diferentes: %llu",
+                                    (unsigned long long)st.hd_mid_compared,
+                                    (unsigned long long)st.hd_mid_equal,
+                                    (unsigned long long)(st.hd_mid_compared - st.hd_mid_equal));
+                        ImGui::Text("  GPU HD (montar + ler de volta): %.2f ms por quadro",
+                                    st.hd_ms_total / (double)(st.hd_compared + st.hd_mid_compared));
+                        if (st.hd_x >= 0) {
+                            ImGui::TextWrapped("  Ultima diferenca HD: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                                               st.hd_last_diff, st.hd_x, st.hd_y, st.hd_cpu, st.hd_gpu);
+                        }
+                    }
+                    ImGui::TextWrapped("Atlas: %s", gpu_ppu_atlas_info());
+                    if (ImGui::Button("Zerar contagem")) {
+                        g_gpu_stats = GpuCompareStats();
+                        g_gpu_error.clear();
+                    }
+                }
+                ImGui::TreePop();
+            }
             if (ImGui::Button("Capturar cena (F9)") && !hd_pack_io_sprite_rec_active()) {
                 ppu_native_request_scene_capture();
             }
@@ -5090,6 +5327,7 @@ void gb_platform_shutdown(void) {
         g_renderer = NULL;
     }
     if (g_use_gl) {   /* passo 14a */
+        gpu_ppu_shutdown();   /* passo 14b */
         vgl_shutdown();
         g_use_gl = false;
     }
@@ -6277,6 +6515,9 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
             ppu_native_request_scene_capture();
             g_scene_for_recorder = true;
         }
+    }
+    if (g_gpu_compare && g_use_gl) {   /* passo 14b-1 */
+        gpu_compare_frame();
     }
     //render_frame_internal(framebuffer, true, false);
     // Utilize o framebuffer gerado nativamente no VBlank
