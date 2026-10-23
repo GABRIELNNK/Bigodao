@@ -243,6 +243,7 @@ static std::string g_gpu_screen_error;
 static int g_3d_mode = 0;          /* 0 = desligado, 1 = camadas (pref display.mode3d) */
 static int g_3d_tilt = 15;         /* graus (pref display.tilt3d) */
 static int g_3d_depth = 100;       /* % (pref display.depth3d) */
+static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
 static bool g_3d_valid = false;    /* as camadas da GPU têm o quadro atual */
 static int g_3d_w = 0, g_3d_h = 0;
@@ -2146,6 +2147,11 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_tilt = (int)(v < 0 ? 0 : (v > 35 ? 35 : v));
                     continue;
                 }
+                if (strcmp(key, "display.yaw3d") == 0) {   /* passo 3D-3e */
+                    long v = strtol(value, NULL, 10);
+                    g_3d_yaw = (int)(v < -35 ? -35 : (v > 35 ? 35 : v));
+                    continue;
+                }
                 if (strcmp(key, "display.depth3d") == 0) {
                     long v = strtol(value, NULL, 10);
                     g_3d_depth = (int)(v < 0 ? 0 : (v > 200 ? 200 : v));
@@ -2322,6 +2328,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.mode3d=%d\n", g_3d_mode);                /* passo 3D-1 */
     fprintf(file, "display.tilt3d=%d\n", g_3d_tilt);
     fprintf(file, "display.depth3d=%d\n", g_3d_depth);
+    fprintf(file, "display.yaw3d=%d\n", g_3d_yaw);
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
@@ -3086,6 +3093,7 @@ static void reset_runtime_display_defaults(void) {
     g_3d_mode = 0;                                    /* passo 3D-1 */
     g_3d_tilt = 15;
     g_3d_depth = 100;
+    g_3d_yaw = 0;
     g_gpu_screen_error.clear();
     g_renderer_reset_pending = true;
     update_render_filter();
@@ -4752,7 +4760,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             Gpu3DView v = {};
             vgl_rect_to_fb(&g_game_viewport, &v.vp_x, &v.vp_y, &v.vp_w, &v.vp_h);
             v.tilt_deg = (float)g_3d_tilt;
-            v.yaw_deg = 0.0f;
+            v.yaw_deg = (float)g_3d_yaw;
             v.depth = (float)g_3d_depth / 100.0f;
             v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
             drawn3d = gpu_ppu_draw_3d(&v);
@@ -5561,6 +5569,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (g_3d_mode == 1) {
                 if (ImGui::SliderInt("Inclinacao 3D (graus)", &g_3d_tilt, 0, 35)) save_runtime_preferences();
                 if (ImGui::SliderInt("Profundidade 3D (%)", &g_3d_depth, 0, 200)) save_runtime_preferences();
+                if (ImGui::SliderInt("Giro 3D (graus)", &g_3d_yaw, -35, 35)) save_runtime_preferences();
                 const char* why = g3d_blocker();
                 if (why) {
                     ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "3D parado: %s.", why);

@@ -117,6 +117,8 @@ const char* kBoxVertex =
     "out vec2 v_uv;\n"
     "out vec2 v_in;\n"      /* passo 3D-3b: um ponto para dentro do tile, em uv */
     "out float v_shade;\n"
+    "out float v_tint;\n"   /* 3D-3e: célula solta dentro da água (véu) */
+    "out vec2 v_wuv;\n"     /* cor da água para o véu */
     /* 0 vazio, 1 chão (bloco). 3D-3c: a água não é mais bloco (é volume à parte) */
     "int solid_at(int cx, int cy) {\n"
     "    vec2 c = u_off + vec2(float(cx) * 8.0 + 4.0, float(cy) * 8.0 + 4.0);\n"
@@ -141,7 +143,7 @@ const char* kBoxVertex =
      * entre as cópias */
     "    if (u_mode == 1) {\n"
     "        float x0 = u_off.x + float(cx) * 8.0, y0 = u_off.y + float(cy) * 8.0;\n"
-    "        v_in = vec2(0.0); v_shade = 0.9;\n"
+    "        v_in = vec2(0.0); v_shade = 0.9; v_tint = 0.0; v_wuv = vec2(0.0);\n"
     "        if (face != 0 || !band_at(x0 + 4.0, y0 + 4.0) || band_at(x0 + 4.0, y0 + 12.0)) { v_uv = vec2(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }\n"
     "        vec2 ab = ci == 0 ? vec2(0.0, 0.0) : (ci == 1 ? vec2(1.0, 0.0) : (ci == 2 ? vec2(1.0, 1.0) : vec2(0.0, 1.0)));\n"
     "        float z = mix(u_zf, u_zb, ab.y);\n"
@@ -152,22 +154,23 @@ const char* kBoxVertex =
     "        return;\n"
     "    }\n"
     "    ivec2 nd = face == 0 ? ivec2(0, -1) : (face == 1 ? ivec2(0, 1) : (face == 2 ? ivec2(-1, 0) : ivec2(1, 0)));\n"
-    "    v_uv = vec2(0.0); v_in = vec2(0.0); v_shade = 0.0;\n"
+    "    v_uv = vec2(0.0); v_in = vec2(0.0); v_shade = 0.0; v_tint = 0.0; v_wuv = vec2(0.0);\n"
     "    int me = solid_at(cx, cy);\n"
     "    if (me == 0 || solid_at(cx + nd.x, cy + nd.y) != 0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }\n"
     "    float x0 = u_off.x + float(cx) * 8.0, y0 = u_off.y + float(cy) * 8.0;\n"
     "    vec2 ab = ci == 0 ? vec2(0.0, 0.0) : (ci == 1 ? vec2(1.0, 0.0) : (ci == 2 ? vec2(1.0, 1.0) : vec2(0.0, 1.0)));\n"
     "    float z = mix(u_zf, u_zb, ab.y);\n"
-    /* a cor de cada lado: a partir da borda do tile, para dentro, o primeiro
-     * ponto que não é contorno escuro (no fragmento). Em cima da água (onda) a
-     * busca começa por baixo, para pegar a cor da água e não o céu. */
+    "    {\n"
+    "        ivec2 q = clamp(ivec2(int(x0 + 4.0), int(y0 + 4.0)), ivec2(0), textureSize(u_wp, 0) - 1);\n"
+    "        vec4 w = texelFetch(u_wp, q, 0);\n"
+    "        int fl = int(round(w.r * 255.0)), row = int(round(w.g * 255.0));\n"
+    "        if ((fl & 2) != 0) { v_tint = 1.0; v_wuv = vec2(x0 + 4.0, (fl & 4) != 0 ? y0 + 4.0 : float(row) + 0.5) / vec2(u_bw, 144.0); }\n"
+    "    }\n"
+    /* a cor de cada lado (3D-3e): a cor que mais aparece na linha/coluna do tile,
+     * da borda para dentro (8 pontos), sem os escuros do contorno (no fragmento) */
     "    vec2 pos; vec2 uvb; vec2 dir;\n"
     "    float xa = clamp(x0 + ab.x * 8.0, x0 + 0.5, x0 + 7.5), ya = clamp(y0 + ab.x * 8.0, y0 + 0.5, y0 + 7.5);\n"
-    "    if (face == 0) {\n"
-    "        pos = vec2(x0 + ab.x * 8.0, y0); v_shade = 1.0;\n"
-    "        if (me == 2) { uvb = vec2(xa, y0 + 7.5); dir = vec2(0.0, -1.0); }\n"
-    "        else { uvb = vec2(xa, y0 + 0.5); dir = vec2(0.0, 1.0); }\n"
-    "    }\n"
+    "    if (face == 0) { pos = vec2(x0 + ab.x * 8.0, y0); uvb = vec2(xa, y0 + 0.5); dir = vec2(0.0, 1.0); v_shade = 1.0; }\n"
     "    else if (face == 1) { pos = vec2(x0 + ab.x * 8.0, y0 + 8.0); uvb = vec2(xa, y0 + 7.5); dir = vec2(0.0, -1.0); v_shade = 0.55; }\n"
     "    else if (face == 2) { pos = vec2(x0, y0 + ab.x * 8.0); uvb = vec2(x0 + 0.5, ya); dir = vec2(1.0, 0.0); v_shade = 0.75; }\n"
     "    else { pos = vec2(x0 + 8.0, y0 + ab.x * 8.0); uvb = vec2(x0 + 7.5, ya); dir = vec2(-1.0, 0.0); v_shade = 0.75; }\n"
@@ -178,20 +181,29 @@ const char* kBoxVertex =
     "}\n";
 const char* kBoxFragment =
     "uniform sampler2D u_tex;\n"
+    "uniform float u_alpha;\n"
     "in vec2 v_uv;\n"
     "in vec2 v_in;\n"
     "in float v_shade;\n"
+    "in float v_tint;\n"
+    "in vec2 v_wuv;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
-    "    vec3 c = texture(u_tex, v_uv).rgb;\n"
-    "    for (int i = 1; i < 7; ++i) {\n"
-    "        c = texture(u_tex, v_uv + v_in * float(i)).rgb;\n"
-    "        if (max(c.r, max(c.g, c.b)) > 0.25) break;\n"
+    "    vec3 cs[8];\n"
+    "    for (int i = 0; i < 8; ++i) cs[i] = texture(u_tex, v_uv + v_in * float(i)).rgb;\n"
+    "    int best = -1, bn = 0;\n"
+    "    for (int i = 0; i < 8; ++i) {\n"
+    "        if (max(cs[i].r, max(cs[i].g, cs[i].b)) <= 0.25) continue;\n"
+    "        int n = 0;\n"
+    "        for (int j = 0; j < 8; ++j) { vec3 d = abs(cs[i] - cs[j]); if (d.r + d.g + d.b < 0.06) ++n; }\n"
+    "        if (n > bn) { bn = n; best = i; }\n"
     "    }\n"
-    "    o_color = vec4(c * v_shade, 1.0);\n"
+    "    vec3 c = (best >= 0 ? cs[best] : cs[1]) * v_shade;\n"
+    "    if (v_tint > 0.5) c = mix(c, texture(u_tex, v_wuv).rgb, u_alpha);\n"
+    "    o_color = vec4(c, 1.0);\n"
     "}\n";
 GLuint g_bprog = 0;
-GLint g_bloc_mode = -1;
+GLint g_bloc_mode = -1, g_bloc_alpha = -1;
 GLint g_bloc_mvp = -1, g_bloc_off = -1, g_bloc_bw = -1, g_bloc_dist = -1, g_bloc_zf = -1, g_bloc_zb = -1, g_bloc_cols = -1;
 /* imagem 3D fora da tela (com profundidade), do tamanho do retângulo do jogo */
 GLuint g_fbo_v = 0, g_out_v = 0, g_rb_v = 0;
@@ -201,8 +213,9 @@ const char* kView3DFragment =
     "uniform sampler2D u_tex;\n"
     "uniform sampler2D u_clsmap;\n"
     "uniform sampler2D u_wp;\n"   /* 3D-3c: água pré-calculada (1x): bandeiras e linha de origem */
+    "uniform sampler2D u_bgt;\n"  /* 3D-3e: só o fundo (cor da água para o véu) */
     "uniform float u_alpha;\n"
-    "uniform int u_layer;\n"   /* 0 longe, 1 fundo, 2 HUD, 3 sprites, 4 chão, 5 água, 6 porta, 7 sprites na frente do bloco (3D-3b), 8 superfície da água, 9 véu da água (3D-3c) */
+    "uniform int u_layer;\n"   /* 0 longe, 1 fundo, 2 HUD, 3 sprites, 4 chão, 5 água, 6 porta, 8 superfície da água, 9 véu da água (3D-3c) */
     "in vec2 v_uv;\n"
     "out vec4 o_color;\n"
     /* plano de cada ponto: -1 longe, 0 fundo, 1 água, 2 chão/porta, 3 HUD; o sprite
@@ -252,10 +265,7 @@ const char* kView3DFragment =
     "    }\n"
     "    int R = u_layer == 1 ? 0 : (u_layer == 5 ? 1 : (u_layer == 6 ? 2 : (u_layer == 4 ? 3 : -9)));\n"
     "    if (R < 0) {\n"   /* longe, sprites, HUD: só os próprios pontos */
-    "        if (u_layer == 3 || u_layer == 7) {\n"   /* 3D-3b: 3 sprite no meio do bloco, 7 sprite na frente do chão/água */
-    "            bool fr = under == 1 || under == 2;\n"
-    "            if (cls != 3 || fr != (u_layer == 7)) discard;\n"
-    "        } else if (cls != u_layer) discard;\n"
+    "        if (cls != u_layer) discard;\n"
     "    } else {\n"
     /* 3D-2d: planos fundo (0), água (1), chão/porta/escada (2). Cada um desenha
      * os seus pontos e, atrás dos pontos de planos da frente, continua a si mesmo:
@@ -278,7 +288,18 @@ const char* kView3DFragment =
     "            else discard;\n"
     "        }\n"
     "    }\n"
-    "    o_color = vec4(texture(u_tex, uv).rgb * shade, 1.0);\n"
+    "    vec3 oc = texture(u_tex, uv).rgb * shade;\n"
+    /* 3D-3e: véu da água em cada objeto dentro dela (sprites, blocos soltos, moedas) */
+    "    if (u_alpha > 0.0 && (u_layer == 3 || u_layer == 4 || u_layer == 6)) {\n"
+    "        ivec2 ws = textureSize(u_wp, 0);\n"
+    "        vec4 w = texelFetch(u_wp, clamp(ivec2(v_uv * vec2(ws)), ivec2(0), ws - 1), 0);\n"
+    "        int fl = int(round(w.r * 255.0)), row = int(round(w.g * 255.0));\n"
+    "        if ((fl & 2) != 0) {\n"
+    "            vec2 src = (fl & 4) != 0 ? v_uv : vec2(v_uv.x, (float(row) + 0.5) / float(ws.y));\n"
+    "            oc = mix(oc, texture(u_bgt, src).rgb, u_alpha);\n"
+    "        }\n"
+    "    }\n"
+    "    o_color = vec4(oc, 1.0);\n"
     "}\n";
 
 /* Passo 3D-3c: água pré-calculada, 1 ponto por ponto da tela (largura base x 144).
@@ -289,9 +310,16 @@ const char* kView3DFragment =
  * da água que dá a cor. */
 const char* kWaterPrepFragment =
     "uniform sampler2D u_clsmap;\n"
+    "uniform sampler2D u_col;\n"   /* 3D-3e: cores do fundo (só o fundo), para achar a crista das ondas */
     "uniform float u_bw;\n"
     "out vec4 o_color;\n"
     "ivec2 g_sz;\n"
+    "vec3 col(int x, int y) {\n"
+    "    ivec2 cs = textureSize(u_col, 0);\n"
+    "    ivec2 p = clamp(ivec2((vec2(float(x), float(y)) + 0.5) * vec2(cs) / vec2(u_bw, 144.0)), ivec2(0), cs - 1);\n"
+    "    return texelFetch(u_col, p, 0).rgb;\n"
+    "}\n"
+    "bool same(vec3 a, vec3 b) { vec3 d = abs(a - b); return d.r + d.g + d.b < 0.06; }\n"
     "int rk(int x, int y) {\n"
     "    ivec2 p = clamp(ivec2((vec2(float(x), float(y)) + 0.5) * vec2(g_sz) / vec2(u_bw, 144.0)), ivec2(0), g_sz - 1);\n"
     "    int code = int(round(texelFetch(u_clsmap, p, 0).r * 255.0));\n"
@@ -309,30 +337,46 @@ const char* kWaterPrepFragment =
     "    int x = int(gl_FragCoord.x), y = int(gl_FragCoord.y);\n"
     "    int r = rk(x, y);\n"
     "    int fl = 0, row = 255;\n"
+    /* 3D-3e: a faixa das ondas é achada pela cor: de cima da água para baixo, o
+     * primeiro ponto que não tem a cor do céu é a crista; faixa = 8 pontos a partir
+     * dela; pontos com a cor do céu dentro do bloco de água não são água */
     "    if (r == 1) {\n"
     "        int k = 1, q = 1;\n"
-    "        for (; k <= 16; ++k) {\n"
+    "        for (; k <= 64; ++k) {\n"
     "            if (y - k < 0) { q = -2; break; }\n"
     "            q = rk(x, y - k);\n"
     "            if (q != 1) break;\n"
     "        }\n"
-    "        if (k <= 16 && q != 2 && q != 3) { fl = 1; row = q == 0 ? y - k : 255; }\n"
-    "        else { fl = 4 | 2; row = y; }\n"
-    "    } else if (r == 2 || r == 3) {\n"
+    "        fl = 4 | 2; row = y;\n"
+    "        if (k <= 64 && q != 2 && q != 3) {\n"
+    "            if (q != 0) { if (k <= 8) { fl = 1; row = 255; } }\n"
+    "            else {\n"
+    "                int yr = y - k;\n"
+    "                vec3 S = col(x, yr);\n"
+    "                int ct = -1;\n"
+    "                for (int yy = yr + 1; yy <= y; ++yy) if (!same(col(x, yy), S)) { ct = yy; break; }\n"
+    "                if (ct < 0) { fl = 0; row = 255; }\n"
+    "                else if (y - ct < 8) { fl = 1; row = yr; }\n"
+    "            }\n"
+    "        }\n"
+    "    } else if (r == 2 || r == 3 || r == 4) {\n"   /* 3D-3d: o HUD também (água atrás dele) */
     "        int ya = -1;\n"
     "        for (int yy = y - 1; yy >= 0; --yy) {\n"
     "            int q = rk(x, yy);\n"
     "            if (q == 1) { ya = yy; break; }\n"
-    "            if (q != 2 && q != 3) break;\n"
+    "            if (q < 2) break;\n"
     "        }\n"
     "        if (ya >= 0) {\n"
     "            row = ya;\n"
+    "            bool below = false;\n"
     "            for (int yy = y + 1; yy < 144; ++yy) {\n"
     "                int q = rk(x, yy);\n"
-    "                if (q == 1) { row = yy; break; }\n"
-    "                if (q != 2 && q != 3) break;\n"
+    "                if (q == 1) { row = yy; below = true; break; }\n"
+    "                if (q < 2) break;\n"
     "            }\n"
-    "            fl = 8 | 2;\n"
+    /* 3D-3e: véu só no que está solto dentro da água (água em cima e embaixo); o
+     * chão do fundo da água e o HUD não */
+    "            fl = (r != 4 && below) ? (8 | 2) : 8;\n"
     "        }\n"
     "    }\n"
     "    o_color = vec4(float(fl) / 255.0, float(row) / 255.0, 0.0, 1.0);\n"
@@ -573,11 +617,13 @@ const char* kFragment =
     "}\n"
     /* 3D-2c/2d: no plano do chão, sem ser chão: porta ($48, $4B, $5B) e escada ($44, $45) */
     "bool door_block(int id) { return id == 0x48 || id == 0x4B || id == 0x5B || id == 0x44 || id == 0x45; }\n"
+    /* 3D-3d: moedas ($46, $47, $53 na água): objetos no plano da porta, não fundo nem água */
+    "bool coin_block(int id) { return id == 0x46 || id == 0x47 || id == 0x53; }\n"
     "bool water_block(int id) { return id >= 0x4A && id <= 0x5B && !ground_block(id) && !door_block(id); }\n"
     /* 3D-2b: tipo pelo bloco e pelo de baixo (as ondas ficam num bloco vazio logo acima da água) */
     "int kind_of(int id, int down) {\n"
     "    if (ground_block(id)) return 1;\n"
-    "    if (door_block(id)) return 3;\n"
+    "    if (door_block(id) || coin_block(id)) return 3;\n"
     "    if (water_block(id)) return 2;\n"
     /* bloco vazio sobre a porta (o alto dela) e sobre a água (as ondas) */
     "    if (id >= 0x60 && (down == 0x48 || down == 0x4B)) return 3;\n"   /* alto da porta (não da escada) */
@@ -1448,6 +1494,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         g_dloc_z = gl.GetUniformLocation(g_dprog, "u_z");
         g_dloc_layer = gl.GetUniformLocation(g_dprog, "u_layer");
         gl.Uniform1i(gl.GetUniformLocation(g_dprog, "u_wp"), 2);
+        gl.Uniform1i(gl.GetUniformLocation(g_dprog, "u_bgt"), 3);
         g_dloc_alpha = gl.GetUniformLocation(g_dprog, "u_alpha");
     }
     if (!g_bprog) {   /* passo 3D-3 */
@@ -1469,6 +1516,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         g_bloc_zb = gl.GetUniformLocation(g_bprog, "u_zb");
         g_bloc_cols = gl.GetUniformLocation(g_bprog, "u_cols");
         g_bloc_mode = gl.GetUniformLocation(g_bprog, "u_mode");
+        g_bloc_alpha = gl.GetUniformLocation(g_bprog, "u_alpha");
         gl.Uniform1i(gl.GetUniformLocation(g_bprog, "u_wp"), 2);
     }
     if (!g_wprog) {   /* passo 3D-3c */
@@ -1481,6 +1529,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         }
         gl.UseProgram(g_wprog);
         gl.Uniform1i(gl.GetUniformLocation(g_wprog, "u_clsmap"), 0);
+        gl.Uniform1i(gl.GetUniformLocation(g_wprog, "u_col"), 1);
         g_wloc_bw = gl.GetUniformLocation(g_wprog, "u_bw");
     }
     if (g_w_w != g_3d_bw) {
@@ -1499,6 +1548,8 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     gl.Disable(kDepthTest);
     gl.UseProgram(g_wprog);
     gl.Uniform1f(g_wloc_bw, (float)g_3d_bw);
+    gl.ActiveTexture(kTexture0 + 1);
+    gl.BindTexture(kTexture2D, g_3s.out[1]);
     gl.ActiveTexture(kTexture0);
     gl.BindTexture(kTexture2D, g_3s.out[2]);
     gl.BindVertexArray(g_vao);
@@ -1557,6 +1608,8 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     gl.BindTexture(kTexture2D, g_3s.out[2]);
     gl.ActiveTexture(kTexture0 + 2);
     gl.BindTexture(kTexture2D, g_out_w);
+    gl.ActiveTexture(kTexture0 + 3);
+    gl.BindTexture(kTexture2D, g_3s.out[1]);
     gl.BindVertexArray(g_vao);
 
     const float d = v->depth;
@@ -1578,7 +1631,14 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         gl.Uniform1i(g_dloc_layer, l.layer);
         gl.DrawArrays(kTriangleStrip, 0, 4);
     };
+    /* 3D-3e: sprites no meio do bloco (fatias de -t a +t), a água começa logo atrás
+     * deles (zl) e vai até o fundo; véu da água (30% da cor da água) em cada objeto
+     * dentro dela, entrando aos poucos até 10 graus (inclinação 0 = 2D) */
+    const float t = g_3d_level ? bd * 0.2f : 0.0f;
+    const float zl = g_3d_level ? -(t + 0.5f) : 0.0f;
+    const float alpha = g_3d_level ? 0.30f * std::min(1.0f, std::max(0.0f, v->tilt_deg / 10.0f)) : 0.0f;
     gl.UseProgram(g_dprog);
+    gl.Uniform1f(g_dloc_alpha, alpha);
     const L back[4] = {{0, 0, -0.8f * dist * d}, {1, 1, zf}, {5, 1, zw}, {6, 1, 0.0f}};
     for (const L& l : back) plane(l);
     /* lados dos blocos do chão */
@@ -1595,8 +1655,10 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         gl.Uniform1f(g_bloc_zb, -bd * 0.5f);
         gl.Uniform1i(g_bloc_cols, cols);
         gl.Uniform1i(g_bloc_mode, 0);
+        gl.Uniform1f(g_bloc_alpha, alpha);
         gl.DrawArraysInstanced(kTriangles, 0, 24, cols * rows);
-        /* 3D-3c: chão da superfície da água, da frente dos blocos até o fundo */
+        /* 3D-3c: chão da superfície da água, da frente da água até o fundo */
+        gl.Uniform1f(g_bloc_zf, zl);
         gl.Uniform1f(g_bloc_zb, zf);
         gl.Uniform1i(g_bloc_mode, 1);
         gl.DrawArraysInstanced(kTriangles, 0, 6, cols * rows);
@@ -1604,34 +1666,19 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     }
     plane({4, 1, bd * 0.5f});   /* frente do chão */
     if (g_3d_level) {   /* 3D-3c: superfície da água, cópias das ondas da frente até o fundo */
-        const float span = bd * 0.5f - zf;
+        const float span = zl - zf;
         int n = (int)std::ceil(span * std::sin(pitch) / 6.0f) + 1;   /* uma cópia a cada ~6 pontos na tela */
         n = std::max(1, std::min(n, 48));
         for (int k = 0; k < n; ++k)
-            plane({8, 1, n == 1 ? bd * 0.5f : bd * 0.5f - span * (float)k / (float)(n - 1)});
+            plane({8, 1, n == 1 ? zl : zl - span * (float)k / (float)(n - 1)});
     }
-    /* sprites com espessura: fatias de -t a +t (3D-3); HUD em relevo à frente */
-    const float t = g_3d_level ? bd * 0.2f : 0.0f;
+    /* sprites com espessura: fatias de -t a +t (3D-3), todos na mesma profundidade
+     * (3D-3d: partes em profundidades diferentes mostravam uma linha na divisa) */
     const int slices = t > 0.0f ? 5 : 1;
     const float zs = g_3d_level ? 0.0f : 0.07f * dist * d;
     for (int k = 0; k < slices; ++k) {
         const float z = slices == 1 ? zs : zs - t + 2.0f * t * (float)k / (float)(slices - 1);
         plane({3, 0, z});
-        /* 3D-3b: o sprite na frente de um bloco ou da água (Wario nadando, moeda
-         * no bloco) não fica dentro do volume: vai para a frente dele */
-        plane({7, 0, slices == 1 ? zs : bd * 0.5f + 2.0f * t * (float)k / (float)(slices - 1)});
-    }
-    /* 3D-3c: véu da água (30% da cor da água) na frente de tudo que está abaixo das
-     * ondas; entra aos poucos até 10 graus, para a inclinação 0 continuar igual ao 2D */
-    const float alpha = 0.30f * std::min(1.0f, std::max(0.0f, v->tilt_deg / 10.0f));
-    if (g_3d_level && alpha > 0.0f) {
-        gl.Enable(kBlend);
-        gl.BlendFuncSeparate(kSrcAlpha, kOneMinusSrcAlpha, 0, kOne);
-        gl.Disable(kDepthTest);   /* na frente da água (+bd/2), por cima de tudo que já está lá */
-        gl.Uniform1f(g_dloc_alpha, alpha);
-        plane({9, 1, bd * 0.5f});
-        gl.Enable(kDepthTest);
-        gl.Disable(kBlend);
     }
     /* HUD: fora das fases em relevo à frente; nas fases (3D-3c) chapado no plano do chão */
     plane({2, 0, g_3d_level ? bd * 0.5f : 0.12f * dist * d});
