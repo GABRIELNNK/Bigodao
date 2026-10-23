@@ -42,6 +42,8 @@
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_sdlrenderer2.h"
+#include "backends/imgui_impl_opengl3.h"   /* passo 14a */
+#include "video_gl.h"                       /* passo 14a */
 
 
 namespace fs = std::filesystem;
@@ -52,7 +54,132 @@ namespace fs = std::filesystem;
 
 static SDL_Window* g_window = NULL;
 static SDL_Renderer* g_renderer = NULL;
-static SDL_Texture* g_texture = NULL;
+
+/* ============================================================================
+ * Passo 14a: vídeo por SDL_Renderer (como sempre foi) ou por OpenGL.
+ * O quadro continua montado na CPU; as funções vid_* levam as texturas à tela
+ * por um dos dois caminhos. A escolha vale ao abrir o jogo (preferência
+ * display.video_backend); se o OpenGL não abrir, volta sozinho para o SDL.
+ * ========================================================================== */
+struct VidTex {
+    SDL_Texture* sdl = nullptr;
+    VglTex* gl = nullptr;
+};
+static bool g_use_gl = false;            /* caminho em uso nesta execução */
+static int g_video_backend_pref = 0;     /* 0 = SDL_Renderer, 1 = OpenGL (próxima abertura) */
+static std::string g_video_status;       /* o que abriu (menu) */
+
+static bool vid_ready(void) {
+    return g_use_gl ? vgl_ready() : g_renderer != NULL;
+}
+
+static VidTex* vid_tex_create(int w, int h) {
+    VidTex* t = new VidTex();
+    if (g_use_gl) {
+        t->gl = vgl_tex_create(w, h);
+    } else if (g_renderer) {
+        t->sdl = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                   SDL_TEXTUREACCESS_STREAMING, w, h);
+    }
+    if (!t->gl && !t->sdl) {
+        delete t;
+        return NULL;
+    }
+    return t;
+}
+
+static void vid_tex_destroy(VidTex* t) {
+    if (!t) return;
+    if (t->sdl) SDL_DestroyTexture(t->sdl);
+    if (t->gl) vgl_tex_destroy(t->gl);
+    delete t;
+}
+
+static void vid_tex_set_linear(VidTex* t, bool linear) {
+    if (!t) return;
+    if (t->gl) {
+        vgl_tex_set_linear(t->gl, linear);
+        return;
+    }
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(t->sdl, linear ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+#endif
+}
+
+static void vid_tex_set_blend(VidTex* t, bool blend) {
+    if (!t) return;
+    if (t->gl) vgl_tex_set_blend(t->gl, blend);
+    else SDL_SetTextureBlendMode(t->sdl, blend ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
+}
+
+static void vid_tex_lock(VidTex* t, void** pixels, int* pitch) {
+    if (t->gl) *pixels = vgl_tex_lock(t->gl, pitch);
+    else SDL_LockTexture(t->sdl, NULL, pixels, pitch);
+}
+
+static void vid_tex_unlock(VidTex* t) {
+    if (t->gl) vgl_tex_unlock(t->gl);
+    else SDL_UnlockTexture(t->sdl);
+}
+
+static void vid_tex_update(VidTex* t, const SDL_Rect* rect, const void* pixels, int pitch) {
+    if (!t) return;
+    if (t->gl) vgl_tex_update(t->gl, rect, pixels, pitch);
+    else SDL_UpdateTexture(t->sdl, rect, pixels, pitch);
+}
+
+static void vid_copy(VidTex* t, const SDL_Rect* src, const SDL_Rect* dst) {
+    if (!t) return;
+    if (t->gl) vgl_copy(t->gl, src, dst);
+    else SDL_RenderCopy(g_renderer, t->sdl, src, dst);
+}
+
+static void vid_copy_f(VidTex* t, const SDL_Rect* src, const SDL_FRect* dst) {
+    if (!t) return;
+    if (t->gl) vgl_copy_f(t->gl, src, dst);
+    else SDL_RenderCopyF(g_renderer, t->sdl, src, dst);
+}
+
+static void vid_set_clip(const SDL_Rect* clip) {
+    if (g_use_gl) vgl_set_clip(clip);
+    else SDL_RenderSetClipRect(g_renderer, clip);
+}
+
+static void vid_begin_frame(void) {
+    if (g_use_gl) {
+        vgl_begin_frame(g_window);
+        return;
+    }
+    SDL_RenderSetViewport(g_renderer, NULL);
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(g_renderer);
+}
+
+static void vid_set_vsync(bool enabled) {
+    if (g_use_gl) vgl_set_vsync(enabled);
+    else if (g_renderer) SDL_RenderSetVSync(g_renderer, enabled ? 1 : 0);
+}
+
+static void vid_imgui_new_frame(void) {
+    if (g_use_gl) ImGui_ImplOpenGL3_NewFrame();
+    else ImGui_ImplSDLRenderer2_NewFrame();
+}
+
+static void vid_imgui_render(void) {
+    if (g_use_gl) {
+        vgl_set_clip(NULL);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        return;
+    }
+    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
+}
+
+static void vid_present(void) {
+    if (g_use_gl) vgl_present(g_window);
+    else SDL_RenderPresent(g_renderer);
+}
+
+static VidTex* g_texture = NULL;
 static int g_scale = 5;
 static int g_windowed_width = GB_SCREEN_WIDTH * 5;
 static int g_windowed_height = GB_SCREEN_HEIGHT * 5;
@@ -1698,6 +1825,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     ppu_native_hd_set_tiles_enabled(strcmp(value, "0") != 0);
                     continue;
                 }
+                if (strcmp(key, "display.video_backend") == 0) {   /* passo 14a */
+                    g_video_backend_pref = (strtol(value, NULL, 10) == 1) ? 1 : 0;
+                    continue;
+                }
                 if (strcmp(key, "display.fps_mode") == 0) {   /* passo 10a */
                     g_fps_mode = (strtol(value, NULL, 10) == 1) ? 1 : 0;
                     continue;
@@ -1861,6 +1992,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
     fprintf(file, "display.fps_mode=%d\n", g_fps_mode);   /* passo 10a */
+    fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
     for (int i = 0; i < hd_pack_io_disabled_count(); ++i) {
@@ -2414,16 +2546,13 @@ static int round_to_int(double value) {
 }
 
 static void update_render_filter(void) {
-    if (!g_renderer) {
+    if (!vid_ready()) {
         return;
     }
 
 #if SDL_VERSION_ATLEAST(2, 0, 12)
     if (g_texture) {
-        SDL_SetTextureScaleMode(g_texture,
-                                g_render_filter_mode == GB_RENDER_FILTER_LINEAR
-                                    ? SDL_ScaleModeLinear
-                                    : SDL_ScaleModeNearest);
+        vid_tex_set_linear(g_texture, g_render_filter_mode == GB_RENDER_FILTER_LINEAR);
     }
 #else
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,
@@ -2432,7 +2561,7 @@ static void update_render_filter(void) {
 }
 
 static void update_game_viewport(void) {
-    if (!g_window || !g_renderer) {
+    if (!g_window || !vid_ready()) {
         g_game_viewport.x = 0;
         g_game_viewport.y = 0;
         g_game_viewport.w = GB_SCREEN_WIDTH * g_scale;
@@ -2564,13 +2693,13 @@ static void set_fullscreen_enabled(bool enabled) {
 }
 
 static bool recreate_streaming_texture(void) {
-    if (!g_renderer || g_benchmark_mode) {
+    if (!vid_ready() || g_benchmark_mode) {
         return true;
     }
     ip_release_textures();   /* passo 10a */
 
     if (g_texture) {
-        SDL_DestroyTexture(g_texture);
+        vid_tex_destroy(g_texture);
         g_texture = NULL;
     }
 
@@ -2583,13 +2712,7 @@ static bool recreate_streaming_texture(void) {
     const int texture_width = base_width * g_texture_scale;
     const int texture_height = base_height * g_texture_scale;
 
-    g_texture = SDL_CreateTexture(
-        g_renderer,
-        SDL_PIXELFORMAT_ARGB8888,  // SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STREAMING,
-        texture_width,
-        texture_height //GB_SCREEN_HEIGHT
-    );
+    g_texture = vid_tex_create(texture_width, texture_height);   /* passo 14a */
     if (!g_texture) {
         fprintf(stderr, "[SDL] Failed to recreate texture: %s\n", SDL_GetError());
         return false;
@@ -2629,9 +2752,7 @@ static void reset_runtime_display_defaults(void) {
     g_render_filter_mode = GB_RENDER_FILTER_NEAREST;
     update_render_filter();
 
-    if (g_renderer) {
-        SDL_RenderSetVSync(g_renderer, 0);
-    }
+    vid_set_vsync(false);   /* passo 14a */
 
     const bool want_fullscreen = platform_default_fullscreen();
     if (g_window) {
@@ -2840,8 +2961,8 @@ struct IpSprite {
     int vx, vy;     /* quanto andou na tela no ultimo quadro */
 };
 
-static SDL_Texture* g_ip_tex_bg = NULL;    /* cenario sem os sprites */
-static SDL_Texture* g_ip_tex_obj = NULL;   /* so os sprites (alfa) */
+static VidTex* g_ip_tex_bg = NULL;    /* cenario sem os sprites */
+static VidTex* g_ip_tex_obj = NULL;   /* so os sprites (alfa) */
 static int g_ip_tex_w = 0;
 static int g_ip_tex_h = 0;
 static std::vector<uint32_t> g_ip_comp;    /* quadro montado (o mesmo da tela) */
@@ -2945,8 +3066,8 @@ static void ip_invalidate(void) {
 }
 
 static void ip_release_textures(void) {
-    if (g_ip_tex_bg) SDL_DestroyTexture(g_ip_tex_bg);
-    if (g_ip_tex_obj) SDL_DestroyTexture(g_ip_tex_obj);
+    if (g_ip_tex_bg) vid_tex_destroy(g_ip_tex_bg);
+    if (g_ip_tex_obj) vid_tex_destroy(g_ip_tex_obj);
     g_ip_tex_bg = NULL;
     g_ip_tex_obj = NULL;
     g_ip_tex_w = 0;
@@ -2980,7 +3101,7 @@ static uint32_t ip_mid_per_second(void) {
 }
 
 static bool ip_mid_wanted(void) {
-    return g_fps_mode == 1 && g_ip_valid && g_ip_have_prev && g_renderer &&
+    return g_fps_mode == 1 && g_ip_valid && g_ip_have_prev && vid_ready() &&
            g_ip_tex_bg && g_ip_tex_obj && !g_benchmark_mode && !g_app_suspended &&
            effective_speed_percent() == 100 && ip_refresh_ok();
 }
@@ -3006,7 +3127,7 @@ static bool ip_mid_ready_note(void) {
 }
 
 static bool ip_capture_wanted(bool count_guest_frame) {
-    return g_fps_mode == 1 && count_guest_frame && !g_ip_mid_draw && g_renderer;
+    return g_fps_mode == 1 && count_guest_frame && !g_ip_mid_draw && vid_ready();
 }
 
 /* Buffer onde o quadro e montado (no lugar da textura travada). */
@@ -3151,23 +3272,21 @@ static bool ip_ensure_textures(int w, int h) {
     if (g_ip_tex_bg && g_ip_tex_obj && g_ip_tex_w == w && g_ip_tex_h == h) {
         return true;
     }
-    if (g_ip_tex_bg) SDL_DestroyTexture(g_ip_tex_bg);
-    if (g_ip_tex_obj) SDL_DestroyTexture(g_ip_tex_obj);
-    g_ip_tex_bg = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
-                                    SDL_TEXTUREACCESS_STREAMING, w, h);
-    g_ip_tex_obj = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
-                                     SDL_TEXTUREACCESS_STREAMING, w, h);
+    if (g_ip_tex_bg) vid_tex_destroy(g_ip_tex_bg);
+    if (g_ip_tex_obj) vid_tex_destroy(g_ip_tex_obj);
+    g_ip_tex_bg = vid_tex_create(w, h);
+    g_ip_tex_obj = vid_tex_create(w, h);
     if (!g_ip_tex_bg || !g_ip_tex_obj) {
-        if (g_ip_tex_bg) SDL_DestroyTexture(g_ip_tex_bg);
-        if (g_ip_tex_obj) SDL_DestroyTexture(g_ip_tex_obj);
+        if (g_ip_tex_bg) vid_tex_destroy(g_ip_tex_bg);
+        if (g_ip_tex_obj) vid_tex_destroy(g_ip_tex_obj);
         g_ip_tex_bg = NULL;
         g_ip_tex_obj = NULL;
         g_ip_tex_w = 0;
         g_ip_tex_h = 0;
         return false;
     }
-    SDL_SetTextureBlendMode(g_ip_tex_bg, SDL_BLENDMODE_NONE);
-    SDL_SetTextureBlendMode(g_ip_tex_obj, SDL_BLENDMODE_BLEND);
+    vid_tex_set_blend(g_ip_tex_bg, false);
+    vid_tex_set_blend(g_ip_tex_obj, true);
     g_ip_tex_w = w;
     g_ip_tex_h = h;
     return true;
@@ -3261,7 +3380,7 @@ static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int te
             }
         }
         const SDL_Rect r = {rx, ry, rw, rh};
-        SDL_UpdateTexture(g_ip_tex_obj, &r, g_ip_obj.data(), rw * (int)sizeof(uint32_t));
+        vid_tex_update(g_ip_tex_obj, &r, g_ip_obj.data(), rw * (int)sizeof(uint32_t));
 
         for (int ty = ry; ty < ry + rh; ty++) {
             const uint8_t* ow = g_ip_owner + (size_t)(ty / scale) * base_w;
@@ -3282,13 +3401,12 @@ static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int te
             }
         }
     }
-    SDL_UpdateTexture(g_ip_tex_bg, NULL, g_ip_comp.data(), tex_w * (int)sizeof(uint32_t));
-#if SDL_VERSION_ATLEAST(2, 0, 12)
-    const SDL_ScaleMode sm = (g_render_filter_mode == GB_RENDER_FILTER_LINEAR)
-                                 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest;
-    SDL_SetTextureScaleMode(g_ip_tex_bg, sm);
-    SDL_SetTextureScaleMode(g_ip_tex_obj, sm);
-#endif
+    vid_tex_update(g_ip_tex_bg, NULL, g_ip_comp.data(), tex_w * (int)sizeof(uint32_t));
+    {
+        const bool linear = (g_render_filter_mode == GB_RENDER_FILTER_LINEAR);
+        vid_tex_set_linear(g_ip_tex_bg, linear);
+        vid_tex_set_linear(g_ip_tex_obj, linear);
+    }
     g_ip_valid = true;
 }
 
@@ -3296,7 +3414,7 @@ static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int te
 static void ip_draw_mid(void) {
     const SDL_Rect vp = g_game_viewport;
     if (!g_ip_tex_bg || !g_ip_tex_obj || vp.w <= 0 || vp.h <= 0) {
-        SDL_RenderCopy(g_renderer, g_texture, NULL, &vp);
+        vid_copy(g_texture, NULL, &vp);
         return;
     }
     const float t = g_ip_draw_t;   /* passo 10c/10f: -0,5 = meio do caminho desde o anterior; 0 = o proprio quadro */
@@ -3304,14 +3422,14 @@ static void ip_draw_mid(void) {
     const float ky = (float)vp.h / (float)GB_SCREEN_HEIGHT;
     const int s = g_ip_scale;
 
-    SDL_RenderCopy(g_renderer, g_ip_tex_bg, NULL, &vp);
+    vid_copy(g_ip_tex_bg, NULL, &vp);
 
     SDL_Rect clip = vp;
     if (g_ip_xmin > 0 || g_ip_xmax < g_ip_base_w) {
         clip.x = vp.x + (int)((float)g_ip_xmin * kx + 0.5f);
         clip.w = (int)((float)(g_ip_xmax - g_ip_xmin) * kx + 0.5f);
     }
-    SDL_RenderSetClipRect(g_renderer, &clip);
+    vid_set_clip(&clip);
 
     /* Cenario: primeiro as faixas que andam, depois as paradas por cima
      * (HUD fica firme). */
@@ -3329,7 +3447,7 @@ static void ip_draw_mid(void) {
                 const SDL_FRect dst = {(float)vp.x - (float)dx * t * kx,
                                        (float)vp.y + ((float)y - (float)dy * t) * ky,
                                        (float)vp.w, (float)(y1 - y) * ky};
-                SDL_RenderCopyF(g_renderer, g_ip_tex_bg, &src, &dst);
+                vid_copy_f(g_ip_tex_bg, &src, &dst);
             }
             y = y1;
         }
@@ -3348,9 +3466,9 @@ static void ip_draw_mid(void) {
         const SDL_FRect dst = {(float)vp.x + ((float)x0 + (float)sp.vx * t) * kx,
                                (float)vp.y + ((float)y0 + (float)sp.vy * t) * ky,
                                (float)(x1 - x0) * kx, (float)(y1 - y0) * ky};
-        SDL_RenderCopyF(g_renderer, g_ip_tex_obj, &src, &dst);
+        vid_copy_f(g_ip_tex_obj, &src, &dst);
     }
-    SDL_RenderSetClipRect(g_renderer, NULL);
+    vid_set_clip(NULL);
 }
 
 static void ensure_lcd_off_framebuffer(void) {
@@ -3455,7 +3573,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
         return;
     }
 
-    if (g_benchmark_mode || g_app_suspended || !g_renderer) {
+    if (g_benchmark_mode || g_app_suspended || !vid_ready()) {
         DBG_FRAME("Platform render_frame: host render skipped (benchmark=%d texture=%d renderer=%d)",
                   g_benchmark_mode ? 1 : 0,
                   g_texture == NULL,
@@ -3515,7 +3633,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     double upload_start_ms = sdl_now_ms();
     void* pixels;
     int pitch;
-    SDL_LockTexture(g_texture, NULL, &pixels, &pitch);
+    vid_tex_lock(g_texture, &pixels, &pitch);   /* passo 14a */
     /* Passo 10a: com 120 fps o quadro e montado num buffer proprio, copiado
      * para a textura no fim; o buffer vira a base do quadro do meio. */
     void* ip_tex_pixels = pixels;
@@ -3781,7 +3899,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
         ip_finish_capture(ip_tex_pixels, ip_tex_pitch, texture_width, texture_height,
                           scale, base_width, black_fill_non_side_scrolling);
     }
-    SDL_UnlockTexture(g_texture);
+    vid_tex_unlock(g_texture);   /* passo 14a */
     g_last_timing.upload_ms = sdl_now_ms() - upload_start_ms;
     }   /* passo 10a: fim do if (!g_ip_mid_draw) */
 
@@ -3789,9 +3907,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     double compose_start_ms = sdl_now_ms();
 
     // Força o reset do viewport nativo do SDL antes do Clear
-    SDL_RenderSetViewport(g_renderer, NULL);
-    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(g_renderer);
+    vid_begin_frame();   /* passo 14a */
 
     // Desenha a textura do jogo no viewport proporcional correto
     if (g_ip_mid_draw) {
@@ -3801,17 +3917,17 @@ static void render_frame_internal(const uint32_t* framebuffer,
             ip_draw_mid();
             g_ip_draw_t = -0.5f;
         } else {
-            SDL_RenderCopy(g_renderer, g_texture, NULL, &g_game_viewport);
+            vid_copy(g_texture, NULL, &g_game_viewport);
         }
     } else if (count_guest_frame && g_ip_use_mid) {
         g_ip_use_mid = false;
         ip_draw_mid();   /* passo 10c: primeiro o meio do caminho entre o anterior e este */
         g_ip_pending_main = true;
     } else {
-        SDL_RenderCopy(g_renderer, g_texture, NULL, &g_game_viewport);
+        vid_copy(g_texture, NULL, &g_game_viewport);
     }
 
-    ImGui_ImplSDLRenderer2_NewFrame();
+    vid_imgui_new_frame();   /* passo 14a */
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
     ImGuiIO& imgui_io = ImGui::GetIO();
@@ -4399,7 +4515,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
         if (ImGui::Checkbox("V-Sync", &g_vsync)) {
-            SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);
+            vid_set_vsync(g_vsync);   /* passo 14a */
+        }
+        {   /* Passo 14a: caminho de vídeo (vale ao abrir o jogo de novo). */
+            static const char* kVideoNames[] = {"SDL (padrao)", "OpenGL"};
+            int video = g_video_backend_pref;
+            if (ImGui::Combo("Video", &video, kVideoNames, IM_ARRAYSIZE(kVideoNames))) {
+                g_video_backend_pref = video;
+                save_runtime_preferences();
+            }
+            if (g_video_backend_pref != (g_use_gl ? 1 : 0)) {
+                ImGui::TextDisabled("Feche e abra o jogo para trocar.");
+            }
+            ImGui::TextDisabled("Em uso: %s", g_video_status.c_str());
         }
 
         ImGui::Checkbox("Show Overlay", &g_show_overlay);
@@ -4814,13 +4942,13 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
     }
-    SDL_RenderSetViewport(g_renderer, NULL);
+    if (!g_use_gl) SDL_RenderSetViewport(g_renderer, NULL);
     ImGui::Render();
-    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
+    vid_imgui_render();   /* passo 14a */
     g_last_timing.compose_ms = sdl_now_ms() - compose_start_ms;
 
     double present_start_ms = sdl_now_ms();
-    SDL_RenderPresent(g_renderer);
+    vid_present();   /* passo 14a */
     if (count_guest_frame) {
         g_ip_last_present = SDL_GetPerformanceCounter();   /* passo 10a */
     }
@@ -4893,19 +5021,24 @@ void gb_platform_shutdown(void) {
     g_binding_capture_device = GB_CAPTURE_DEVICE_NONE;
     
     if (ImGui::GetCurrentContext() != NULL) {
-        ImGui_ImplSDLRenderer2_Shutdown();
+        if (g_use_gl) ImGui_ImplOpenGL3_Shutdown();   /* passo 14a */
+        else ImGui_ImplSDLRenderer2_Shutdown();
         ImGui_ImplSDL2_Shutdown();
         ImGui::DestroyContext();
     }
 
     ip_release_textures();   /* passo 10a */
     if (g_texture) {
-        SDL_DestroyTexture(g_texture);
+        vid_tex_destroy(g_texture);
         g_texture = NULL;
     }
     if (g_renderer) {
         SDL_DestroyRenderer(g_renderer);
         g_renderer = NULL;
+    }
+    if (g_use_gl) {   /* passo 14a */
+        vgl_shutdown();
+        g_use_gl = false;
     }
     if (g_window) {
         SDL_DestroyWindow(g_window);
@@ -5569,16 +5702,41 @@ bool gb_platform_init(int scale) {
     reopen_audio_output_device(false);
     
     fprintf(stderr, "[SDL] Creating window...\n");
-    g_window = SDL_CreateWindow(
-        "Bigodão - GameBoy Recompiled",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
-        g_windowed_width,
-        g_windowed_height,
-        SDL_WINDOW_SHOWN |
-        (g_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : SDL_WINDOW_RESIZABLE)
-    );
-    
+    /* Passo 14a: com OpenGL a janela nasce com contexto de GL; se não der,
+     * volta para a janela de sempre com o SDL_Renderer. */
+    const bool want_gl = (g_video_backend_pref == 1);
+    if (want_gl) {
+        vgl_set_context_attributes();
+    }
+    for (int attempt = want_gl ? 0 : 1; attempt < 2 && !g_window; ++attempt) {
+        g_window = SDL_CreateWindow(
+            "Bigodão - GameBoy Recompiled",
+            SDL_WINDOWPOS_CENTERED,
+            SDL_WINDOWPOS_CENTERED,
+            g_windowed_width,
+            g_windowed_height,
+            SDL_WINDOW_SHOWN | (attempt == 0 ? SDL_WINDOW_OPENGL : 0) |
+            (g_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : SDL_WINDOW_RESIZABLE)
+        );
+        if (!g_window && attempt == 0) {
+            fprintf(stderr, "[GL] Janela com OpenGL nao abriu (%s); usando o SDL_Renderer.\n",
+                    SDL_GetError());
+            g_video_status = std::string("SDL (OpenGL nao abriu: ") + SDL_GetError() + ")";
+        }
+        if (g_window && attempt == 0) {
+            char gl_err[256] = "";
+            if (vgl_init(g_window, gl_err, sizeof(gl_err))) {
+                g_use_gl = true;
+                g_video_status = std::string("OpenGL ") + vgl_description();
+            } else {
+                fprintf(stderr, "[GL] Nao abriu (%s); usando o SDL_Renderer.\n", gl_err);
+                g_video_status = std::string("SDL (OpenGL nao abriu: ") + gl_err + ")";
+                SDL_DestroyWindow(g_window);
+                g_window = NULL;
+            }
+        }
+    }
+
     if (!g_window) {
         fprintf(stderr, "[SDL] SDL_CreateWindow failed: %s\n", SDL_GetError());
         SDL_Quit();
@@ -5593,15 +5751,27 @@ bool gb_platform_init(int scale) {
      * NO VSync - we use wall-clock timing to run at exactly 59.7 FPS.
      * This is essential for non-60Hz monitors (like 100Hz).
      */
+    if (!g_use_gl) {   /* passo 14a: com OpenGL não há SDL_Renderer */
     g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
 
-       
+
     if (!g_renderer) {
         fprintf(stderr, "[SDL] Hardware renderer failed, trying software fallback...\n");
         g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_SOFTWARE);
     }
-        
-    if (!g_renderer) {
+    if (g_renderer && g_video_status.empty()) {
+        SDL_RendererInfo info;
+        g_video_status = (SDL_GetRendererInfo(g_renderer, &info) == 0)
+            ? std::string("SDL (") + info.name + ")" : std::string("SDL");
+    } else if (g_renderer) {
+        SDL_RendererInfo info;
+        if (SDL_GetRendererInfo(g_renderer, &info) == 0) {
+            g_video_status += std::string(" - ") + info.name;
+        }
+    }
+    }
+
+    if (!g_use_gl && !g_renderer) {
         fprintf(stderr, "[SDL] SDL_CreateRenderer failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(g_window);
         SDL_Quit();
@@ -5621,11 +5791,18 @@ bool gb_platform_init(int scale) {
     ImGui::StyleColorsDark();
 
     // Setup Platform/Renderer backends
-    ImGui_ImplSDL2_InitForSDLRenderer(g_window, g_renderer);
-    ImGui_ImplSDLRenderer2_Init(g_renderer);
+    if (g_use_gl) {   /* passo 14a */
+        ImGui_ImplSDL2_InitForOpenGL(g_window, vgl_context());
+        ImGui_ImplOpenGL3_Init(vgl_glsl_version());
+        vgl_set_vsync(g_vsync);
+    } else {
+        ImGui_ImplSDL2_InitForSDLRenderer(g_window, g_renderer);
+        ImGui_ImplSDLRenderer2_Init(g_renderer);
+    }
 
     if (!recreate_streaming_texture()) {
-        SDL_DestroyRenderer(g_renderer);
+        if (g_renderer) SDL_DestroyRenderer(g_renderer);
+        if (g_use_gl) vgl_shutdown();
         SDL_DestroyWindow(g_window);
         SDL_Quit();
         return false;

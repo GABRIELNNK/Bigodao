@@ -76,6 +76,7 @@ file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS
     "runtime/vendor/imgui/*.cpp"
     "runtime/vendor/imgui/backends/imgui_impl_sdl2.cpp"
     "runtime/vendor/imgui/backends/imgui_impl_sdlrenderer2.cpp"
+    "runtime/vendor/imgui/backends/imgui_impl_opengl3.cpp"   # passo 14a
 )
 
 # Código gerado da ROM hack; a imagem carregada em execução vem do IPS.
@@ -96,7 +97,9 @@ if(ANDROID)
     # O nome precisa ser "main" (libmain.so), que é o que o Java procura.
     add_library(wario_land_port SHARED ${WL_ALL_SOURCES})
     set_target_properties(wario_land_port PROPERTIES OUTPUT_NAME main)
-    target_link_libraries(wario_land_port PRIVATE android log)
+    target_link_libraries(wario_land_port PRIVATE android log GLESv3)   # GLESv3: passo 14a
+    # Passo 14a: o backend OpenGL do ImGui no Android usa o OpenGL ES 3.0.
+    target_compile_definitions(wario_land_port PRIVATE IMGUI_IMPL_OPENGL_ES3)
 elseif(WIN32)
     enable_language(RC)
     add_executable(wario_land_port ${WL_ALL_SOURCES} platform/windows/app.rc)
@@ -108,6 +111,8 @@ elseif(WIN32)
     target_link_libraries(wario_land_port PRIVATE comdlg32)
 else()
     add_executable(wario_land_port ${WL_ALL_SOURCES})
+    # Passo 14a: o backend OpenGL do ImGui abre o libGL com dlopen.
+    target_link_libraries(wario_land_port PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 target_link_libraries(wario_land_port PRIVATE ${WL_SDL_LIBS})
