@@ -214,7 +214,15 @@ struct GpuCompareStats {
     int m_x = -1, m_y = -1;
     uint32_t m_cpu = 0, m_gpu = 0;
     double m_ms_total = 0.0;
+    /* Passo 14c-1: tela inteira (textura do jogo) */
+    uint64_t s_compared = 0, s_equal = 0, s_skipped = 0;
+    uint32_t s_last_diff = 0;
+    int s_x = -1, s_y = -1, s_w = 0, s_h = 0;
+    uint32_t s_cpu = 0, s_gpu = 0;
+    double s_ms_total = 0.0;
 };
+static bool g_gpu_center_ok = false;    /* passo 14c-1: a GPU montou o centro HD deste quadro */
+static bool g_gpu_margins_ok = false;   /* e as laterais HD */
 static bool g_gpu_compare = false;
 static GpuCompareStats g_gpu_stats;
 static std::string g_gpu_error;
@@ -237,6 +245,7 @@ static void gpu_compare_margins_hd(const PPUNativeGpuFrame* fr) {
         g_gpu_error = "a GPU nao conseguiu montar as laterais em HD";
         return;
     }
+    g_gpu_margins_ok = true;   /* passo 14c-1 */
     GpuCompareStats& st = g_gpu_stats;
     st.m_ms_total += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
                      (double)SDL_GetPerformanceFrequency();
@@ -280,6 +289,7 @@ static void gpu_compare_frame_hd(const PPUNativeGpuFrame* fr) {
         g_gpu_error = "a GPU nao conseguiu montar o quadro em HD";
         return;
     }
+    g_gpu_center_ok = true;   /* passo 14c-1 */
     GpuCompareStats& st = g_gpu_stats;
     st.hd_ms_total += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
                       (double)SDL_GetPerformanceFrequency();
@@ -318,6 +328,8 @@ static void gpu_compare_frame_hd(const PPUNativeGpuFrame* fr) {
 static void gpu_compare_frame_1x(const PPUNativeGpuFrame* fr);
 
 static void gpu_compare_frame(void) {
+    g_gpu_center_ok = false;   /* passo 14c-1 */
+    g_gpu_margins_ok = false;
     const PPUNativeGpuFrame* fr = ppu_native_gpu_take_frame();
     if (!fr) return;
     if (!fr->cgb) { g_gpu_stats.skipped_mode++; return; }
@@ -954,6 +966,9 @@ enum { WS_FILL_BLACK = 0, WS_FILL_EDGE = 1, WS_FILL_CENTER = 2 };
 static int g_ws_fill_mode = WS_FILL_EDGE;
 static int g_ws_fill_dim_percent = 45;   /* escurecimento das laterais */
 static float g_ws_amb[GB_SCREEN_HEIGHT][GB_WIDESCREEN_WIDTH][3];
+/* Passo 14c-1: o mesmo fundo em ponto fixo (valor * 256, arredondado), para a
+ * ampliação HD ser feita só com inteiros (igual na CPU e na GPU). */
+static uint16_t g_ws_amb_q[GB_SCREEN_HEIGHT][GB_WIDESCREEN_WIDTH][4];
 static bool g_ws_amb_valid = false;
 static int g_ws_amb_last_frame = -100;
 
@@ -1053,7 +1068,10 @@ static void ws_ambient_update(const uint32_t* src, bool wide, bool new_frame, in
             for (int c = 0; c < 3; c++) {
                 const float v = pre[y][x][c] * f;
                 g_ws_amb[y][x][c] = g_ws_amb[y][x][c] * keep + v * (1.0f - keep);
+                const float q = g_ws_amb[y][x][c] * 256.0f + 0.5f;
+                g_ws_amb_q[y][x][c] = (uint16_t)(q < 0.0f ? 0.0f : (q > 65535.0f ? 65535.0f : q));
             }
+            g_ws_amb_q[y][x][3] = 0;
         }
     }
     g_ws_amb_valid = true;
@@ -1074,35 +1092,44 @@ static void ws_ambient_row_1x(int y, uint32_t* row) {
     }
 }
 
-/* Linhas HD (escala > 1) das laterais, com interpolacao bilinear. */
+/* Linhas HD (escala > 1) das laterais, com interpolacao bilinear.
+ * Passo 14c-1: só com inteiros, a partir de g_ws_amb_q. Posição em unidades
+ * de 1/(2*escala): fx = (X + 0.5)/escala - 0.5 vira 2X + 1 - escala. A GPU
+ * faz a mesma conta (gpu_ppu, tela inteira). */
+static inline uint32_t ws_amb_bilinear(int X, int Y, int scale, int lo, int hi) {
+    const int d = 2 * scale;
+    int fy = 2 * Y + 1 - scale;
+    if (fy < 0) fy = 0;
+    if (fy > d * (GB_SCREEN_HEIGHT - 1)) fy = d * (GB_SCREEN_HEIGHT - 1);
+    const int y0 = fy / d, wy = fy - y0 * d;
+    const int y1 = y0 + 1 < GB_SCREEN_HEIGHT ? y0 + 1 : y0;
+    int fx = 2 * X + 1 - scale;
+    if (fx < d * lo) fx = d * lo;
+    if (fx > d * hi) fx = d * hi;
+    const int x0 = fx / d, wx = fx - x0 * d;
+    const int x1 = x0 + 1 <= hi ? x0 + 1 : x0;
+    const uint32_t w00 = (uint32_t)((d - wx) * (d - wy)), w01 = (uint32_t)(wx * (d - wy));
+    const uint32_t w10 = (uint32_t)((d - wx) * wy), w11 = (uint32_t)(wx * wy);
+    const uint32_t den = (uint32_t)(d * d) * 256u;
+    uint32_t out = 0xFF000000u;
+    for (int c = 0; c < 3; c++) {
+        const uint32_t v = (g_ws_amb_q[y0][x0][c] * w00 + g_ws_amb_q[y0][x1][c] * w01 +
+                            g_ws_amb_q[y1][x0][c] * w10 + g_ws_amb_q[y1][x1][c] * w11 + den / 2u) / den;
+        out |= (v > 255u ? 255u : v) << (16 - 8 * c);
+    }
+    return out;
+}
+
 static void ws_ambient_rows_hd(void* pixels, int pitch, int y, int scale) {
     const int right0 = GB_WIDESCREEN_MARGIN + GB_SCREEN_WIDTH;
     for (int k = 0; k < scale; k++) {
         const int Y = y * scale + k;
-        float fy = ((float)Y + 0.5f) / (float)scale - 0.5f;
-        if (fy < 0.0f) fy = 0.0f;
-        if (fy > GB_SCREEN_HEIGHT - 1) fy = (float)(GB_SCREEN_HEIGHT - 1);
-        const int y0 = (int)fy;
-        const int y1 = y0 + 1 < GB_SCREEN_HEIGHT ? y0 + 1 : y0;
-        const float wy = fy - (float)y0;
         uint32_t* dst = (uint32_t*)((uint8_t*)pixels + (size_t)Y * pitch);
         for (int side = 0; side < 2; side++) {
             const int lo = side ? right0 : 0;
             const int hi = lo + GB_WIDESCREEN_MARGIN - 1;
             for (int X = lo * scale; X < (hi + 1) * scale; X++) {
-                float fx = ((float)X + 0.5f) / (float)scale - 0.5f;
-                if (fx < (float)lo) fx = (float)lo;
-                if (fx > (float)hi) fx = (float)hi;
-                const int x0 = (int)fx;
-                const int x1 = x0 + 1 <= hi ? x0 + 1 : x0;
-                const float wx = fx - (float)x0;
-                float p[3];
-                for (int c = 0; c < 3; c++) {
-                    const float a = g_ws_amb[y0][x0][c] * (1.0f - wx) + g_ws_amb[y0][x1][c] * wx;
-                    const float b = g_ws_amb[y1][x0][c] * (1.0f - wx) + g_ws_amb[y1][x1][c] * wx;
-                    p[c] = a * (1.0f - wy) + b * wy;
-                }
-                dst[X] = ws_amb_pack(p);
+                dst[X] = ws_amb_bilinear(X, Y, scale, lo, hi);
             }
         }
     }
@@ -3729,6 +3756,67 @@ static void ensure_lcd_off_framebuffer(void) {
     g_lcd_off_framebuffer_initialized = true;
 }
 
+/* Passo 14c-1: a tela inteira montada pela GPU contra a textura que a CPU
+ * acabou de montar (antes do filtro de pós-processamento). */
+static uint32_t g_scr_base[GB_SCREEN_HEIGHT * GB_WIDESCREEN_WIDTH];
+static std::vector<uint32_t> g_gpu_read_s;
+
+static void gpu_compare_screen(const void* cpu_pixels, int cpu_pitch, int w, int h, int base_width,
+                               int scale, bool hd_center, bool hd_margins, bool amb_hd) {
+    GpuCompareStats& st = g_gpu_stats;
+    if ((hd_center && !g_gpu_center_ok) || (hd_margins && !g_gpu_margins_ok)) {
+        st.s_skipped++;   /* a GPU não montou o HD deste quadro */
+        return;
+    }
+    GpuScreenInput in = {};
+    in.base = g_scr_base;
+    in.wide = base_width == GB_WIDESCREEN_WIDTH;
+    in.scale = scale;
+    in.hd_center = hd_center;
+    in.hd_margins = hd_margins;
+    in.amb_q = amb_hd ? &g_ws_amb_q[0][0][0] : NULL;
+    const uint64_t t0 = SDL_GetPerformanceCounter();
+    g_gpu_read_s.resize((size_t)w * h);
+    int gw = 0, gh = 0;
+    if (!gpu_ppu_compose_screen(&in) || !gpu_ppu_read_screen(g_gpu_read_s.data(), &gw, &gh) ||
+        gw != w || gh != h) {
+        g_gpu_error = "a GPU nao conseguiu montar a tela inteira";
+        return;
+    }
+    st.s_ms_total += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
+                     (double)SDL_GetPerformanceFrequency();
+    uint32_t diff = 0;
+    int fx = -1, fy = -1;
+    for (int y = 0; y < h; ++y) {
+        const uint32_t* c = (const uint32_t*)((const uint8_t*)cpu_pixels + (size_t)y * cpu_pitch);
+        const uint32_t* g = &g_gpu_read_s[(size_t)y * w];
+        for (int x = 0; x < w; ++x) {
+            if (((c[x] ^ g[x]) & 0x00FFFFFFu) != 0) {
+                if (!diff) { fx = x; fy = y; }
+                diff++;
+            }
+        }
+    }
+    st.s_compared++;
+    st.s_w = w;
+    st.s_h = h;
+    if (!diff) {
+        st.s_equal++;
+        return;
+    }
+    st.s_last_diff = diff;
+    st.s_x = fx;
+    st.s_y = fy;
+    st.s_cpu = ((const uint32_t*)((const uint8_t*)cpu_pixels + (size_t)fy * cpu_pitch))[fx];
+    st.s_gpu = g_gpu_read_s[(size_t)fy * w + fx];
+    if (st.s_compared - st.s_equal <= 20u) {
+        fprintf(stderr, "[GPU-TELA] %dx%d: %u pontos diferentes, primeiro (%d,%d) cpu %08X gpu %08X "
+                "(centro HD %d, laterais HD %d, ambiente %d)\n",
+                w, h, diff, fx, fy, st.s_cpu, st.s_gpu, hd_center ? 1 : 0, hd_margins ? 1 : 0,
+                amb_hd ? 1 : 0);
+    }
+}
+
 static void render_frame_internal(const uint32_t* framebuffer,
                                    bool count_guest_frame,
                                    bool framebuffer_is_widescreen = false,
@@ -4024,6 +4112,8 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
         }
 
+        /* Passo 14c-1: conferir a tela inteira montada pela GPU (quadro novo). */
+        const bool gpu_screen = g_gpu_compare && g_use_gl && count_guest_frame && !g_ip_mid_draw;
         for (int y = 0; y < base_height; y++) {
             if (base_width == GB_WIDESCREEN_WIDTH) {
                 if (src_is_wide) {
@@ -4050,6 +4140,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
             } else {
                 memcpy(base_row, src + (size_t)y * GB_SCREEN_WIDTH,
                        GB_SCREEN_WIDTH * sizeof(uint32_t));
+            }
+            if (gpu_screen) {   /* passo 14c-1: a linha base vai para a GPU */
+                memcpy(&g_scr_base[(size_t)y * base_width], base_row, (size_t)base_width * sizeof(uint32_t));
             }
 
             uint32_t* first = (uint32_t*)((uint8_t*)pixels + (size_t)(y * scale) * pitch);
@@ -4088,6 +4181,10 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (ws_ambient && scale > 1) {
                 ws_ambient_rows_hd(pixels, pitch, y, scale);   /* passo 8a: suave no HD */
             }
+        }
+        if (gpu_screen) {
+            gpu_compare_screen(pixels, pitch, texture_width, texture_height, base_width, scale,
+                               hd_frame != NULL, hd_margins != NULL, ws_ambient && scale > 1);
         }
     } else {    
         /* Palette remap path */
@@ -4539,6 +4636,24 @@ static void render_frame_internal(const uint32_t* framebuffer,
                         if (st.m_x >= 0) {
                             ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
                                                st.m_last_diff, st.m_x, st.m_y, st.m_cpu, st.m_gpu);
+                        }
+                    }
+                    /* Passo 14c-1: tela inteira */
+                    if (st.s_compared + st.s_skipped == 0) {
+                        ImGui::TextWrapped("Tela inteira: confere com a paleta original (Graphics).");
+                    } else {
+                        ImGui::Text("Tela inteira %dx%d: conferidas %llu  iguais: %llu  com diferenca: %llu",
+                                    st.s_w, st.s_h, (unsigned long long)st.s_compared,
+                                    (unsigned long long)st.s_equal,
+                                    (unsigned long long)(st.s_compared - st.s_equal));
+                        ImGui::Text("  Puladas (GPU sem o HD do quadro): %llu", (unsigned long long)st.s_skipped);
+                        if (st.s_compared > 0) {
+                            ImGui::Text("  GPU tela (montar + ler de volta): %.2f ms por quadro",
+                                        st.s_ms_total / (double)st.s_compared);
+                        }
+                        if (st.s_x >= 0) {
+                            ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                                               st.s_last_diff, st.s_x, st.s_y, st.s_cpu, st.s_gpu);
                         }
                     }
                     ImGui::TextWrapped("Atlas: %s", gpu_ppu_atlas_info());
@@ -5398,6 +5513,18 @@ void gb_platform_shutdown(void) {
         g_renderer = NULL;
     }
     if (g_use_gl) {   /* passo 14a */
+        if (g_gpu_compare) {   /* passo 14c-1: resumo no terminal */
+            const GpuCompareStats& st = g_gpu_stats;
+            fprintf(stderr, "[GPU] resumo: 1x %llu/%llu (meio %llu/%llu) | HD %llu/%llu (meio %llu/%llu) | "
+                    "laterais %llu/%llu | tela %llu/%llu (puladas %llu)\n",
+                    (unsigned long long)st.equal, (unsigned long long)st.compared,
+                    (unsigned long long)st.mid_equal, (unsigned long long)st.mid_compared,
+                    (unsigned long long)st.hd_equal, (unsigned long long)st.hd_compared,
+                    (unsigned long long)st.hd_mid_equal, (unsigned long long)st.hd_mid_compared,
+                    (unsigned long long)st.m_equal, (unsigned long long)st.m_compared,
+                    (unsigned long long)st.s_equal, (unsigned long long)st.s_compared,
+                    (unsigned long long)st.s_skipped);
+        }
         gpu_ppu_shutdown();   /* passo 14b */
         vgl_shutdown();
         g_use_gl = false;
@@ -6585,6 +6712,18 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
                                            g_rec_rect[2], g_rec_rect[3]);
             ppu_native_request_scene_capture();
             g_scene_for_recorder = true;
+        }
+    }
+    {   /* passo 14c-1: BIGODAO_COMPARAR_GPU=1 liga a comparação sem o menu (testes) */
+        static bool env_checked = false;
+        if (!env_checked && g_use_gl) {
+            env_checked = true;
+            const char* e = SDL_getenv("BIGODAO_COMPARAR_GPU");
+            char err[256] = "";
+            if (e && e[0] == '1' && !g_gpu_compare && gpu_ppu_init(err, sizeof(err))) {
+                g_gpu_compare = true;
+                ppu_native_gpu_capture(true);
+            }
         }
     }
     if (g_gpu_compare && g_use_gl) {   /* passo 14b-1 */

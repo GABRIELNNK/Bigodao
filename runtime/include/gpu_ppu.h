@@ -36,6 +36,21 @@ bool gpu_ppu_read_hd(uint32_t* argb, int* scale);
  * 48 da direita lado a lado), dos registros que ppu.c manda por ponto. */
 bool gpu_ppu_compose_margins_hd(const PPUNativeGpuFrame* frame);
 bool gpu_ppu_read_margins_hd(uint32_t* argb, int* scale);
+/* Passo 14c-1: a tela inteira (textura do jogo, (256 ou 160)*N x 144*N),
+ * montada como em render_frame_internal: base 1x da CPU (já com o preto e o
+ * fundo ambiente 1x das laterais) ampliada; por cima o centro HD e as
+ * laterais HD da GPU (do último gpu_ppu_compose_hd / _margins_hd) e o fundo
+ * ambiente HD. */
+typedef struct {
+    const uint32_t* base;    /* (wide ? 256 : 160) x 144, 0xAARRGGBB */
+    bool wide;
+    int scale;
+    bool hd_center;          /* usar o centro HD da GPU */
+    bool hd_margins;         /* usar as laterais HD da GPU */
+    const uint16_t* amb_q;   /* 256x144x4 (fundo ambiente * 256) ou NULL */
+} GpuScreenInput;
+bool gpu_ppu_compose_screen(const GpuScreenInput* in);
+bool gpu_ppu_read_screen(uint32_t* argb, int* w, int* h);
 /* Texto curto sobre o atlas de tiles HD (para o menu). */
 const char* gpu_ppu_atlas_info(void);
 
