@@ -1256,7 +1256,10 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
         g_gpu.hd_scale = g_hd_scale;
         g_gpu.cpu_hd = (g_hd_scale > 1 && g_cpu_hd) ? g_hd : NULL;
         g_gpu.margin_on = (g_gpu_margin_lines == (uint32_t)NATIVE_H);   /* passo 14b-4 */
-        g_gpu.level_layout = ppu_widescreen_uses_level_layout(ctx) && ctx->wram;   /* passo 3D-2 */
+        /* passo 3D-2; 3D-3m: também nos modos em que a fase continua na tela sem as
+         * laterais (portas, saída, morte, tempo esgotado — a mesma lista do contexto
+         * HD da fase), para o 3D não voltar a 2D nas transições */
+        g_gpu.level_layout = ctx->wram && (hd_context_from_ram_raw(ctx) & 0xFF00u) == PPU_NATIVE_CTX_LEVEL;
         if (g_gpu.level_layout) memcpy(g_gpu.layout, ctx->wram, sizeof(g_gpu.layout));
         g_gpu.cpu_hd_margin = g_hd_m_valid_scale > 1 ? g_hd_m : NULL;
         if (hd) {

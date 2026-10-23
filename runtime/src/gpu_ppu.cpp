@@ -278,6 +278,12 @@ const char* kView3DFragment =
     "        o_color = vec4(texture(u_tex, (fl & 4) != 0 ? v_uv : src).rgb, u_alpha);\n"
     "        return;\n"
     "    }\n"
+    "    bool deco = false;\n"   /* 3D-3k: enfeite da porta (vai com a porta) */
+    "    if (u_layer == 1 || u_layer == 6) {\n"
+    "        ivec2 ws = textureSize(u_wp, 0);\n"
+    "        deco = (int(round(texelFetch(u_wp, clamp(ivec2(v_uv * vec2(ws)), ivec2(0), ws - 1), 0).r * 255.0)) & 128) != 0;\n"
+    "        if (deco && u_layer == 6) { o_color = vec4(texture(u_tex, v_uv).rgb, 1.0); return; }\n"
+    "    }\n"
     "    if (u_layer == 4 || u_layer == 6) {\n"   /* 3D-3g: buracos (cantos do barril, água em volta da moeda) */
     "        ivec2 ws = textureSize(u_wp, 0);\n"
     "        if ((int(round(texelFetch(u_wp, clamp(ivec2(v_uv * vec2(ws)), ivec2(0), ws - 1), 0).r * 255.0)) & 16) != 0) discard;\n"
@@ -291,7 +297,7 @@ const char* kView3DFragment =
      * a cor do primeiro ponto acima, na mesma coluna, que não seja de um plano da
      * frente — se for deste plano. Assim a água continua atrás do bloco que está
      * dentro dela, o chão continua atrás do HUD, o céu atrás da água. */
-    "        int r = rank_of(code);\n"
+    "        int r = deco ? 2 : rank_of(code);\n"
     "        if (r < R) discard;\n"
     "        if (r > R) {\n"
     "            if (R == 2) discard;\n"   /* 3D-3h: a porta não continua atrás do chão (linhas pretas) */
@@ -301,6 +307,11 @@ const char* kView3DFragment =
     "            for (int k = 0; k < 144 && q.y >= step; ++k) {\n"
     "                q.y -= step;\n"
     "                rq = rank_of(int(round(texelFetch(u_clsmap, q, 0).r * 255.0)));\n"
+    "                if (R == 0 && rq == 0) {\n"   /* 3D-3k: o enfeite da porta não conta como fundo */
+    "                    ivec2 ws = textureSize(u_wp, 0);\n"
+    "                    ivec2 qw = clamp(ivec2((vec2(q) + 0.5) * vec2(ws) / vec2(sz)), ivec2(0), ws - 1);\n"
+    "                    if ((int(round(texelFetch(u_wp, qw, 0).r * 255.0)) & 128) != 0) rq = 2;\n"
+    "                }\n"
     "                if (rq <= R) break;\n"
     "            }\n"
     "            if (rq == R) uv.y = (float(q.y) + 0.5) / float(sz.y);\n"
@@ -435,33 +446,48 @@ const char* kWaterPrepFragment =
     /* 3D-3e: véu só no que está solto dentro da água (água em cima e embaixo); o
      * chão do fundo da água e o HUD não */
     "            fl = (r != 4 && below) ? (8 | 2) : 8;\n"
-    "        } else if (!hole) {\n"
-    /* 3D-3i: sem água acima, procura água ao lado (na mesma linha, atravessando
-     * blocos): atrás de um barril na beira da água a água continua, em vez do céu.
-     * A cor vem de um ponto da água deslocado de 16 em 16 (o padrão das ondas se
-     * repete), e, se for faixa, as cópias das ondas também passam por trás. */
-    /* 3D-3j: o caminho para quando passa por um ponto com a cor do céu acima (canto
-     * de barril, vão entre barris): ali era céu, não água */
-    "            vec3 skyc = vec3(-1.0);\n"
-    "            for (int yy = y - 1; yy >= 0; --yy) { int q = rk(x, yy); if (q == 0) { skyc = col(x, yy); break; } if (q < 2) break; }\n"
-    "            int best = 999, bxw = -1, side = 0;\n"
+    "        } else {\n"
+    /* 3D-3k (no lugar do 3D-3i/3j): atrás de um objeto (chão, barril, bloco) a água
+     * e as ondas continuam só 1 tile (8 pontos) a partir da beira da água, copiando
+     * o tile vizinho (o ponto 8 à frente, do lado da água) */
+    "            int best = 999, side = 0;\n"
     "            for (int sd = -1; sd <= 1; sd += 2) {\n"
-    "                for (int i = 1; i <= 64; ++i) {\n"
+    "                for (int i = 1; i <= 8; ++i) {\n"
     "                    int xx = x + sd * i;\n"
     "                    if (xx < 0 || float(xx) >= u_bw) break;\n"
     "                    int q = rk(xx, y);\n"
-    "                    if (q == 1) { if (i < best) { best = i; bxw = xx; side = sd; } break; }\n"
+    "                    if (q == 1) { if (i < best) { best = i; side = sd; } break; }\n"
     "                    if (q < 2) break;\n"
-    "                    if (skyc.r >= 0.0 && same(col(xx, y), skyc)) break;\n"
     "                }\n"
     "            }\n"
-    "            if (bxw >= 0) {\n"
-    "                int s2 = x + side * 16 * ((best + 15) / 16);\n"
-    "                if (s2 < 0 || float(s2) >= u_bw || rk(s2, y) != 1) s2 = bxw;\n"
+    "            int s2 = x + side * 8;\n"
+    "            if (side != 0 && s2 >= 0 && float(s2) < u_bw && rk(s2, y) == 1) {\n"
     "                int rf;\n"
     "                int w = water_kind(s2, y, rf);\n"
-    "                if (w == 4) { fl = 8; row = y; sx = s2; }\n"   /* 3D-3j: só o corpo da água (a faixa emprestada sombreava errado) */
+    "                if (w == 4) { fl = 8; sx = s2; }\n"
+    "                else if (w == 1) { fl = 8 | 1; sx = s2; ref = rf; }\n"
     "            }\n"
+    "        }\n"
+    "    }\n"
+    /* 3D-3k: enfeite da porta (a caveira da torre): ponto de fundo até 16 pontos
+     * acima de uma porta (só por fundo no caminho) com cor diferente da parede dos
+     * dois lados da porta, na mesma linha: vai junto com a porta */
+    "    if (r == 0) {\n"
+    "        int yd = -1;\n"
+    "        for (int i = 1; i <= 16; ++i) {\n"
+    "            int yy = y + i;\n"
+    "            if (yy >= 144) break;\n"
+    "            int q = rk(x, yy);\n"
+    "            if (q == 2 && (code_at(x, yy) & 32) != 0) { yd = yy; break; }\n"
+    "            if (q != 0) break;\n"
+    "        }\n"
+    "        if (yd >= 0) {\n"
+    "            int xl = x, xr = x;\n"
+    "            for (int i = 1; i <= 32; ++i) { int xx = x - i; if (xx < 0 || rk(xx, yd) != 2 || (code_at(xx, yd) & 32) == 0) break; xl = xx; }\n"
+    "            for (int i = 1; i <= 32; ++i) { int xx = x + i; if (float(xx) >= u_bw || rk(xx, yd) != 2 || (code_at(xx, yd) & 32) == 0) break; xr = xx; }\n"
+    "            vec3 c = col(x, y);\n"
+    "            vec3 w1 = col(max(xl - 2, 0), y), w2 = col(min(xr + 2, int(u_bw) - 1), y);\n"
+    "            if (!same(c, w1) && !same(c, w2)) fl |= 128 | 64;\n"
     "        }\n"
     "    }\n"
     "    if (hole) fl |= 16;\n"
@@ -748,6 +774,15 @@ const char* kFragment =
     "    if (wx < 0 || wy < 0 || wx >= 4096 || wy >= 512) return ivec2(-1);\n"
     "    return ivec2(wx >> 4, wy >> 4);\n"
     "}\n"
+    /* 3D-3l: plataforma ($40-$43, sólida só por cima): o tile de cima é chão, o de
+     * baixo (pernas e a sombra pintada na parede) vai para o plano da porta, atrás
+     * dos sprites e sem volume */
+    "int plat_split(int k, int id, int y) {\n"
+    "    if (k != 1 || id < 0x40 || id > 0x43) return k;\n"
+    "    uvec4 l2 = texelFetch(u_line, ivec2(2, y), 0);\n"
+    "    int wy = s16(l2.b, l2.a);\n"
+    "    return (wy & 15) >= 8 ? 3 : 1;\n"
+    "}\n"
     "int kind_at(int x, int y) {\n"
     "    if (u_level == 0) return 0;\n"
     "    ivec2 b = blk_at(x, y);\n"
@@ -755,7 +790,7 @@ const char* kFragment =
     "    int id = lay(b.x, b.y);\n"
     "    int k = kind_of(id, lay(b.x, b.y + 1));\n"
     "    if (k == 0 && id >= 0x60 && wave_over(b.x, b.y)) k = 2;\n"
-    "    return k;\n"
+    "    return plat_split(k, id, y);\n"
     "}\n"
     /* Byte da VRAM como estava quando a linha g_y foi desenhada (passo 14b-2). */
     "uint vr(int a) {\n"
@@ -858,6 +893,7 @@ const char* kFragment =
     "    uvec3 bg1 = obj_raw != 0 ? fade3(fade, m, bg_rgba) : rgba;\n"
     "    bool hudl = (texelFetch(u_line, ivec2(1, y), 0).a & 1u) != 0u;\n"   /* 3D-1b: faixa do mapa regional */
     "    g_kind = (u_level != 0 && !hudl && hs.z != 0u) ? kind_of(int(hs.z) - 1, int(hs.w) - 1) : 0;\n"   /* 3D-2 */
+    "    if (u_level != 0 && !hudl && hs.z != 0u) g_kind = plat_split(g_kind, int(hs.z) - 1, y);\n"   /* 3D-3l */
     "    if (g_kind == 0 && u_level != 0 && !hudl && hs.z != 0u && int(hs.z) - 1 >= 0x60) {\n"   /* 3D-3c: onda sobre blocos */
     "        ivec2 b = blk_at(m < 48 ? m - 48 : m + 112, y);\n"
     "        if (b.x >= 0 && lay(b.x, b.y) == int(hs.z) - 1 && wave_over(b.x, b.y)) g_kind = 2;\n"
@@ -1732,7 +1768,9 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     gl.UseProgram(g_dprog);
     gl.Uniform1f(g_dloc_alpha, alpha);
     gl.Uniform1f(g_dloc_lshade, 1.0f);
-    const L back[4] = {{0, 0, -0.8f * dist * d}, {1, 1, zf}, {5, 1, zw}, {6, 1, 0.0f}};
+    /* 3D-3k: porta logo atrás dos sprites */
+    const float zd = g_3d_level ? -(t + 0.5f) : 0.0f;
+    const L back[4] = {{0, 0, -0.8f * dist * d}, {1, 1, zf}, {5, 1, zw}, {6, 1, zd}};
     for (const L& l : back) plane(l);
     /* lados dos blocos do chão */
     if (bd > 0.0f) {
@@ -1751,10 +1789,10 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         gl.Uniform1f(g_bloc_alpha, alpha);
         gl.Uniform1f(g_bloc_light, 0.0f);
         gl.DrawArraysInstanced(kTriangles, 0, 24, (int)bw * kH);   /* 3D-3h: por ponto */
-        /* 3D-3i: portas extrudidas do plano delas (0) até o fundo, lados mais claros:
-         * a porta encosta na parede do fundo (a caveira em cima dela fica em cima) */
-        gl.Uniform1f(g_bloc_zf, 0.0f);
-        gl.Uniform1f(g_bloc_zb, zf);
+        /* 3D-3k: portas (com o enfeite em cima) extrudidas do plano delas até o fim
+         * do bloco de chão, lados mais claros */
+        gl.Uniform1f(g_bloc_zf, zd);
+        gl.Uniform1f(g_bloc_zb, -bd * 0.5f);
         gl.Uniform1i(g_bloc_mode, 2);
         gl.Uniform1f(g_bloc_light, 0.35f);
         gl.DrawArraysInstanced(kTriangles, 0, 24, (int)bw * kH);
