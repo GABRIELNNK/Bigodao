@@ -220,6 +220,15 @@ struct GpuCompareStats {
     int s_x = -1, s_y = -1, s_w = 0, s_h = 0;
     uint32_t s_cpu = 0, s_gpu = 0;
     double s_ms_total = 0.0;
+    /* Passo 14d-1: camadas do 120 fps */
+    uint64_t ip_compared = 0, ip_equal = 0;
+    /* Passo 14e-1: tela com filtro de pós-processamento */
+    uint64_t f_compared = 0, f_equal = 0;
+    uint32_t f_last_diff = 0;
+    int f_x = -1, f_y = -1, f_mode = 0;
+    uint32_t f_cpu = 0, f_gpu = 0;
+    uint32_t ip_last_bg = 0, ip_last_obj = 0;
+    int ip_x = -1, ip_y = -1;
 };
 /* Passo 14c-2: a GPU monta a tela (Graphics > "Montagem da tela"). */
 static int g_gpu_screen_pref = 1;        /* 0 = CPU, 1 = GPU (pref display.gpu_screen); GPU padrão (passo 14c-3) */
@@ -228,6 +237,7 @@ static unsigned g_gpu_vtex_id = 0;
 static bool g_gpu_screen_valid = false;  /* a última tela da GPU pode ser mostrada de novo */
 static int g_gpu_screen_w = 0, g_gpu_screen_h = 0;
 static bool g_gpu_screen_shown = false;  /* o último quadro mostrado veio da GPU */
+static bool g_gpu_frame_on_gpu = false;  /* passo 14d-1: o quadro do jogo atual está na tela da GPU */
 static std::string g_gpu_screen_error;
 static bool g_gpu_center_ok = false;    /* passo 14c-1: a GPU montou o centro HD deste quadro */
 static bool g_gpu_margins_ok = false;   /* e as laterais HD */
@@ -3257,6 +3267,12 @@ struct IpSprite {
 
 static VidTex* g_ip_tex_bg = NULL;    /* cenario sem os sprites */
 static VidTex* g_ip_tex_obj = NULL;   /* so os sprites (alfa) */
+/* Passo 14d-1: as camadas podem ser texturas da GPU embrulhadas */
+static bool g_ip_tex_gpu = false;
+static unsigned g_ip_gpu_bg_id = 0, g_ip_gpu_obj_id = 0;
+static SDL_Rect g_ip_obj_rect = {0, 0, 0, 0};   /* onde a CPU pôs a camada de sprites */
+static uint16_t g_ip_runs[GB_SCREEN_HEIGHT * GB_WIDESCREEN_WIDTH * 2];
+
 static int g_ip_tex_w = 0;
 static int g_ip_tex_h = 0;
 static std::vector<uint32_t> g_ip_comp;    /* quadro montado (o mesmo da tela) */
@@ -3359,13 +3375,10 @@ static void ip_invalidate(void) {
     g_ip_have_prev = false;
 }
 
+static void ip_drop_textures(void);
+
 static void ip_release_textures(void) {
-    if (g_ip_tex_bg) vid_tex_destroy(g_ip_tex_bg);
-    if (g_ip_tex_obj) vid_tex_destroy(g_ip_tex_obj);
-    g_ip_tex_bg = NULL;
-    g_ip_tex_obj = NULL;
-    g_ip_tex_w = 0;
-    g_ip_tex_h = 0;
+    ip_drop_textures();   /* passo 14d-1 */
     ip_invalidate();
 }
 
@@ -3394,10 +3407,24 @@ static uint32_t ip_mid_per_second(void) {
     return g_ip_mid_per_s;
 }
 
+static bool ip_test_mid(void);
+
 static bool ip_mid_wanted(void) {
     return g_fps_mode == 1 && g_ip_valid && g_ip_have_prev && vid_ready() &&
            g_ip_tex_bg && g_ip_tex_obj && !g_benchmark_mode && !g_app_suspended &&
-           effective_speed_percent() == 100 && ip_refresh_ok();
+           effective_speed_percent() == 100 && (ip_refresh_ok() || ip_test_mid());
+}
+
+/* Passo 14d-1: BIGODAO_TESTE_MEIO=1 (testes) sempre usa o quadro do meio e
+ * não mostra o quadro do jogo depois dele: a última imagem na janela fica
+ * sendo o quadro do meio, para fotografar. */
+static bool ip_test_mid(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char* e = SDL_getenv("BIGODAO_TESTE_MEIO");
+        on = (e && e[0] == '1') ? 1 : 0;
+    }
+    return on == 1;
 }
 
 /* Passo 10c */
@@ -3405,6 +3432,7 @@ static bool ip_mid_ready_note(void) {
     if (!g_ip_valid) { ip_note_skip(IP_SKIP_NO_FRAME); return false; }
     if (!g_ip_have_prev) { ip_note_skip(IP_SKIP_NO_PREV); return false; }
     if (!ip_mid_wanted()) { ip_note_skip(IP_SKIP_OFF); return false; }
+    if (ip_test_mid()) return true;   /* passo 14d-1: teste */
     /* Passo 10d: buffer de audio baixo ou quadros atrasando: so o quadro do jogo */
     if (audio_output_should_run() && g_audio_started &&
         audio_ring_fill_samples() < g_audio_low_watermark) {
@@ -3563,6 +3591,9 @@ static void ip_build_line_shifts(void) {
 }
 
 static bool ip_ensure_textures(int w, int h) {
+    if (g_ip_tex_gpu) {   /* passo 14d-1: estavam embrulhando as da GPU */
+        ip_drop_textures();
+    }
     if (g_ip_tex_bg && g_ip_tex_obj && g_ip_tex_w == w && g_ip_tex_h == h) {
         return true;
     }
@@ -3588,13 +3619,42 @@ static bool ip_ensure_textures(int w, int h) {
 
 /* Chamado com o quadro do jogo ja montado em g_ip_comp: copia para a textura
  * da tela e prepara o cenario sem sprites e a camada de sprites. */
-static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int tex_h,
-                              int scale, int base_w, bool black_fill) {
-    /* Passo 10f: a copia para a textura da tela vai mais abaixo, so se
-     * este quadro nao usar o quadro do meio. */
-    g_ip_use_mid = false;
-    g_ip_tex_stale = false;
+/* Passo 14d-1: as camadas do 120 fps podem vir da GPU (texturas dela
+ * embrulhadas) ou da CPU (texturas próprias). */
 
+/* Solta as texturas das camadas sem esquecer os quadros (ip_release_textures esquece). */
+static void ip_drop_textures(void) {
+    if (g_ip_tex_bg) vid_tex_destroy(g_ip_tex_bg);
+    if (g_ip_tex_obj) vid_tex_destroy(g_ip_tex_obj);
+    g_ip_tex_bg = NULL;
+    g_ip_tex_obj = NULL;
+    g_ip_tex_w = 0;
+    g_ip_tex_h = 0;
+    g_ip_tex_gpu = false;
+    g_ip_gpu_bg_id = g_ip_gpu_obj_id = 0;
+}
+
+/* Trechos de pontos de sprite (g_ip_owner) por linha, para a GPU. */
+static void ip_build_runs(int base_w) {
+    memset(g_ip_runs, 0, sizeof(g_ip_runs));
+    for (int y = 0; y < GB_SCREEN_HEIGHT; y++) {
+        const uint8_t* ow = g_ip_owner + (size_t)y * base_w;
+        uint16_t* r = g_ip_runs + (size_t)y * GB_WIDESCREEN_WIDTH * 2;
+        int x = 0;
+        while (x < base_w) {
+            if (!ow[x]) { x++; continue; }
+            const int a = x;
+            while (x < base_w && ow[x]) x++;
+            for (int k = a; k < x; k++) {
+                r[k * 2] = (uint16_t)(a + 1);
+                r[k * 2 + 1] = (uint16_t)x;
+            }
+        }
+    }
+}
+
+/* O quadro atual vira o anterior; sprites e deslocamentos do quadro novo. */
+static void ip_capture_state(int scale, int base_w, bool black_fill) {
     /* O quadro atual vira o anterior. */
     memcpy(g_ip_oam_prev, g_ip_oam_cur, sizeof(g_ip_oam_prev));
     memcpy(g_ip_lines_prev, g_ip_lines_cur, sizeof(g_ip_lines_prev));
@@ -3624,6 +3684,18 @@ static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int te
 
     ip_build_sprites(ctx);
     ip_build_line_shifts();
+}
+
+/* Chamado com o quadro do jogo ja montado em g_ip_comp: copia para a textura
+ * da tela e prepara o cenario sem sprites e a camada de sprites. */
+static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int tex_h,
+                              int scale, int base_w, bool black_fill) {
+    /* Passo 10f: a copia para a textura da tela vai mais abaixo, so se
+     * este quadro nao usar o quadro do meio. */
+    g_ip_use_mid = false;
+    g_ip_tex_stale = false;
+    g_ip_obj_rect = SDL_Rect{0, 0, 0, 0};
+    ip_capture_state(scale, base_w, black_fill);   /* passo 14d-1: separado */
 
     const bool ip_tex_ok = ip_ensure_textures(tex_w, tex_h);
     if (ip_tex_ok) {
@@ -3674,6 +3746,7 @@ static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int te
             }
         }
         const SDL_Rect r = {rx, ry, rw, rh};
+        g_ip_obj_rect = r;   /* passo 14d-1 */
         vid_tex_update(g_ip_tex_obj, &r, g_ip_obj.data(), rw * (int)sizeof(uint32_t));
 
         for (int ty = ry; ty < ry + rh; ty++) {
@@ -3841,6 +3914,140 @@ static void gpu_compare_screen(const void* cpu_pixels, int cpu_pitch, int w, int
     }
 }
 
+/* Passo 14e-1: o filtro de pós-processamento da GPU (sobre a tela que ela
+ * acabou de montar) contra o da CPU. Sem filtro, só deixa a tela sem filtro
+ * valendo (a comparação da tela inteira já cobre). */
+static std::vector<uint32_t> g_gpu_read_f;
+static void gpu_compare_filter(const void* cpu_pixels, int cpu_pitch, int w, int h) {
+    const int mode = (int)g_post_filter_mode;
+    if (!gpu_ppu_apply_filter(mode)) {
+        g_gpu_error = "a GPU nao conseguiu aplicar o filtro";
+        g_gpu_last_screen_ok = false;
+        return;
+    }
+    if (mode == GB_POST_FILTER_NONE) return;
+    g_gpu_read_f.resize((size_t)w * h);
+    if (!gpu_ppu_read_final(g_gpu_read_f.data())) {
+        g_gpu_error = "a GPU nao conseguiu ler a tela filtrada";
+        return;
+    }
+    GpuCompareStats& st = g_gpu_stats;
+    uint32_t diff = 0;
+    int fx = -1, fy = -1;
+    for (int y = 0; y < h; ++y) {
+        const uint32_t* c = (const uint32_t*)((const uint8_t*)cpu_pixels + (size_t)y * cpu_pitch);
+        const uint32_t* g = &g_gpu_read_f[(size_t)y * w];
+        for (int x = 0; x < w; ++x) {
+            if (((c[x] ^ g[x]) & 0x00FFFFFFu) != 0) {
+                if (!diff) { fx = x; fy = y; }
+                diff++;
+            }
+        }
+    }
+    st.f_compared++;
+    st.f_mode = mode;
+    if (!diff) {
+        st.f_equal++;
+        return;
+    }
+    st.f_last_diff = diff;
+    st.f_x = fx;
+    st.f_y = fy;
+    st.f_cpu = ((const uint32_t*)((const uint8_t*)cpu_pixels + (size_t)fy * cpu_pitch))[fx];
+    st.f_gpu = g_gpu_read_f[(size_t)fy * w + fx];
+    if (st.f_compared - st.f_equal <= 20u) {
+        fprintf(stderr, "[GPU-FILTRO] %s: %u pontos diferentes, primeiro (%d,%d) cpu %08X gpu %08X\n",
+                post_processing_get_names()[mode], diff, fx, fy, st.f_cpu, st.f_gpu);
+    }
+}
+
+/* Passo 14d-1: 120 fps com a tela da GPU: mesma preparação da CPU
+ * (ip_capture_state), camadas feitas na GPU e embrulhadas para o ip_draw_mid. */
+static bool ip_gpu_capture(int scale, int base_w, bool black_fill) {
+    g_ip_use_mid = false;
+    g_ip_tex_stale = false;   /* a tela da GPU já tem o quadro do jogo */
+    ip_capture_state(scale, base_w, black_fill);
+    ip_build_runs(base_w);
+    if (!gpu_ppu_compose_ip_layers(g_ip_runs, scale)) {
+        return false;
+    }
+    int w = 0, h = 0;
+    const unsigned bg = gpu_ppu_ip_texture(false, &w, &h);
+    const unsigned obj = gpu_ppu_ip_texture(true, NULL, NULL);
+    if (!bg || !obj) return false;
+    if (!g_ip_tex_gpu || g_ip_gpu_bg_id != bg || g_ip_gpu_obj_id != obj) {
+        ip_drop_textures();
+        g_ip_tex_bg = new VidTex();
+        g_ip_tex_bg->gl = vgl_tex_wrap(bg, w, h);
+        g_ip_tex_obj = new VidTex();
+        g_ip_tex_obj->gl = vgl_tex_wrap(obj, w, h);
+        vid_tex_set_blend(g_ip_tex_bg, false);
+        vid_tex_set_blend(g_ip_tex_obj, true);
+        g_ip_tex_gpu = true;
+        g_ip_gpu_bg_id = bg;
+        g_ip_gpu_obj_id = obj;
+        g_ip_tex_w = w;
+        g_ip_tex_h = h;
+    }
+    const bool linear = (g_render_filter_mode == GB_RENDER_FILTER_LINEAR);
+    vid_tex_set_linear(g_ip_tex_bg, linear);
+    vid_tex_set_linear(g_ip_tex_obj, linear);
+    g_ip_valid = true;
+    g_ip_use_mid = (g_fps_mode == 1) && ip_mid_ready_note();
+    return true;
+}
+
+/* Passo 14d-1: com a comparação ligada, as camadas da CPU (ip_finish_capture,
+ * já feitas) contra as da GPU feitas a partir da mesma tela. */
+static std::vector<uint32_t> g_gpu_read_ibg, g_gpu_read_iobj;
+static void ip_gpu_compare_layers(int tex_w, int tex_h, int scale) {
+    if (!g_ip_valid || g_ip_tex_gpu || !g_gpu_last_screen_ok) return;
+    int w = 0, h = 0;
+    if (!gpu_ppu_screen_texture(&w, &h) || w != tex_w || h != tex_h) return;
+    ip_build_runs(g_ip_base_w);
+    g_gpu_read_ibg.resize((size_t)w * h);
+    g_gpu_read_iobj.resize((size_t)w * h);
+    if (!gpu_ppu_compose_ip_layers(g_ip_runs, scale) || !gpu_ppu_read_ip_layer(false, g_gpu_read_ibg.data()) ||
+        !gpu_ppu_read_ip_layer(true, g_gpu_read_iobj.data())) {
+        g_gpu_error = "a GPU nao conseguiu montar as camadas do 120 fps";
+        return;
+    }
+    GpuCompareStats& st = g_gpu_stats;
+    uint32_t dbg = 0, dobj = 0;
+    int fx = -1, fy = -1;
+    for (int i = 0; i < w * h; ++i) {
+        if (((g_gpu_read_ibg[(size_t)i] ^ g_ip_comp[(size_t)i]) & 0x00FFFFFFu) != 0) {
+            if (!dbg && !dobj) { fx = i % w; fy = i / w; }
+            dbg++;
+        }
+    }
+    const SDL_Rect& r = g_ip_obj_rect;
+    for (int y = 0; y < r.h; ++y) {
+        for (int x = 0; x < r.w; ++x) {
+            const uint32_t c = g_ip_obj[(size_t)y * r.w + x];
+            const uint32_t g = g_gpu_read_iobj[(size_t)(r.y + y) * w + r.x + x];
+            const bool same = (c >> 24) == 0 ? (g >> 24) == 0 : c == g;
+            if (!same) {
+                if (!dbg && !dobj) { fx = r.x + x; fy = r.y + y; }
+                dobj++;
+            }
+        }
+    }
+    st.ip_compared++;
+    if (!dbg && !dobj) {
+        st.ip_equal++;
+        return;
+    }
+    st.ip_last_bg = dbg;
+    st.ip_last_obj = dobj;
+    st.ip_x = fx;
+    st.ip_y = fy;
+    if (st.ip_compared - st.ip_equal <= 20u) {
+        fprintf(stderr, "[GPU-120] camadas diferentes: cenario %u pontos, sprites %u pontos, primeiro (%d,%d)\n",
+                dbg, dobj, fx, fy);
+    }
+}
+
 /* Linha base 1x da tela (render_frame_internal, paleta original): o quadro
  * do jogo (esticando as bordas se vier com 160 px), com as laterais pretas ou
  * o fundo ambiente 1x nas telas sem cenário. Passo 14c-2: separada para a
@@ -3881,8 +4088,6 @@ static void build_base_row(int y, const uint32_t* src, bool src_is_wide, int bas
 static const char* gpu_screen_blocker(void) {
     if (!g_use_gl) return "precisa do Video OpenGL";
     if (g_palette_idx != 0) return "paleta alternativa em uso (so a CPU faz)";
-    if (g_post_filter_mode != GB_POST_FILTER_NONE) return "filtro de pos-processamento em uso (so a CPU faz)";
-    if (g_fps_mode == 1) return "120 fps em uso (so a CPU faz, por enquanto)";
     if (ppu_native_get_mode() == PPU_RENDERER_EMULATED) return "renderizador Emulado em uso";
     if (!g_gpu_screen_error.empty()) return g_gpu_screen_error.c_str();
     return NULL;
@@ -3918,6 +4123,8 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     if (!count_guest_frame) {
         return g_gpu_screen_valid && g_gpu_screen_w == w && g_gpu_screen_h == h;
     }
+    g_ip_tex_stale = false;   /* a tela da GPU sempre tem o quadro do jogo */
+    g_ip_use_mid = false;     /* passo 14d-1: ip_gpu_capture decide */
     /* mesma escolha da fonte que o caminho da CPU */
     const uint32_t* src = framebuffer;
     int src_pixel_count = GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT;
@@ -3947,13 +4154,16 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     in.hd_center = g_gpu_center_ok && g_use_hd_frame;
     in.hd_margins = in.hd_center && g_gpu_margins_ok && in.wide && src_is_wide && !black_fill;
     in.amb_q = (ws_ambient && scale > 1) ? &g_ws_amb_q[0][0][0] : NULL;
-    if (!gpu_ppu_compose_screen(&in)) {
+    if (!gpu_ppu_compose_screen(&in) || !gpu_ppu_apply_filter((int)g_post_filter_mode)) {   /* passo 14e-1: filtro */
         g_gpu_screen_valid = false;
         return false;
     }
     g_gpu_screen_valid = true;
     g_gpu_screen_w = w;
     g_gpu_screen_h = h;
+    if (ip_capture_wanted(true)) {   /* passo 14d-1: camadas do 120 fps na GPU */
+        ip_gpu_capture(scale, base_width, black_fill);
+    }
     return true;
 }
 
@@ -4112,8 +4322,6 @@ static void render_frame_internal(const uint32_t* framebuffer,
             const double t0 = sdl_now_ms();
             gpu_shown = gpu_present_frame(framebuffer, count_guest_frame, framebuffer_is_widescreen);
             if (gpu_shown) {
-                g_ip_tex_stale = false;
-                g_ip_use_mid = false;
                 g_last_timing.upload_ms = sdl_now_ms() - t0;
             }
         }
@@ -4380,14 +4588,24 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
     // Aplica o filtro de pós-processamento ativo diretamente no buffer escalado
     post_processing_apply(g_post_filter_mode, (uint32_t*)pixels, texture_width, texture_height, pitch);
+    if (g_gpu_compare && g_use_gl && g_palette_idx == 0 && count_guest_frame && g_gpu_last_screen_ok) {
+        gpu_compare_filter(pixels, pitch, texture_width, texture_height);   /* passo 14e-1 */
+    }
 
     if (ip_capture) {   /* passo 10a */
         ip_finish_capture(ip_tex_pixels, ip_tex_pitch, texture_width, texture_height,
                           scale, base_width, black_fill_non_side_scrolling);
+        if (g_gpu_compare && g_use_gl && g_palette_idx == 0) {   /* passo 14d-1 (14e-1: com filtro também) */
+            ip_gpu_compare_layers(texture_width, texture_height, scale);
+        }
     }
     vid_tex_unlock(g_texture);   /* passo 14a */
     g_last_timing.upload_ms = sdl_now_ms() - upload_start_ms;
     }   /* passo 10a: fim do if (!g_ip_mid_draw) */
+
+    if (!g_ip_mid_draw && count_guest_frame) {
+        g_gpu_frame_on_gpu = gpu_shown;   /* passo 14d-1: de quem é o quadro do jogo atual */
+    }
 
     /* Clear and render */
     double compose_start_ms = sdl_now_ms();
@@ -4403,7 +4621,8 @@ static void render_frame_internal(const uint32_t* framebuffer,
             ip_draw_mid();
             g_ip_draw_t = -0.5f;
         } else {
-            vid_copy(g_texture, NULL, &g_game_viewport);
+            VidTex* gt = g_gpu_frame_on_gpu ? gpu_screen_vtex() : NULL;   /* passo 14d-1 */
+            vid_copy(gt ? gt : g_texture, NULL, &g_game_viewport);
         }
     } else if (count_guest_frame && g_ip_use_mid) {
         g_ip_use_mid = false;
@@ -4800,6 +5019,27 @@ static void render_frame_internal(const uint32_t* framebuffer,
                             ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
                                                st.s_last_diff, st.s_x, st.s_y, st.s_cpu, st.s_gpu);
                         }
+                    }
+                    if (st.f_compared > 0) {   /* passo 14e-1 */
+                        ImGui::Text("Filtro (%s): conferidas %llu  iguais: %llu  com diferenca: %llu",
+                                    post_processing_get_names()[st.f_mode], (unsigned long long)st.f_compared,
+                                    (unsigned long long)st.f_equal,
+                                    (unsigned long long)(st.f_compared - st.f_equal));
+                        if (st.f_x >= 0) {
+                            ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                                               st.f_last_diff, st.f_x, st.f_y, st.f_cpu, st.f_gpu);
+                        }
+                    }
+                    if (st.ip_compared > 0) {   /* passo 14d-1 */
+                        ImGui::Text("Camadas 120 fps: conferidas %llu  iguais: %llu  com diferenca: %llu",
+                                    (unsigned long long)st.ip_compared, (unsigned long long)st.ip_equal,
+                                    (unsigned long long)(st.ip_compared - st.ip_equal));
+                        if (st.ip_x >= 0) {
+                            ImGui::TextWrapped("  Ultima diferenca: cenario %u, sprites %u pontos, primeiro (%d,%d)",
+                                               st.ip_last_bg, st.ip_last_obj, st.ip_x, st.ip_y);
+                        }
+                    } else if (g_fps_mode == 1) {
+                        ImGui::TextWrapped("Camadas 120 fps: aparecem quando o quadro do meio estiver ligado.");
                     }
                     ImGui::TextWrapped("Atlas: %s", gpu_ppu_atlas_info());
                     if (ImGui::Button("Zerar contagem")) {
@@ -5678,14 +5918,16 @@ void gb_platform_shutdown(void) {
         if (g_gpu_compare) {   /* passo 14c-1: resumo no terminal */
             const GpuCompareStats& st = g_gpu_stats;
             fprintf(stderr, "[GPU] resumo: 1x %llu/%llu (meio %llu/%llu) | HD %llu/%llu (meio %llu/%llu) | "
-                    "laterais %llu/%llu | tela %llu/%llu (puladas %llu)\n",
+                    "laterais %llu/%llu | tela %llu/%llu (puladas %llu) | 120fps %llu/%llu | filtro %llu/%llu\n",
                     (unsigned long long)st.equal, (unsigned long long)st.compared,
                     (unsigned long long)st.mid_equal, (unsigned long long)st.mid_compared,
                     (unsigned long long)st.hd_equal, (unsigned long long)st.hd_compared,
                     (unsigned long long)st.hd_mid_equal, (unsigned long long)st.hd_mid_compared,
                     (unsigned long long)st.m_equal, (unsigned long long)st.m_compared,
                     (unsigned long long)st.s_equal, (unsigned long long)st.s_compared,
-                    (unsigned long long)st.s_skipped);
+                    (unsigned long long)st.s_skipped,
+                    (unsigned long long)st.ip_equal, (unsigned long long)st.ip_compared,
+                    (unsigned long long)st.f_equal, (unsigned long long)st.f_compared);
         }
         if (g_gpu_vtex) {   /* passo 14c-2 */
             vid_tex_destroy(g_gpu_vtex);
@@ -7066,6 +7308,9 @@ void gb_platform_vsync(uint32_t frame_cycles) {
      * o monitor); se o jogo demorou mais que meio quadro, sai assim que der. */
     /* Passo 10c: o quadro do meio ja saiu no lugar do quadro do jogo; o
      * quadro do jogo sai meio quadro depois (sempre sai, mesmo atrasado). */
+    if (g_ip_pending_main && ip_test_mid()) {
+        g_ip_pending_main = false;   /* passo 14d-1: teste, fica o quadro do meio na janela */
+    }
     if (g_ip_pending_main) {
         g_ip_pending_main = false;
         g_ip_last_gap_ms = (target_frame_time > now)

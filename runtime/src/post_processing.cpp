@@ -31,12 +31,16 @@ static inline bool color_diff(uint32_t c1, uint32_t c2, int threshold = 30) {
     return (std::abs(r1 - r2) + std::abs(g1 - g2) + std::abs(b1 - b2)) > threshold;
 }
 
-/* Helper de interpolação linear simples de cor */
-static inline uint32_t mix_colors(uint32_t c1, uint32_t c2, float weight = 0.5f) {
-    uint32_t a = c1 & 0xFF000000;
-    uint32_t r = (uint32_t)(((c1 >> 16) & 0xFF) * (1.0f - weight) + ((c2 >> 16) & 0xFF) * weight);
-    uint32_t g = (uint32_t)(((c1 >> 8) & 0xFF) * (1.0f - weight) + ((c2 >> 8) & 0xFF) * weight);
-    uint32_t b = (uint32_t)((c1 & 0xFF) * (1.0f - weight) + (c2 & 0xFF) * weight);
+/* Helper de interpolação linear simples de cor.
+ * Passo 14e-1: peso em 1/256 e só inteiros (antes era float), para a GPU
+ * (gpu_ppu, filtros) dar exatamente o mesmo resultado. Pesos usados:
+ * 0,5 = 128; 0,25 = 64; 0,30 = 77; 0,45 = 115; 0,12 = 31. */
+static inline uint32_t mix_colors(uint32_t c1, uint32_t c2, uint32_t w256 = 128u) {
+    const uint32_t a = c1 & 0xFF000000;
+    const uint32_t k = 256u - w256;
+    const uint32_t r = (((c1 >> 16) & 0xFF) * k + ((c2 >> 16) & 0xFF) * w256) >> 8;
+    const uint32_t g = (((c1 >> 8) & 0xFF) * k + ((c2 >> 8) & 0xFF) * w256) >> 8;
+    const uint32_t b = ((c1 & 0xFF) * k + (c2 & 0xFF) * w256) >> 8;
     return a | (r << 16) | (g << 8) | b;
 }
 
@@ -50,9 +54,9 @@ static void apply_lcd_grid(uint32_t* pixels, int width, int height, int pitch) {
             if (is_grid_row || (x % 2 == 1)) {
                 uint32_t p = row[x];
                 uint32_t a = p & 0xFF000000;
-                uint32_t r = (uint32_t)(((p >> 16) & 0xFF) * 0.75f);
-                uint32_t g = (uint32_t)(((p >> 8)  & 0xFF) * 0.75f);
-                uint32_t b = (uint32_t)(( p        & 0xFF) * 0.75f);
+                uint32_t r = (((p >> 16) & 0xFF) * 3u) / 4u;   /* = canal * 0,75 (passo 14e-1: inteiros) */
+                uint32_t g = (((p >> 8)  & 0xFF) * 3u) / 4u;
+                uint32_t b = (( p        & 0xFF) * 3u) / 4u;
                 row[x] = a | (r << 16) | (g << 8) | b;
             }
         }
@@ -67,9 +71,9 @@ static void apply_scanlines(uint32_t* pixels, int width, int height, int pitch) 
         for (int x = 0; x < width; x++) {
             uint32_t p = row[x];
             uint32_t a = p & 0xFF000000;
-            uint32_t r = (uint32_t)(((p >> 16) & 0xFF) * 0.60f);
-            uint32_t g = (uint32_t)(((p >> 8)  & 0xFF) * 0.60f);
-            uint32_t b = (uint32_t)(( p        & 0xFF) * 0.60f);
+            uint32_t r = (((p >> 16) & 0xFF) * 6u) / 10u;   /* = canal * 0,60 (passo 14e-1: inteiros) */
+            uint32_t g = (((p >> 8)  & 0xFF) * 6u) / 10u;
+            uint32_t b = (( p        & 0xFF) * 6u) / 10u;
             row[x] = a | (r << 16) | (g << 8) | b;
         }
     }
@@ -133,8 +137,8 @@ static void apply_hq2x(uint32_t* pixels, int width, int height, int pitch) {
             bool diff_right = color_diff(P5, P6);
 
             uint32_t blend = P5;
-            if (diff_top && diff_left) blend = mix_colors(P5, mix_colors(P2, P4, 0.5f), 0.25f);
-            else if (diff_bottom && diff_right) blend = mix_colors(P5, mix_colors(P8, P6, 0.5f), 0.25f);
+            if (diff_top && diff_left) blend = mix_colors(P5, mix_colors(P2, P4, 128u), 64u);
+            else if (diff_bottom && diff_right) blend = mix_colors(P5, mix_colors(P8, P6, 128u), 64u);
 
             pixels[y * pitch_pixels + x] = blend;
         }
@@ -147,7 +151,7 @@ static void apply_xbrz(uint32_t* pixels, int width, int height, int pitch, int s
     std::vector<uint32_t> src((size_t)(pitch_pixels * height));
     std::memcpy(src.data(), pixels, (size_t)(pitch * height));
 
-    float blend_weight = (scale == 4) ? 0.45f : 0.30f;
+    const uint32_t blend_weight = (scale == 4) ? 115u : 77u;   /* 0,45 / 0,30 em 1/256 */
 
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -166,9 +170,9 @@ static void apply_xbrz(uint32_t* pixels, int width, int height, int pitch, int s
 
             uint32_t out = E;
             if (edge_diagonal_1) {
-                out = mix_colors(E, mix_colors(D, B, 0.5f), blend_weight);
+                out = mix_colors(E, mix_colors(D, B, 128u), blend_weight);
             } else if (edge_diagonal_2) {
-                out = mix_colors(E, mix_colors(B, F, 0.5f), blend_weight);
+                out = mix_colors(E, mix_colors(B, F, 128u), blend_weight);
             }
 
             pixels[y * pitch_pixels + x] = out;
@@ -193,10 +197,10 @@ static void apply_pixel_perfect_sharp(uint32_t* pixels, int width, int height, i
 
             // Aplica uma suavização extremamente sutil apenas na transição direta de bordas (1 pixel de raio)
             if (color_diff(current, right, 40)) {
-                current = mix_colors(current, right, 0.12f);
+                current = mix_colors(current, right, 31u);   /* 0,12 */
             }
             if (color_diff(current, down, 40)) {
-                current = mix_colors(current, down, 0.12f);
+                current = mix_colors(current, down, 31u);
             }
 
             pixels[y * pitch_pixels + x] = current;

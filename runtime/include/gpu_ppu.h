@@ -54,6 +54,21 @@ bool gpu_ppu_read_screen(uint32_t* argb, int* w, int* h);
 /* Passo 14c-2: a textura da tela (RGBA, linha 0 = topo) para desenhar na
  * janela; 0 se ainda não existe. Muda de id quando o tamanho muda. */
 unsigned int gpu_ppu_screen_texture(int* w, int* h);
+/* Passo 14e-1: filtro de pós-processamento (GBPostFilterMode; 0 = nenhum)
+ * sobre a última tela, com as mesmas contas de post_processing.cpp. Depois
+ * dele, gpu_ppu_screen_texture e as camadas do 120 fps usam a tela filtrada. */
+bool gpu_ppu_apply_filter(int mode);
+bool gpu_ppu_read_final(uint32_t* argb);
+
+/* Passo 14d-1: camadas do 120 fps a partir da última tela da GPU (mesmo
+ * tamanho). runs: 256x144 pares (início + 1, fim) do trecho de pontos de
+ * sprite que contém cada ponto da resolução base (0 = cenário), na largura
+ * base (256 ou 160; o resto da linha é ignorado). Cenário: o trecho é
+ * preenchido metade com o ponto à esquerda, metade com o da direita; sprites:
+ * só os pontos de sprite, opacos, o resto transparente. */
+bool gpu_ppu_compose_ip_layers(const uint16_t* runs, int scale);
+unsigned int gpu_ppu_ip_texture(bool obj, int* w, int* h);
+bool gpu_ppu_read_ip_layer(bool obj, uint32_t* argb);
 /* Texto curto sobre o atlas de tiles HD (para o menu). */
 const char* gpu_ppu_atlas_info(void);
 

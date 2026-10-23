@@ -88,6 +88,7 @@ struct Fns {
     VGL_FN(void, UseProgram, (GLuint))
     VGL_FN(GLint, GetUniformLocation, (GLuint, const GLchar*))
     VGL_FN(void, Uniform1i, (GLint, GLint))
+    VGL_FN(void, Uniform2i, (GLint, GLint, GLint))   /* passo 14e-1 */
     VGL_FN(void, GenVertexArrays, (GLsizei, GLuint*))
     VGL_FN(void, DeleteVertexArrays, (GLsizei, const GLuint*))
     VGL_FN(void, BindVertexArray, (GLuint))

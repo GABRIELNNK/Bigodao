@@ -37,7 +37,7 @@ bool load_fns(std::string& missing) {
     L(DeleteBuffers) L(BindBuffer) L(BufferData) L(VertexAttribPointer)
     L(EnableVertexAttribArray) L(DrawArrays)
     L(GenFramebuffers) L(DeleteFramebuffers) L(BindFramebuffer) L(FramebufferTexture2D)
-    L(CheckFramebufferStatus) L(TexImage3D) L(TexSubImage3D) L(GetIntegerv)
+    L(CheckFramebufferStatus) L(TexImage3D) L(TexSubImage3D) L(GetIntegerv) L(Uniform2i)
 #undef L
     return ok;
 }
