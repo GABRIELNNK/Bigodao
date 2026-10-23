@@ -327,11 +327,13 @@ struct Saved {
     uint8_t buttons, dpad;
     int hd_scale;
     bool attr_debug;
+    bool cpu_hd;   /* passo 14c-2: o gabarito compara o HD da CPU */
 };
 
 Saved enter() {
     Saved s{g_joypad_buttons, g_joypad_dpad, ppu_native_get_hd_scale(),
-            ppu_get_widescreen_attr_debug()};
+            ppu_get_widescreen_attr_debug(), ppu_native_get_cpu_hd()};
+    ppu_native_set_cpu_hd(true);
     g_joypad_buttons = 0xFF;   /* nenhum botão */
     g_joypad_dpad = 0xFF;
     ppu_native_set_hd_scale(kHdScale);
@@ -344,6 +346,7 @@ void leave(const Saved& s) {
     g_joypad_dpad = s.dpad;
     ppu_native_set_hd_scale(s.hd_scale);
     ppu_set_widescreen_attr_debug(s.attr_debug);
+    ppu_native_set_cpu_hd(s.cpu_hd);
 }
 
 void do_capture(GBContext* ctx, const std::string& live_state) {

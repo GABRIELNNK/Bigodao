@@ -795,8 +795,9 @@ bool gpu_ppu_compose_screen(const GpuScreenInput* in) {
     if (!g_ready || !in || !in->base || in->scale < 1 || in->scale > kMaxScale) return false;
     const int bw = in->wide ? 256 : 160;
     const int w = bw * in->scale, h = kH * in->scale;
-    if (in->hd_center && g_out_hd_scale != in->scale) return false;
-    if (in->hd_margins && g_out_m_scale != in->scale) return false;
+    /* HD de outra escala (troca no meio): fica a base ampliada, como na CPU */
+    const bool hd_center = in->hd_center && g_out_hd_scale == in->scale;
+    const bool hd_margins = hd_center && in->hd_margins && g_out_m_scale == in->scale;
     if (!g_sprog) {
         std::string e;
         g_sprog = link_program(std::string(shader_header()) + kVertex,
@@ -853,13 +854,20 @@ bool gpu_ppu_compose_screen(const GpuScreenInput* in) {
     gl.ActiveTexture(kTexture0);
     gl.Uniform1i(g_sloc_scale, in->scale);
     gl.Uniform1i(g_sloc_wide, in->wide ? 1 : 0);
-    gl.Uniform1i(g_sloc_hdc, in->hd_center ? 1 : 0);
-    gl.Uniform1i(g_sloc_hdm, in->hd_margins ? 1 : 0);
+    gl.Uniform1i(g_sloc_hdc, hd_center ? 1 : 0);
+    gl.Uniform1i(g_sloc_hdm, hd_margins ? 1 : 0);
     gl.Uniform1i(g_sloc_amb, in->amb_q ? 1 : 0);
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
     gl.BindFramebuffer(kFramebuffer, 0);
     return gl.GetError() == 0;
+}
+
+unsigned int gpu_ppu_screen_texture(int* w, int* h) {
+    if (!g_ready || !g_out_s) return 0;
+    if (w) *w = g_out_s_w;
+    if (h) *h = g_out_s_h;
+    return g_out_s;
 }
 
 bool gpu_ppu_read_screen(uint32_t* argb, int* w, int* h) {

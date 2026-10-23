@@ -51,6 +51,9 @@ typedef struct {
 } GpuScreenInput;
 bool gpu_ppu_compose_screen(const GpuScreenInput* in);
 bool gpu_ppu_read_screen(uint32_t* argb, int* w, int* h);
+/* Passo 14c-2: a textura da tela (RGBA, linha 0 = topo) para desenhar na
+ * janela; 0 se ainda não existe. Muda de id quando o tamanho muda. */
+unsigned int gpu_ppu_screen_texture(int* w, int* h);
 /* Texto curto sobre o atlas de tiles HD (para o menu). */
 const char* gpu_ppu_atlas_info(void);
 

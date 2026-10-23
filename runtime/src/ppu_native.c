@@ -84,6 +84,10 @@ static const uint16_t k_dmg_rgb555[4] = {0x67DC, 0x32EE, 0x2A66, 0x0841};
 static uint32_t g_hd[(NATIVE_W * HD_MAX) * (NATIVE_H * HD_MAX)];
 static int g_hd_scale_req = 1;     /* pedida pela plataforma */
 static int g_hd_scale = 1;         /* usada no frame em andamento */
+/* Passo 14c-2: com a GPU montando a tela, a CPU não precisa desenhar o HD
+ * (centro e laterais); o pedido vale a partir do próximo quadro. */
+static bool g_cpu_hd_req = true;
+static bool g_cpu_hd = true;
 static int g_hd_valid_scale = 0;   /* escala do último frame completo (0 = nenhum) */
 static bool g_hd_frame_full = false;
 static bool g_hd_check = false;
@@ -873,7 +877,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             }
         }
 
-        if (g_hd_scale > 1) {
+        if (g_hd_scale > 1 && g_cpu_hd) {   /* passo 14c-2: g_cpu_hd */
             const unsigned n = (unsigned)g_hd_scale;
             const size_t stride = (size_t)NATIVE_W * n;
             uint32_t* hd = g_hd + (size_t)y * n * stride + (size_t)x * n;
@@ -1073,6 +1077,7 @@ static void begin_frame(const GBContext* ctx, uint8_t first_line) {
         g_hd_generation++;        /* refaz o cache de tiles HD */
     }
     g_hd_scale = g_hd_scale_req;
+    g_cpu_hd = g_cpu_hd_req;   /* passo 14c-2 */
     g_hd_frame_full = (first_line == 0);
     if (g_scene_state == SCENE_REQUESTED && first_line == 0) {
         g_scene_state = SCENE_CAPTURING;
@@ -1210,7 +1215,7 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
             }
         }
     }
-    if (g_frame_open && g_hd_scale > 1 && g_hd_check) {
+    if (g_frame_open && g_hd_scale > 1 && g_cpu_hd && g_hd_check) {
         g_hd_stats.frames_checked++;
         if (g_hd_cur_mismatch > 0) {
             g_hd_stats.frames_with_mismatch++;
@@ -1223,7 +1228,7 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
             }
         }
     }
-    g_hd_valid_scale = (g_frame_open && g_hd_frame_full && g_hd_scale > 1) ? g_hd_scale : 0;
+    g_hd_valid_scale = (g_frame_open && g_hd_frame_full && g_hd_scale > 1 && g_cpu_hd) ? g_hd_scale : 0;
     g_hd_m_valid_scale = (g_hd_valid_scale > 1 && g_margin_lines == (uint32_t)NATIVE_H)
         ? g_hd_valid_scale : 0;
     if (g_scene_state == SCENE_CAPTURING) {
@@ -1237,7 +1242,7 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
         g_gpu.serial++;
         g_gpu.hd_on = hd;
         g_gpu.hd_scale = g_hd_scale;
-        g_gpu.cpu_hd = (g_hd_scale > 1) ? g_hd : NULL;
+        g_gpu.cpu_hd = (g_hd_scale > 1 && g_cpu_hd) ? g_hd : NULL;
         g_gpu.margin_on = (g_gpu_margin_lines == (uint32_t)NATIVE_H);   /* passo 14b-4 */
         g_gpu.cpu_hd_margin = g_hd_m_valid_scale > 1 ? g_hd_m : NULL;
         if (hd) {
@@ -1453,6 +1458,15 @@ void ppu_native_set_hd_scale(int scale) {
 
 int ppu_native_get_hd_scale(void) {
     return g_hd_scale_req;
+}
+
+/* Passo 14c-2 */
+void ppu_native_set_cpu_hd(bool enabled) {
+    g_cpu_hd_req = enabled;
+}
+
+bool ppu_native_get_cpu_hd(void) {
+    return g_cpu_hd_req;
 }
 
 const uint32_t* ppu_native_hd_frame(int* out_scale) {
@@ -1673,7 +1687,7 @@ static inline uint32_t fade_with(const uint8_t* lut, uint32_t color) {
 }
 
 static inline bool margin_hd_active(void) {
-    return g_hd_scale > 1 && ((g_hd_tiles_enabled && g_hd_tile_count > 0) || g_hd_check);
+    return g_hd_scale > 1 && g_cpu_hd && ((g_hd_tiles_enabled && g_hd_tile_count > 0) || g_hd_check);
 }
 
 bool ppu_native_margins_wanted(void) {

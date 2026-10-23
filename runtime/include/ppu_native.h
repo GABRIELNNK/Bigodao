@@ -111,6 +111,11 @@ typedef struct {
 /* 1 desliga. Vale a partir do próximo frame. */
 void ppu_native_set_hd_scale(int scale);
 int ppu_native_get_hd_scale(void);
+/* Passo 14c-2: false = a CPU não desenha o HD (centro e laterais) porque a
+ * GPU monta a tela; ppu_native_hd_frame/_margin_frame devolvem NULL. Vale a
+ * partir do próximo quadro. Padrão true. */
+void ppu_native_set_cpu_hd(bool enabled);
+bool ppu_native_get_cpu_hd(void);
 /* Último frame HD completo (160*N x 144*N, RGBA) ou NULL. */
 const uint32_t* ppu_native_hd_frame(int* out_scale);
 

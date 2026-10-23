@@ -41,6 +41,9 @@ VglTex* vgl_tex_create(int w, int h);
 void vgl_tex_destroy(VglTex* tex);
 void vgl_tex_set_linear(VglTex* tex, bool linear);
 void vgl_tex_set_blend(VglTex* tex, bool blend);   /* como SDL_BLENDMODE_BLEND */
+/* Passo 14c-2: embrulha uma textura GL de outro módulo (RGBA de verdade, não
+ * ARGB) para desenhar com vgl_copy; destruir não apaga a textura. */
+VglTex* vgl_tex_wrap(unsigned int id, int w, int h);
 /* Buffer da CPU para escrever o quadro inteiro (pitch em bytes). */
 void* vgl_tex_lock(VglTex* tex, int* pitch);
 void vgl_tex_unlock(VglTex* tex);                 /* envia o buffer inteiro */

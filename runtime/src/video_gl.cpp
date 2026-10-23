@@ -92,6 +92,7 @@ SDL_GLContext g_ctx = nullptr;
 bool g_ready = false;
 bool g_es = false;
 GLuint g_prog = 0, g_vao = 0, g_vbo = 0;
+GLint g_loc_rgba = -1;   /* passo 14c-2 */
 std::string g_desc;
 /* Por quadro: tamanhos da janela (coordenadas de destino) e do framebuffer. */
 int g_win_w = 1, g_win_h = 1, g_fb_w = 1, g_fb_h = 1;
@@ -108,7 +109,8 @@ const char* kFragmentBody =
     "in vec2 v_uv;\n"
     "out vec4 o_color;\n"
     "uniform sampler2D u_tex;\n"
-    "void main() { o_color = texture(u_tex, v_uv).bgra; }\n";
+    "uniform int u_rgba;\n"   /* passo 14c-2: textura já em RGBA (tela da GPU) */
+    "void main() { vec4 c = texture(u_tex, v_uv); o_color = u_rgba != 0 ? c : c.bgra; }\n";
 
 }  // namespace
 
@@ -123,6 +125,8 @@ struct VglTex {
     int w = 0, h = 0;
     bool blend = false;
     bool linear = false;
+    bool owned = true;     /* passo 14c-2: false = textura de outro (vgl_tex_wrap) */
+    bool rgba = false;     /* passo 14c-2: guarda RGBA de verdade (sem trocar canais) */
     std::vector<uint32_t> staging;
 };
 
@@ -170,6 +174,8 @@ bool vgl_init(SDL_Window* window, char* err, size_t err_size) {
     if (!g_prog) return fail(e);
     gl.UseProgram(g_prog);
     gl.Uniform1i(gl.GetUniformLocation(g_prog, "u_tex"), 0);
+    g_loc_rgba = gl.GetUniformLocation(g_prog, "u_rgba");
+    gl.Uniform1i(g_loc_rgba, 0);
     gl.GenVertexArrays(1, &g_vao);
     gl.BindVertexArray(g_vao);
     gl.GenBuffers(1, &g_vbo);
@@ -230,7 +236,7 @@ VglTex* vgl_tex_create(int w, int h) {
 
 void vgl_tex_destroy(VglTex* tex) {
     if (!tex) return;
-    if (g_ready && tex->id) gl.DeleteTextures(1, &tex->id);
+    if (g_ready && tex->id && tex->owned) gl.DeleteTextures(1, &tex->id);
     delete tex;
 }
 
@@ -240,6 +246,20 @@ void vgl_tex_set_linear(VglTex* tex, bool linear) {
     gl.BindTexture(kTexture2D, tex->id);
     gl.TexParameteri(kTexture2D, kTexMinFilter, (GLint)(linear ? kLinear : kNearest));
     gl.TexParameteri(kTexture2D, kTexMagFilter, (GLint)(linear ? kLinear : kNearest));
+}
+
+VglTex* vgl_tex_wrap(unsigned int id, int w, int h) {
+    if (!g_ready || !id || w <= 0 || h <= 0) return nullptr;
+    VglTex* t = new VglTex();
+    t->id = id;
+    t->w = w;
+    t->h = h;
+    t->owned = false;
+    t->rgba = true;
+    gl.BindTexture(kTexture2D, id);   /* o filtro fica conhecido (vgl_tex_set_linear) */
+    gl.TexParameteri(kTexture2D, kTexMinFilter, (GLint)kNearest);
+    gl.TexParameteri(kTexture2D, kTexMagFilter, (GLint)kNearest);
+    return t;
 }
 
 void vgl_tex_set_blend(VglTex* tex, bool blend) {
@@ -297,6 +317,7 @@ void vgl_copy_f(VglTex* tex, const SDL_Rect* src, const SDL_FRect* dst) {
     gl.BindBuffer(kArrayBuffer, g_vbo);
     gl.ActiveTexture(kTexture0);
     gl.BindTexture(kTexture2D, tex->id);
+    gl.Uniform1i(g_loc_rgba, tex->rgba ? 1 : 0);   /* passo 14c-2 */
     if (tex->blend) {
         gl.Enable(kBlend);
         gl.BlendFuncSeparate(kSrcAlpha, kOneMinusSrcAlpha, kOne, kOneMinusSrcAlpha);
