@@ -243,6 +243,7 @@ static std::string g_gpu_screen_error;
 static int g_3d_mode = 0;          /* 0 = desligado, 1 = camadas (pref display.mode3d) */
 static int g_3d_tilt = 15;         /* graus (pref display.tilt3d) */
 static int g_3d_depth = 100;       /* % (pref display.depth3d) */
+static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
 static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
 static bool g_3d_valid = false;    /* as camadas da GPU têm o quadro atual */
@@ -4763,6 +4764,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             v.yaw_deg = (float)g_3d_yaw;
             v.depth = (float)g_3d_depth / 100.0f;
             v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
+            v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
             drawn3d = gpu_ppu_draw_3d(&v);
             if (drawn3d) {   /* passo 3D-3: desenhado fora da tela, com profundidade */
                 int tw = 0, th = 0;
@@ -5063,6 +5065,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 if (ImGui::Button("Esquecer tiles vistos")) {
                     ppu_native_reset_tile_dump();
                 }
+            }
+            /* Passo 3D-3f: diagnóstico do 3D */
+            ImGui::Checkbox("3D: mostrar classes", &g_3d_debug);
+            if (g_3d_debug) {
+                ImGui::TextWrapped("cinza fundo, azul agua, ciano faixa das ondas, azul-claro ceu dentro da agua, "
+                                   "marrom chao, laranja porta/escada/moeda, magenta sprite, branco HUD, preto longe");
             }
             /* Passo 14b-1: centro pela GPU x CPU. */
             if (ImGui::TreeNode("Comparar GPU (14b)")) {

@@ -73,6 +73,7 @@ typedef struct {
     float yaw_deg;
     float depth;      /* 1 = profundidade padrão */
     bool linear;
+    bool debug;       /* 3D-3f: pinta por cima as classes (diagnóstico) */
 } Gpu3DView;
 bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* frame, const GpuScreenInput* in);
 bool gpu_ppu_draw_3d(const Gpu3DView* view);
