@@ -306,6 +306,10 @@ const char* kView3DFragment =
     "        deco = (int(round(texelFetch(u_wp, clamp(ivec2(v_uv * vec2(ws)), ivec2(0), ws - 1), 0).r * 255.0)) & 128) != 0;\n"
     "        if (deco && u_layer == 6) { o_color = vec4(texture(u_tex, v_uv).rgb, 1.0); return; }\n"
     "    }\n"
+    /* 3D-4o: o ponto de sprite não é desenhado pelos planos do chão e da porta (eles
+     * ficam na frente dos sprites e cobriam o sprite com o fundo que está atrás dele:
+     * o bloco grande da caverna, que é um sprite sobre blocos sólidos) */
+    "    if ((u_layer == 4 || u_layer == 6) && cls == 3) discard;\n"
     "    if (u_layer == 4 || u_layer == 6) {\n"   /* 3D-3g: buracos (cantos do barril, água em volta da moeda) */
     "        ivec2 ws = textureSize(u_wp, 0);\n"
     "        if ((int(round(texelFetch(u_wp, clamp(ivec2(v_uv * vec2(ws)), ivec2(0), ws - 1), 0).r * 255.0)) & 16) != 0) discard;\n"
@@ -462,12 +466,16 @@ const char* kWaterPrepFragment =
     "        int nd = (r == 2 && (code_at(x, y) & 32) != 0) ? 2 : 4;\n"
     "        for (int dd = 0; dd < nd && !hole; ++dd) {\n"
     "            ivec2 st = dd == 0 ? ivec2(-1, 0) : (dd == 1 ? ivec2(1, 0) : (dd == 2 ? ivec2(0, -1) : ivec2(0, 1)));\n"
-    "            for (int i = 1; i <= 16; ++i) {\n"
+    /* 3D-4n: o caminho até o lado de fora atravessa objetos de outro tipo (uma
+     * moeda logo acima de um bloco: antes ela fechava o caminho, e o azul da água
+     * pintado em volta das plantas ficava sólido) e vai até 32 pontos */
+    "            for (int i = 1; i <= 32; ++i) {\n"
     "                int xx = x + st.x * i, yy = y + st.y * i;\n"
     "                if (xx < 0 || yy < 0 || float(xx) >= u_bw || float(yy) >= u_ch) break;\n"
     "                int q = rk(xx, yy);\n"
     "                bool sm = same(col(xx, yy), c);\n"
-    "                if (q == 2 || q == 3) { if (!sm) break; continue; }\n"
+    "                if (q == r) { if (!sm) break; continue; }\n"
+    "                if (q == 2 || q == 3) continue;\n"
     "                if (sm && (q == 0 || q == 1)) hole = true;\n"
     "                break;\n"
     "            }\n"
@@ -553,8 +561,9 @@ const char* kWaterPrepFragment =
     "        }\n"
     "    }\n"
     "    if (hole) fl |= 16;\n"
-    "    if (r == 3 && !hole) fl |= 32;\n"   /* 3D-3h: ponto sólido (chão) para a extrusão por ponto */
-    "    if (r == 2 && !hole && (code_at(x, y) & 32) != 0) fl |= 64;\n"   /* 3D-3i: porta sólida */
+    "    bool spr = (code_at(x, y) & 7) == 3;\n"   /* 3D-4o: sprite não ganha volume de bloco */
+    "    if (r == 3 && !hole && !spr) fl |= 32;\n"   /* 3D-3h: ponto sólido (chão) para a extrusão por ponto */
+    "    if (r == 2 && !hole && !spr && (code_at(x, y) & 32) != 0) fl |= 64;\n"   /* 3D-3i: porta sólida */
     /* 3D-4a: coluna guardada relativa ao ponto (+128), a imagem pode ter mais de 255 */
     "    o_color = vec4(float(fl) / 255.0, float(row) / 255.0, float(sx < 0 ? 255 : sx - x + 128) / 255.0, float(ref) / 255.0);\n"
     "}\n";

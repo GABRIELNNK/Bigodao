@@ -245,6 +245,8 @@ static int g_3d_tilt = 15;         /* graus (pref display.tilt3d) */
 static int g_3d_depth = 100;       /* % (pref display.depth3d) */
 static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (diagnóstico, não grava) */
 static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
+static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
+static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
 static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
 static bool g_3d_valid = false;    /* as camadas da GPU têm o quadro atual */
@@ -539,6 +541,13 @@ static const char* g_internal_res_names[] = {
 
 /* Menu State */
 static bool g_show_menu = false;
+/* Passo 3D-5a: o menu não abre sozinho na abertura do jogo. Tecla/botão que
+ * chega na primeira fração de segundo (de quem abriu o jogo: launcher, Steam,
+ * atalho, controle conectando) não abre o menu. */
+static Uint32 g_menu_guard_until = 0;
+static bool menu_toggle_allowed(void) {
+    return g_menu_guard_until == 0 || SDL_TICKS_PASSED(SDL_GetTicks(), g_menu_guard_until);
+}
 static bool g_show_overlay = false;
 static int g_speed_percent = 100;
 static int g_palette_idx = 0;
@@ -2149,6 +2158,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_tilt = (int)(v < 0 ? 0 : (v > 35 ? 35 : v));
                     continue;
                 }
+                if (strcmp(key, "display.stick3d") == 0) {   /* passo 3D-5a */
+                    g_3d_stick = (strtol(value, NULL, 10) != 0) ? 1 : 0;
+                    continue;
+                }
                 if (strcmp(key, "display.yaw3d") == 0) {   /* passo 3D-3e */
                     long v = strtol(value, NULL, 10);
                     g_3d_yaw = (int)(v < -35 ? -35 : (v > 35 ? 35 : v));
@@ -2331,6 +2344,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.tilt3d=%d\n", g_3d_tilt);
     fprintf(file, "display.depth3d=%d\n", g_3d_depth);
     fprintf(file, "display.yaw3d=%d\n", g_3d_yaw);
+    fprintf(file, "display.stick3d=%d\n", g_3d_stick);
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
@@ -2481,7 +2495,7 @@ static void update_runtime_action_state(GBContext* ctx) {
                     break;
 
                 case GB_INPUT_ACTION_TOGGLE_MENU:
-                    g_show_menu = !g_show_menu;
+                    if (menu_toggle_allowed()) g_show_menu = !g_show_menu;
                     break;
 
                 case GB_INPUT_ACTION_TOGGLE_PORT_UI:
@@ -3096,6 +3110,7 @@ static void reset_runtime_display_defaults(void) {
     g_3d_tilt = 15;
     g_3d_depth = 100;
     g_3d_yaw = 0;
+    g_3d_stick = 1;
     g_gpu_screen_error.clear();
     g_renderer_reset_pending = true;
     update_render_filter();
@@ -4761,8 +4776,34 @@ static void render_frame_internal(const uint32_t* framebuffer,
         if (gpu_shown && g3d_active() && g_3d_valid) {   /* passo 3D-1 */
             Gpu3DView v = {};
             vgl_rect_to_fb(&g_game_viewport, &v.vp_x, &v.vp_y, &v.vp_w, &v.vp_h);
-            v.tilt_deg = (float)g_3d_tilt;
-            v.yaw_deg = (float)g_3d_yaw;
+            {   /* passo 3D-5a: analógico direito mexe a câmera; soltando, ela volta */
+                float ty = 0.0f, ty2 = 0.0f;
+                static const char* fake = getenv("BIGODAO_TESTE_ANALOGICO");   /* testes: "x,y" de -32767 a 32767 */
+                if (fake) {
+                    int fx = 0, fy = 0;
+                    if (sscanf(fake, "%d,%d", &fx, &fy) == 2) {
+                        g_controller_axis_values[SDL_CONTROLLER_AXIS_RIGHTX] = (Sint16)fx;
+                        g_controller_axis_values[SDL_CONTROLLER_AXIS_RIGHTY] = (Sint16)fy;
+                    }
+                }
+                if (g_3d_stick && (g_controller || fake) && !g_show_menu) {
+                    auto axis = [](int a) {
+                        float f = (float)g_controller_axis_values[a] / 32767.0f;
+                        const float dz = 0.2f;
+                        if (f > dz) return (f - dz) / (1.0f - dz);
+                        if (f < -dz) return (f + dz) / (1.0f - dz);
+                        return 0.0f;
+                    };
+                    ty = axis(SDL_CONTROLLER_AXIS_RIGHTX) * 40.0f;    /* giro */
+                    ty2 = -axis(SDL_CONTROLLER_AXIS_RIGHTY) * 30.0f;  /* inclinação: para cima = mais de cima */
+                }
+                g_3d_cam_yaw += (ty - g_3d_cam_yaw) * 0.15f;
+                g_3d_cam_tilt += (ty2 - g_3d_cam_tilt) * 0.15f;
+                if (std::fabs(g_3d_cam_yaw) < 0.01f) g_3d_cam_yaw = 0.0f;
+                if (std::fabs(g_3d_cam_tilt) < 0.01f) g_3d_cam_tilt = 0.0f;
+            }
+            v.tilt_deg = std::min(60.0f, std::max(0.0f, (float)g_3d_tilt + g_3d_cam_tilt));
+            v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw + g_3d_cam_yaw));
             v.depth = (float)g_3d_depth / 100.0f;
             v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
             v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
@@ -5591,6 +5632,11 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 if (ImGui::SliderInt("Inclinacao 3D (graus)", &g_3d_tilt, 0, 35)) save_runtime_preferences();
                 if (ImGui::SliderInt("Profundidade 3D (%)", &g_3d_depth, 0, 200)) save_runtime_preferences();
                 if (ImGui::SliderInt("Giro 3D (graus)", &g_3d_yaw, -35, 35)) save_runtime_preferences();
+                {   /* passo 3D-5a */
+                    bool st = g_3d_stick != 0;
+                    if (ImGui::Checkbox("Camera 3D no analogico direito", &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }
+                    if (g_3d_stick) ImGui::TextDisabled("Analogico direito: inclina e gira; soltando, volta ao padrao.");
+                }
                 const char* why = g3d_blocker();
                 if (why) {
                     ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "3D parado: %s.", why);
@@ -6909,6 +6955,13 @@ bool gb_platform_init(int scale) {
     update_game_viewport();
     
     g_last_frame_time = SDL_GetTicks();
+    /* passo 3D-5a: descarta teclas/botões que ficaram na fila de quem abriu o
+     * jogo e protege o primeiro segundo contra abrir o menu */
+    SDL_FlushEvents(SDL_KEYDOWN, SDL_KEYUP);
+    SDL_FlushEvents(SDL_CONTROLLERBUTTONDOWN, SDL_CONTROLLERBUTTONUP);
+    g_show_menu = false;
+    g_menu_guard_until = SDL_GetTicks() + 1000;
+    if (g_menu_guard_until == 0) g_menu_guard_until = 1;
     
     return true;
 }
@@ -7092,7 +7145,7 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
             uint8_t previous_buttons = g_joypad_buttons;
 
             if (event->cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) {
-                if (pressed) {
+                if (pressed && menu_toggle_allowed()) {
                     g_show_menu = !g_show_menu;
                 }
                 return true;
@@ -7162,7 +7215,7 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
                     return true;
                 case SDL_SCANCODE_ESCAPE:
                 case SDL_SCANCODE_AC_BACK:
-                    if (pressed && event->key.repeat == 0) {
+                    if (pressed && event->key.repeat == 0 && menu_toggle_allowed()) {
                         g_show_menu = !g_show_menu;
                     }
                     return true;
