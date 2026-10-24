@@ -247,7 +247,7 @@ static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (dia
 static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
 static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
-static int g_3d_spr = 100;         /* % espessura dos sprites (pref display.spr3d, 3D-5e) */
+static int g_3d_spr = 50;          /* % espessura dos sprites (pref display.spr3d, 3D-5e) */
 static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
 static bool g_3d_valid = false;    /* as camadas da GPU têm o quadro atual */
@@ -3117,7 +3117,7 @@ static void reset_runtime_display_defaults(void) {
     g_3d_tilt = 15;
     g_3d_depth = 100;
     g_3d_yaw = 0;
-    g_3d_spr = 100;
+    g_3d_spr = 50;   /* 3D-4p: padrão escolhido pelo usuário */
     g_3d_stick = 1;
     g_gpu_screen_error.clear();
     g_renderer_reset_pending = true;

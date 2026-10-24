@@ -1142,7 +1142,8 @@ const char* kFragment =
     "}\n"
     /* Passo 3D-4a: ponto da fase além da tela (o 3D mostra mais do que a tela). A
      * posição no mundo vem da linha mais perto (dentro da tela, a própria linha);
-     * o tile e o atributo vêm da CPU (mesma cor das laterais); 1x, sem HD. */
+     * o tile e o atributo vêm da CPU (mesma cor das laterais); 3D-4p: com os
+     * tiles HD do pacote, como no centro (mesmo tile/paleta = mesmo PNG). */
     "void ext_main() {\n"
     "    int n = u_scale;\n"
     "    int X = int(gl_FragCoord.x), Y = int(gl_FragCoord.y);\n"
@@ -1168,6 +1169,13 @@ const char* kFragment =
     "    int tidx = (lcdc & 0x10) != 0 ? tile : (tile < 128 ? 256 + tile : tile);\n"
     "    int raw = tpix((attr & 0x08) != 0 ? 1 : 0, tidx, px, py);\n"
     "    uvec3 c = pal((attr & 7) * 4 + raw, ly);\n"
+    "    if (u_hd != 0) {\n"
+    "        uint s1 = slot_of(0, attr & 7, ((attr & 0x08) != 0 ? 384 : 0) + tidx);\n"
+    "        if (s1 != 0u) {\n"
+    "            uvec4 h = hd_texel(s1, wx & 7, wy & 7, attr & 0x60, X - cx * n, Y - cy * n, n);\n"
+    "            if (h.a != 0u) c = rc_apply(rc_setup(s1, raw, c), h);\n"
+    "        }\n"
+    "    }\n"
     "    g_kind = 0;\n"
     "    if (u_level != 0) {\n"
     "        int bx = wx >> 4, by = wy >> 4;\n"
@@ -1530,7 +1538,8 @@ bool draw(GLuint fbo, int w, int h, int scale, bool hd, bool margin = false, int
 }
 
 /* Passo 3D-4a: a fase além da tela, na imagem k (0 cor, 1 só o fundo, 2 classe). */
-bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int side, const PPUNativeGpuFrame* f) {
+bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int side, const PPUNativeGpuFrame* f,
+              bool hd) {
     gl.BindFramebuffer(kFramebuffer, fbo);
     gl.Viewport(0, 0, w, h);
     gl.Disable(kBlend);
@@ -1543,7 +1552,7 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
     gl.ActiveTexture(kTexture0);
     gl.Uniform1i(g_loc_haslog, g_has_log ? 1 : 0);
     gl.Uniform1i(g_loc_scale, scale);
-    gl.Uniform1i(g_loc_hd, 0);
+    gl.Uniform1i(g_loc_hd, hd ? 1 : 0);   /* 3D-4p: HD além da tela (sem as trocas no meio do quadro) */
     gl.Uniform1i(g_loc_hastl, 0);
     gl.Uniform1i(g_loc_margin, 0);
     gl.Uniform1i(g_loc_out, out);
@@ -1884,7 +1893,7 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
         gl.ActiveTexture(kTexture0);
         gl.PixelStorei(kUnpackAlignment, 1);
         for (int k = 0; k < 3; ++k) {
-            if (!draw_ext(g_3e.fbo[k], cw * n, ch * n, n, k, ex, ey, in->wide ? 48 : 0, f)) return false;
+            if (!draw_ext(g_3e.fbo[k], cw * n, ch * n, n, k, ex, ey, in->wide ? 48 : 0, f, hd && g_atlas_ok)) return false;
             gl.BindFramebuffer(kFramebuffer, g_3e.fbo[k]);
             gl.Viewport(ex * n, ey * n, bw * n, kH * n);
             gl.UseProgram(g_cprog);

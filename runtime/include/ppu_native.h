@@ -227,11 +227,12 @@ bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
 #define PPU_NATIVE_GPU_TL_MAX 2048   /* passo 14b-3: trocas de tile HD no meio do quadro */
 #define PPU_NATIVE_GPU_MARGIN_W (2 * GB_WIDESCREEN_MARGIN)   /* passo 14b-4 */
 /* Passo 3D-4a: o 3D desenha a fase além da tela: EXT_X pontos de cada lado,
- * EXT_Y em cima e embaixo; tiles do mundo pedidos à CPU (com folga). */
-#define PPU_NATIVE_GPU_EXT_X 64
-#define PPU_NATIVE_GPU_EXT_Y 48
-#define PPU_NATIVE_GPU_EXT_TW 56
-#define PPU_NATIVE_GPU_EXT_TH 40
+ * EXT_Y em cima e embaixo; tiles do mundo pedidos à CPU (com folga).
+ * 3D-4p: 64/48 -> 96/64 (menos preto nos ângulos grandes e com o analógico). */
+#define PPU_NATIVE_GPU_EXT_X 96
+#define PPU_NATIVE_GPU_EXT_Y 64
+#define PPU_NATIVE_GPU_EXT_TW 64
+#define PPU_NATIVE_GPU_EXT_TH 44
 typedef struct {
     uint16_t addr;        /* 0x0000-0x3FFF: banco * 0x2000 + (endereço - 0x8000) */
     uint8_t line_plus1;
