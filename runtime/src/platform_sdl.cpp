@@ -247,6 +247,7 @@ static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (dia
 static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
 static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
+static int g_3d_spr = 100;         /* % espessura dos sprites (pref display.spr3d, 3D-5e) */
 static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
 static bool g_3d_valid = false;    /* as camadas da GPU têm o quadro atual */
@@ -2162,6 +2163,11 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_stick = (strtol(value, NULL, 10) != 0) ? 1 : 0;
                     continue;
                 }
+                if (strcmp(key, "display.spr3d") == 0) {   /* passo 3D-5e */
+                    long v = strtol(value, NULL, 10);
+                    g_3d_spr = (int)(v < 5 ? 5 : (v > 100 ? 100 : v));
+                    continue;
+                }
                 if (strcmp(key, "display.yaw3d") == 0) {   /* passo 3D-3e */
                     long v = strtol(value, NULL, 10);
                     g_3d_yaw = (int)(v < -35 ? -35 : (v > 35 ? 35 : v));
@@ -2344,6 +2350,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.tilt3d=%d\n", g_3d_tilt);
     fprintf(file, "display.depth3d=%d\n", g_3d_depth);
     fprintf(file, "display.yaw3d=%d\n", g_3d_yaw);
+    fprintf(file, "display.spr3d=%d\n", g_3d_spr);
     fprintf(file, "display.stick3d=%d\n", g_3d_stick);
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
@@ -3110,6 +3117,7 @@ static void reset_runtime_display_defaults(void) {
     g_3d_tilt = 15;
     g_3d_depth = 100;
     g_3d_yaw = 0;
+    g_3d_spr = 100;
     g_3d_stick = 1;
     g_gpu_screen_error.clear();
     g_renderer_reset_pending = true;
@@ -4805,6 +4813,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             v.tilt_deg = std::min(60.0f, std::max(0.0f, (float)g_3d_tilt + g_3d_cam_tilt));
             v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw + g_3d_cam_yaw));
             v.depth = (float)g_3d_depth / 100.0f;
+            v.spr_depth = (float)g_3d_spr / 100.0f;   /* 3D-5e */
             v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
             v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
             v.hide = g_3d_hide | (getenv("BIGODAO_3D_ESCONDER") ? atoi(getenv("BIGODAO_3D_ESCONDER")) : 0);
@@ -5632,6 +5641,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 if (ImGui::SliderInt("Inclinacao 3D (graus)", &g_3d_tilt, 0, 35)) save_runtime_preferences();
                 if (ImGui::SliderInt("Profundidade 3D (%)", &g_3d_depth, 0, 200)) save_runtime_preferences();
                 if (ImGui::SliderInt("Giro 3D (graus)", &g_3d_yaw, -35, 35)) save_runtime_preferences();
+                if (ImGui::SliderInt("Espessura dos sprites (%)", &g_3d_spr, 5, 100)) save_runtime_preferences();   /* 3D-5e */
                 {   /* passo 3D-5a */
                     bool st = g_3d_stick != 0;
                     if (ImGui::Checkbox("Camera 3D no analogico direito", &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }

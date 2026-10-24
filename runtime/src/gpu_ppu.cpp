@@ -123,7 +123,7 @@ const char* kBoxVertex =
     "uniform float u_zf;\n"     /* frente do bloco */
     "uniform float u_zb;\n"     /* trás do bloco */
     "uniform int u_cols;\n"
-    "uniform int u_mode;\n"     /* 0 lados dos blocos; 1 (3D-3c) chão da superfície da água */
+    "uniform int u_mode;\n"     /* 0 lados dos blocos; 1 (3D-3c) chão da superfície da água; 2 porta; 3 sprites (3D-5c) */
     "uniform sampler2D u_wp;\n"
     "out vec2 v_uv;\n"
     "out vec2 v_in;\n"      /* passo 3D-3b: um ponto para dentro do tile, em uv */
@@ -133,6 +133,11 @@ const char* kBoxVertex =
     "out vec2 v_out;\n"     /* 3D-3f: ponto logo fora da borda (céu/água ao lado), em uv */
     "bool pix_solid(int px, int py) {\n"
     "    if (px < 0 || py < 0 || float(px) >= u_bw || float(py) >= u_ch) return false;\n"
+    "    if (u_mode == 3) {\n"   /* 3D-5c: ponto de sprite (extrusão dos sprites) */
+    "        ivec2 cs = textureSize(u_clsmap, 0);\n"
+    "        ivec2 q = clamp(ivec2((vec2(float(px), float(py)) + 0.5) * vec2(cs) / vec2(u_bw, u_ch)), ivec2(0), cs - 1);\n"
+    "        return (int(round(texelFetch(u_clsmap, q, 0).r * 255.0)) & 7) == 3;\n"
+    "    }\n"
     "    return (int(round(texelFetch(u_wp, ivec2(px, py), 0).r * 255.0)) & (u_mode == 2 ? 64 : 32)) != 0;\n"
     "}\n"
     "bool band_at(float px, float py) {\n"
@@ -196,6 +201,8 @@ const char* kBoxFragment =
     "uniform sampler2D u_tex;\n"
     "uniform float u_alpha;\n"
     "uniform float u_light;\n"   /* 3D-3i: lados da porta mais claros */
+    "uniform int u_simple;\n"   /* 3D-5c: lados dos sprites */
+    "uniform sampler2D u_clsmap;\n"   /* 3D-5d: só pontos do próprio sprite na cor do lado */
     "in vec2 v_uv;\n"
     "in vec2 v_in;\n"
     "in float v_shade;\n"
@@ -204,6 +211,29 @@ const char* kBoxFragment =
     "in vec2 v_out;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
+    "    if (u_simple != 0) {\n"
+    /* 3D-5d: como nos blocos, a cor que mais aparece para dentro (8 pontos), sem
+     * os escuros do contorno e só pontos do próprio sprite */
+    "        vec3 sc[8]; bool ok[8];\n"
+    "        for (int i = 0; i < 8; ++i) {\n"
+    "            vec2 u = v_uv + v_in * float(i);\n"
+    "            sc[i] = texture(u_tex, u).rgb;\n"
+    "            ivec2 cz = textureSize(u_clsmap, 0);\n"
+    "            int k = int(round(texelFetch(u_clsmap, clamp(ivec2(u * vec2(cz)), ivec2(0), cz - 1), 0).r * 255.0)) & 7;\n"
+    "            ok[i] = k == 3 && max(sc[i].r, max(sc[i].g, sc[i].b)) > 0.25;\n"
+    "        }\n"
+    "        int sb = -1, sn = 0;\n"
+    "        for (int i = 0; i < 8; ++i) {\n"
+    "            if (!ok[i]) continue;\n"
+    "            int n = 0;\n"
+    "            for (int j = 0; j < 8; ++j) { vec3 d = abs(sc[i] - sc[j]); if (ok[j] && d.r + d.g + d.b < 0.06) ++n; }\n"
+    "            if (n > sn) { sn = n; sb = i; }\n"
+    "        }\n"
+    "        vec3 c = (sb >= 0 ? sc[sb] : sc[0]) * v_shade;\n"
+    "        if (v_tint > 0.5) c = mix(c, texture(u_tex, v_wuv).rgb, u_alpha);\n"
+    "        o_color = vec4(c, 1.0);\n"
+    "        return;\n"
+    "    }\n"
     "    vec3 cs[8];\n"
     "    for (int i = 0; i < 8; ++i) cs[i] = texture(u_tex, v_uv + v_in * float(i)).rgb;\n"
     /* 3D-3f: fora as cores do que está do lado de fora (céu/água nos cantos de
@@ -223,7 +253,7 @@ const char* kBoxFragment =
     "    o_color = vec4(c, 1.0);\n"
     "}\n";
 GLuint g_bprog = 0;
-GLint g_bloc_mode = -1, g_bloc_alpha = -1, g_bloc_light = -1;
+GLint g_bloc_mode = -1, g_bloc_alpha = -1, g_bloc_light = -1, g_bloc_simple = -1;
 GLint g_bloc_mvp = -1, g_bloc_off = -1, g_bloc_bw = -1, g_bloc_dist = -1, g_bloc_zf = -1, g_bloc_zb = -1, g_bloc_cols = -1;
 /* imagem 3D fora da tela (com profundidade), do tamanho do retângulo do jogo */
 GLuint g_fbo_v = 0, g_out_v = 0, g_rb_v = 0;
@@ -237,7 +267,8 @@ const char* kView3DFragment =
     "uniform sampler2D u_bs;\n"   /* 3D-4i: origem do fundo atrás dos objetos (1x) */  /* 3D-3e: só o fundo (cor da água para o véu) */
     "uniform float u_alpha;\n"
     "uniform float u_lshade;\n"
-    "uniform int u_chi;\n"   /* 3D-4a: altura da imagem em pontos 1x */   /* 3D-3g: cópias das ondas mais escuras quanto mais fundo */
+    "uniform int u_chi;\n"
+    "uniform int u_nospr;\n"   /* 3D-5b: cópia das ondas na frente dos sprites: não desenha sobre sprite */   /* 3D-4a: altura da imagem em pontos 1x */   /* 3D-3g: cópias das ondas mais escuras quanto mais fundo */
     "uniform int u_layer;\n"   /* 0 longe, 1 fundo, 2 HUD, 3 sprites, 4 chão, 5 água, 6 porta, 8 superfície da água, 9 véu da água (3D-3c) */
     "in vec2 v_uv;\n"
     "out vec4 o_color;\n"
@@ -291,6 +322,7 @@ const char* kView3DFragment =
     "        }\n"
     "        if (u_layer == 8) {\n"
     "            if ((fl & 1) == 0) discard;\n"
+    "            if (u_nospr != 0 && cls == 3) discard;\n"
     "            vec3 c = texture(u_tex, own ? v_uv : src).rgb;\n"
     "            if (ref != 255) { vec3 d = abs(c - texture(u_tex, vec2(ux, (float(ref) + 0.5) / float(ws.y))).rgb); if (d.r + d.g + d.b < 0.04) discard; }\n"
     "            o_color = vec4(c * u_lshade, 1.0);\n"
@@ -655,7 +687,7 @@ GLuint g_wprog = 0, g_fbo_w = 0, g_out_w = 0;
 int g_w_w = 0;
 GLint g_wloc_bw = -1, g_dloc_alpha = -1, g_dloc_lshade = -1;
 GLint g_wloc_ch = -1, g_bloc_ch = -1, g_dloc_uvr = -1, g_dloc_chi = -1;   /* 3D-4a */
-GLint g_wloc_boff = -1;
+GLint g_wloc_boff = -1, g_dloc_nospr = -1;
 int g_3d_boffx = 0, g_3d_boffy = 0;   /* 3D-4d: canto dos blocos de 16x16 na imagem */
 int g_w_h = 0;
 
@@ -1960,6 +1992,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         g_dloc_lshade = gl.GetUniformLocation(g_dprog, "u_lshade");
         g_dloc_uvr = gl.GetUniformLocation(g_dprog, "u_uvr");
         g_dloc_chi = gl.GetUniformLocation(g_dprog, "u_chi");
+        g_dloc_nospr = gl.GetUniformLocation(g_dprog, "u_nospr");
     }
     if (!g_bprog) {   /* passo 3D-3 */
         std::string e;
@@ -1983,6 +2016,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         g_bloc_alpha = gl.GetUniformLocation(g_bprog, "u_alpha");
         g_bloc_ch = gl.GetUniformLocation(g_bprog, "u_ch");
         g_bloc_light = gl.GetUniformLocation(g_bprog, "u_light");
+        g_bloc_simple = gl.GetUniformLocation(g_bprog, "u_simple");
         gl.Uniform1i(gl.GetUniformLocation(g_bprog, "u_wp"), 2);
     }
     if (!g_wprog) {   /* passo 3D-3c */
@@ -2122,7 +2156,8 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
      * volume da frente dos blocos (+bd/2) até o fundo (zf): parede no fundo,
      * superfície com cópias das ondas e um véu translúcido na frente. */
     const float bd = g_3d_level ? 0.10f * dist * d : 0.0f;
-    const float zf = g_3d_level ? -0.3f * dist * d : 0.0f;
+    /* 3D-5b: o fundo fica onde termina o volume dos blocos (antes −0,3×dist×prof.) */
+    const float zf = g_3d_level ? -bd * 0.5f : 0.0f;
     const float zw = zf;   /* 3D-3c: parede do fundo da água, junto do fundo */
     struct L { int layer; int tex; float z; };
     auto plane = [&](const L& l) {
@@ -2140,13 +2175,15 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
      * deles (zl) e vai até o fundo; véu da água (30% da cor da água) em cada objeto
      * dentro dela, entrando aos poucos até 10 graus (inclinação 0 = 2D) */
     const float t = g_3d_level ? bd * 0.2f : 0.0f;
-    const float zl = g_3d_level ? -(t + 0.5f) : 0.0f;
+    /* 3D-5b: as ondas começam no plano da frente do chão e se repetem até o fundo */
+    const float zl = g_3d_level ? bd * 0.5f : 0.0f;
     const float alpha = g_3d_level ? 0.30f * std::min(1.0f, std::max(0.0f, v->tilt_deg / 10.0f)) : 0.0f;
     gl.UseProgram(g_dprog);
     gl.Uniform1f(g_dloc_alpha, alpha);
     gl.Uniform1f(g_dloc_lshade, 1.0f);
     gl.Uniform4f(g_dloc_uvr, 0.0f, 0.0f, 1.0f, 1.0f);
     gl.Uniform1i(g_dloc_chi, g_ch);
+    gl.Uniform1i(g_dloc_nospr, 0);
     /* 3D-3k: porta logo atrás dos sprites */
     const float zd = g_3d_level ? -(t + 0.5f) : 0.0f;
     const L back[4] = {{0, 0, -0.8f * dist * d}, {1, 1, zf}, {5, 1, zw}, {6, 1, zd}};
@@ -2177,6 +2214,22 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         gl.Uniform1f(g_bloc_light, 0.35f);
         if (!(v->hide & (1 << 11))) gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
         gl.Uniform1f(g_bloc_light, 0.0f);
+        /* 3D-5c: sprites extrudidos por ponto, da frente deles (+t) até um pouco antes
+         * do plano da porta; 3D-5d: cor do lado como nos blocos (a mais comum para
+         * dentro, sem o contorno escuro) */
+        {   /* 3D-5e: Graphics > "Espessura dos sprites": a frente fica no lugar e
+             * o fundo da extrusão vem para perto dela */
+            const float sp = v->spr_depth > 0.0f ? std::min(1.0f, v->spr_depth) : 1.0f;
+            gl.Uniform1f(g_bloc_zf, t);
+            gl.Uniform1f(g_bloc_zb, t - sp * (t - (zd + 0.3f)));
+        }
+        gl.Uniform1i(g_bloc_mode, 3);
+        gl.Uniform1i(g_bloc_simple, 1);
+        gl.ActiveTexture(kTexture0);
+        gl.BindTexture(kTexture2D, g_cv->out[0]);
+        if (!(v->hide & (1 << 3))) gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
+        gl.Uniform1i(g_bloc_simple, 0);
+        gl.BindTexture(kTexture2D, g_cv->out[1]);
         /* 3D-3c: chão da superfície da água, da frente da água até o fundo */
         gl.Uniform1f(g_bloc_zf, zl);
         gl.Uniform1f(g_bloc_zb, zf);
@@ -2187,23 +2240,24 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     plane({4, 1, bd * 0.5f});   /* frente do chão */
     if (g_3d_level) {   /* 3D-3c: superfície da água, cópias das ondas da frente até o fundo */
         const float span = zl - zf;
-        int n = (int)std::ceil(span * std::sin(pitch) / 6.0f) + 1;   /* uma cópia a cada ~6 pontos na tela */
+        const float sv = std::max(std::fabs(std::sin(pitch)), std::fabs(std::sin(yaw)));
+        int n = (int)std::ceil(span * sv / 3.0f) + 1;   /* uma cópia a cada ~3 pontos na tela (também com giro) */
         n = std::max(1, std::min(n, 48));
         for (int k = 0; k < n; ++k) {
             const float f = n == 1 ? 0.0f : (float)k / (float)(n - 1);
             gl.Uniform1f(g_dloc_lshade, 1.0f - 0.15f * f);   /* 3D-3g: o fundo mais escuro marca cada cópia */
-            plane({8, 1, zl - span * f});
+            const float zc = zl - span * f;
+            gl.Uniform1i(g_dloc_nospr, zc > -t - 0.5f ? 1 : 0);   /* 3D-5b: na frente dos sprites, não cobre o sprite */
+            plane({8, 1, zc});
         }
         gl.Uniform1f(g_dloc_lshade, 1.0f);
+        gl.Uniform1i(g_dloc_nospr, 0);
     }
     /* sprites com espessura: fatias de -t a +t (3D-3), todos na mesma profundidade
      * (3D-3d: partes em profundidades diferentes mostravam uma linha na divisa) */
-    const int slices = t > 0.0f ? 5 : 1;
-    const float zs = g_3d_level ? 0.0f : 0.07f * dist * d;
-    for (int k = 0; k < slices; ++k) {
-        const float z = slices == 1 ? zs : zs - t + 2.0f * t * (float)k / (float)(slices - 1);
-        plane({3, 0, z});
-    }
+    /* 3D-5c: um plano só, na frente do volume do sprite (os lados vêm do programa
+     * dos blocos, modo 3); antes eram 5 cópias de −t a +t */
+    plane({3, 0, g_3d_level ? t : 0.07f * dist * d});
     /* 3D-3g: HUD fixo na tela (sem perspectiva nem giro), no lugar do 2D, por cima */
     if (!(v->hide & (1 << 2))) {
         float ortho[16] = {0};
