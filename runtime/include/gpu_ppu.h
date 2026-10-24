@@ -74,6 +74,8 @@ typedef struct {
     float depth;      /* 1 = profundidade padrão */
     bool linear;
     bool debug;       /* 3D-3f: pinta por cima as classes (diagnóstico) */
+    float follow;     /* 3D-4q: 0..1, quanto a câmera mira no Wario (suavizado pela plataforma) */
+    float follow_x, follow_y;   /* 3D-4q: ponto do Wario na tela do Game Boy (0..160, 0..144) */
     float spr_depth;  /* 3D-5e: espessura dos sprites (1 = padrão; 0 = não informado = 1) */
     int hide;         /* 3D-4f: diagnóstico, esconde partes (bit = camada; 11 lados, 12 chão da superfície) */
 } Gpu3DView;

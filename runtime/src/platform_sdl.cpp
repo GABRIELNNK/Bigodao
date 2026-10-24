@@ -247,6 +247,7 @@ static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (dia
 static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
 static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
+static int g_3d_follow = 1;        /* câmera 3D segue o Wario (pref display.follow3d, 3D-4q) */
 static int g_3d_spr = 50;          /* % espessura dos sprites (pref display.spr3d, 3D-5e) */
 static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
@@ -2159,6 +2160,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_tilt = (int)(v < 0 ? 0 : (v > 35 ? 35 : v));
                     continue;
                 }
+                if (strcmp(key, "display.follow3d") == 0) {   /* passo 3D-4q */
+                    g_3d_follow = (strtol(value, NULL, 10) != 0) ? 1 : 0;
+                    continue;
+                }
                 if (strcmp(key, "display.stick3d") == 0) {   /* passo 3D-5a */
                     g_3d_stick = (strtol(value, NULL, 10) != 0) ? 1 : 0;
                     continue;
@@ -2352,6 +2357,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.yaw3d=%d\n", g_3d_yaw);
     fprintf(file, "display.spr3d=%d\n", g_3d_spr);
     fprintf(file, "display.stick3d=%d\n", g_3d_stick);
+    fprintf(file, "display.follow3d=%d\n", g_3d_follow);
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
@@ -3117,6 +3123,7 @@ static void reset_runtime_display_defaults(void) {
     g_3d_tilt = 15;
     g_3d_depth = 100;
     g_3d_yaw = 0;
+    g_3d_follow = 1;
     g_3d_spr = 50;   /* 3D-4p: padrão escolhido pelo usuário */
     g_3d_stick = 1;
     g_gpu_screen_error.clear();
@@ -4814,6 +4821,38 @@ static void render_frame_internal(const uint32_t* framebuffer,
             v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw + g_3d_cam_yaw));
             v.depth = (float)g_3d_depth / 100.0f;
             v.spr_depth = (float)g_3d_spr / 100.0f;   /* 3D-5e */
+            {   /* passo 3D-4q: ponto do Wario na tela (sPlXRel/sPlYRel, ERAM $A91D/$A91C,
+                 * coordenadas do OAM: x + 8, y + 16, origem nos pés), suavizado */
+                static float s_fx = 80.0f, s_fy = 72.0f, s_f = 0.0f;
+                float tx = 80.0f, ty = 72.0f, tf = 0.0f;
+                const GBContext* c = g_registered_ctx;
+                static const char* fake_w = getenv("BIGODAO_TESTE_WARIO");   /* testes: "x,y" na tela */
+                int fwx = 0, fwy = 0;
+                if (g_3d_follow && fake_w && sscanf(fake_w, "%d,%d", &fwx, &fwy) == 2) {
+                    tx = (float)fwx; ty = (float)fwy; tf = 1.0f;
+                } else if (g_3d_follow && c && c->eram && c->eram_size > 0x091D &&
+                           (c->eram[0x08C3] == 2 || c->eram[0x08C3] == 3)) {
+                    /* 3D-4r: o byte dá a volta quando o Wario passa do topo da tela (pulo
+                     * alto, céu): lido com sinal, senão parecia fora e a câmera dava uma
+                     * guinada de volta ao centro, deixando o Wario no céu. O alvo fica
+                     * preso dentro da tela (a fase acima/abaixo não continua) e, sem
+                     * leitura boa, a câmera fica onde estava em vez de voltar. */
+                    int rx = c->eram[0x091D], ry = c->eram[0x091C];
+                    if (rx >= 0xC8) rx -= 256;
+                    if (ry >= 0xC8) ry -= 256;
+                    tx = std::min(144.0f, std::max(16.0f, (float)rx - 8.0f));
+                    ty = std::min(104.0f, std::max(48.0f, (float)ry - 16.0f - 12.0f));   /* meio do corpo; na vertical segue pouco */
+                    tf = 1.0f;
+                }
+                if (tf > 0.0f) {   /* 3D-4r: sem Wario (fora da fase) só a força volta a 0 */
+                    s_fx += (tx - s_fx) * 0.12f;
+                    s_fy += (ty - s_fy) * 0.12f;
+                }
+                s_f += (tf - s_f) * 0.08f;
+                v.follow = s_f;
+                v.follow_x = s_fx;
+                v.follow_y = s_fy;
+            }
             v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
             v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
             v.hide = g_3d_hide | (getenv("BIGODAO_3D_ESCONDER") ? atoi(getenv("BIGODAO_3D_ESCONDER")) : 0);
@@ -5645,6 +5684,8 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 {   /* passo 3D-5a */
                     bool st = g_3d_stick != 0;
                     if (ImGui::Checkbox("Camera 3D no analogico direito", &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }
+                    bool fw = g_3d_follow != 0;   /* passo 3D-4q */
+                    if (ImGui::Checkbox("Camera 3D segue o Wario", &fw)) { g_3d_follow = fw ? 1 : 0; save_runtime_preferences(); }
                     if (g_3d_stick) ImGui::TextDisabled("Analogico direito: inclina e gira; soltando, volta ao padrao.");
                 }
                 const char* why = g3d_blocker();

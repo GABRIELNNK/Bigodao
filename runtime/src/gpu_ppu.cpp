@@ -2123,9 +2123,19 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     const float dist = (bh * 0.5f) / std::tan(fov * 0.5f);
     const float pitch = v->tilt_deg * 3.14159265f / 180.0f;
     const float yaw = v->yaw_deg * 3.14159265f / 180.0f;
-    const float eye[3] = {dist * std::sin(yaw) * std::cos(pitch), dist * std::sin(pitch),
+    /* 3D-4q: câmera seguindo o Wario: com inclinação/giro ela mira nele (entra aos
+     * poucos até 15 graus; com 0 grau fica igual ao 2D) */
+    float ax = 0.0f, ay = 0.0f;
+    if (g_3d_level && v->follow > 0.0f) {
+        const float ang = std::max(std::fabs(v->tilt_deg), std::fabs(v->yaw_deg));
+        const float f = std::min(1.0f, v->follow) * std::min(1.0f, ang / 15.0f);
+        const float side = (bw - 160.0f) * 0.5f;
+        ax = f * (v->follow_x + side - bw * 0.5f);
+        ay = f * (bh * 0.5f - v->follow_y);
+    }
+    const float eye[3] = {ax + dist * std::sin(yaw) * std::cos(pitch), ay + dist * std::sin(pitch),
                           dist * std::cos(yaw) * std::cos(pitch)};
-    const float at[3] = {0.0f, 0.0f, 0.0f};
+    const float at[3] = {ax, ay, 0.0f};
     float proj[16], view[16], mvp[16];
     mat_perspective(fov, bw / bh, dist * 0.05f, dist * 20.0f, proj);
     mat_look_at(eye, at, view);
