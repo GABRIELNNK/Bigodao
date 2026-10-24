@@ -2528,6 +2528,31 @@ static const WidescreenBlockAttributeCache* ppu_ws_attribute_cache_for_line(
     return &g_ws_attr_cache;
 }
 
+/* Passo 3D-4a: tiles do mundo fora da tela, para o 3D (ver ppu.h). */
+void ppu_world_tiles(GBPPU* ppu, const GBContext* ctx, int tx0, int ty0, int tw, int th, uint16_t* out) {
+    memset(out, 0, (size_t)tw * (size_t)th * sizeof(uint16_t));
+    if (!ppu || !ctx || !ctx->wram || !ctx->eram || ctx->eram_size < 0x0D00u + 0x200u) return;
+    const WidescreenBlockAttributeCache* cache = ppu_ws_attribute_cache_for_line(ppu, ctx);
+    const uint16_t scroll_x = (uint16_t)((uint16_t)ctx->eram[0x0902u] << 8u | ctx->eram[0x0903u]);
+    bool wl, wr;
+    int wlx = 0, wrx = 0;
+    ppu_room_walls(ctx, scroll_x, &wl, &wlx, &wr, &wrx);
+    for (int j = 0; j < th; ++j) {
+        for (int i = 0; i < tw; ++i) {
+            const int wx = (tx0 + i) * 8, wy = (ty0 + j) * 8;
+            if (wx < 0 || wy < 0 || wx >= 0x1000 || wy >= 0x0200) continue;
+            if ((wl && wx < wlx) || (wr && wx >= wrx)) continue;
+            const size_t layout_offset = (size_t)(wy >> 4) * 0x100u + (size_t)(wx >> 4);
+            const uint8_t block_id = ctx->wram[layout_offset] & 0x7Fu;
+            const size_t tile_in_block = (size_t)((wy >> 3) & 1) * 2u + (size_t)((wx >> 3) & 1);
+            const uint8_t tile_idx = ctx->eram[0x0D00u + (size_t)block_id * 4u + tile_in_block];
+            const WsMapTile* mt = ppu_ws_map_tile(ppu, ctx, wx, wy, block_id, tile_in_block, tile_idx, cache);
+            const uint8_t attr = (uint8_t)((mt->attr & 0xEFu) | 0x10u);
+            out[(size_t)j * (size_t)tw + (size_t)i] = (uint16_t)(tile_idx | ((uint16_t)attr << 8u));
+        }
+    }
+}
+
 /* Passo 7p / 3D-1b: no mapa regional (game_mode = 1, fora do mapa geral =
  * pagina DX 43), a ultima fileira de tiles da tela e a faixa com o nome da
  * regiao. As laterais a continuam (7p/7q) e o 3D a trata como HUD. */

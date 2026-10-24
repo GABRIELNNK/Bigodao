@@ -115,6 +115,8 @@ int ppu_native_get_hd_scale(void);
  * GPU monta a tela; ppu_native_hd_frame/_margin_frame devolvem NULL. Vale a
  * partir do próximo quadro. Padrão true. */
 void ppu_native_set_cpu_hd(bool enabled);
+/* Passo 3D-4a: pede os tiles do mundo em volta da tela (só com o 3D ligado). */
+void ppu_native_set_world_ext(bool enabled);
 bool ppu_native_get_cpu_hd(void);
 /* Último frame HD completo (160*N x 144*N, RGBA) ou NULL. */
 const uint32_t* ppu_native_hd_frame(int* out_scale);
@@ -224,6 +226,12 @@ bool ppu_native_hd_add_tile(char kind, uint64_t tile_hash, int size,
 #define PPU_NATIVE_GPU_LOG_MAX 8192
 #define PPU_NATIVE_GPU_TL_MAX 2048   /* passo 14b-3: trocas de tile HD no meio do quadro */
 #define PPU_NATIVE_GPU_MARGIN_W (2 * GB_WIDESCREEN_MARGIN)   /* passo 14b-4 */
+/* Passo 3D-4a: o 3D desenha a fase além da tela: EXT_X pontos de cada lado,
+ * EXT_Y em cima e embaixo; tiles do mundo pedidos à CPU (com folga). */
+#define PPU_NATIVE_GPU_EXT_X 64
+#define PPU_NATIVE_GPU_EXT_Y 48
+#define PPU_NATIVE_GPU_EXT_TW 56
+#define PPU_NATIVE_GPU_EXT_TH 40
 typedef struct {
     uint16_t addr;        /* 0x0000-0x3FFF: banco * 0x2000 + (endereço - 0x8000) */
     uint8_t line_plus1;
@@ -287,6 +295,11 @@ typedef struct {
      * 16x16), quando a fase está na tela (level_layout). */
     bool level_layout;
     uint8_t layout[0x2000];
+    /* Passo 3D-4a: tiles do mundo em volta da tela (ppu_world_tiles), para o 3D
+     * mostrar a fase além da tela; ext_tx0/ty0 = tile do mundo do canto. */
+    bool ext_on;
+    int16_t ext_tx0, ext_ty0;
+    uint16_t ext[PPU_NATIVE_GPU_EXT_TW * PPU_NATIVE_GPU_EXT_TH];
     bool margin_on;
     uint32_t margin[144][PPU_NATIVE_GPU_MARGIN_W * 2][4];
     uint8_t fade_lut[PPU_NATIVE_GPU_MARGIN_W][256];

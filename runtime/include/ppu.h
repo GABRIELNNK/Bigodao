@@ -347,6 +347,11 @@ bool ppu_ws_map_band_line(const GBContext* ctx, int ly);
 /* Passo 3D-2: modos em que a fase está na tela com o layout de blocos na WRAM
  * (sGameMode 2 e 3). */
 bool ppu_widescreen_uses_level_layout(const GBContext* ctx);
+/* Passo 3D-4a: tiles do mundo (fase) num retângulo de tw x th tiles a partir do
+ * tile (tx0, ty0) do mundo: out = número do tile | (atributo CGB << 8), com o bit
+ * 4 do atributo = 1 quando há tile (0 = fora da fase ou além da parede da sala).
+ * Mesma resolução de cor das laterais (mapa largo do 13b). */
+void ppu_world_tiles(GBPPU* ppu, const GBContext* ctx, int tx0, int ty0, int tw, int th, uint16_t* out);
 
 #ifdef __cplusplus
 }

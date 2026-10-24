@@ -243,6 +243,7 @@ static std::string g_gpu_screen_error;
 static int g_3d_mode = 0;          /* 0 = desligado, 1 = camadas (pref display.mode3d) */
 static int g_3d_tilt = 15;         /* graus (pref display.tilt3d) */
 static int g_3d_depth = 100;       /* % (pref display.depth3d) */
+static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (diagnóstico, não grava) */
 static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
 static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
@@ -4765,6 +4766,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             v.depth = (float)g_3d_depth / 100.0f;
             v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
             v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
+            v.hide = g_3d_hide | (getenv("BIGODAO_3D_ESCONDER") ? atoi(getenv("BIGODAO_3D_ESCONDER")) : 0);
             drawn3d = gpu_ppu_draw_3d(&v);
             if (drawn3d) {   /* passo 3D-3: desenhado fora da tela, com profundidade */
                 int tw = 0, th = 0;
@@ -5068,6 +5070,17 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
             /* Passo 3D-3f: diagnóstico do 3D */
             ImGui::Checkbox("3D: mostrar classes", &g_3d_debug);
+            if (ImGui::TreeNode("3D: esconder partes (diagnostico)")) {   /* passo 3D-4f */
+                static const struct { const char* name; int bit; } kParts[] = {
+                    {"Longe", 0}, {"Fundo", 1}, {"Agua (parede do fundo)", 5}, {"Porta / moedas / escada", 6},
+                    {"Chao (frente)", 4}, {"Ondas (copias da superficie)", 8}, {"Chao da superficie da agua", 12},
+                    {"Lados dos blocos e da porta", 11}, {"Sprites", 3}, {"HUD", 2}};
+                for (const auto& part : kParts) {
+                    bool hid = (g_3d_hide >> part.bit) & 1;
+                    if (ImGui::Checkbox(part.name, &hid)) g_3d_hide = hid ? (g_3d_hide | (1 << part.bit)) : (g_3d_hide & ~(1 << part.bit));
+                }
+                ImGui::TreePop();
+            }
             if (g_3d_debug) {
                 ImGui::TextWrapped("cinza fundo, azul agua, ciano faixa das ondas, azul-claro ceu dentro da agua, "
                                    "marrom chao, laranja porta/escada/moeda, magenta sprite, branco HUD, preto longe");
@@ -7338,6 +7351,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
             ppu_native_gpu_capture(want_capture);
         }
         ppu_native_set_cpu_hd(!gpu_scr || g_gpu_compare);   /* a comparação precisa do HD da CPU */
+        ppu_native_set_world_ext(gpu_scr && g3d_active());   /* passo 3D-4a */
     }
     if ((g_gpu_compare || gpu_scr) && g_use_gl) {   /* passo 14b-1 / 14c-2 */
         gpu_compare_frame();

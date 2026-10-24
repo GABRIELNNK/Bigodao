@@ -1072,6 +1072,58 @@ static uint16_t hd_context_from_ram_raw(const GBContext* ctx) {
     }
 }
 
+static bool g_world_ext = false;   /* passo 3D-4a */
+
+/* Passo 3D-4j: bloco que está desenhado na tela como o bloco vazio $7F enquanto o
+ * layout diz outra coisa (caixa batida: BGColi_HitItemBox grava a caixa usada no
+ * layout e desenha $7F no tilemap enquanto o sprite da batida sobe e desce). Na
+ * cópia do layout para o 3D ele vira 255 (o 3D o trata como transparente). Olha
+ * os blocos em volta da tela, pelo tilemap (o mapa de fundo acompanha o mundo). */
+static void mark_drawn_empty(const GBContext* ctx) {
+    if (!ctx->vram || !ctx->eram || ctx->eram_size < 0x0D00u + 0x200u) return;
+    const uint8_t* e7f = &ctx->eram[0x0D00u + 0x7Fu * 4u];
+    const uint8_t* l0 = g_gpu.line[0];
+    const uint8_t* l9 = g_gpu.line[GB_SCREEN_HEIGHT - 1];
+    const int wx0 = (int16_t)(uint16_t)(l0[8] | (l0[9] << 8));
+    const int wy0 = (int16_t)(uint16_t)(l0[10] | (l0[11] << 8));
+    const int wy9 = (int16_t)(uint16_t)(l9[10] | (l9[11] << 8));
+    const uint16_t map = (l0[0] & 0x08u) ? 0x1C00u : 0x1800u;
+    const int bx0 = (wx0 >> 4) - 1, bx1 = ((wx0 + GB_SCREEN_WIDTH) >> 4) + 1;
+    const int by0 = (wy0 >> 4) - 1, by1 = (wy9 >> 4) + 1;
+    for (int by = by0; by <= by1; ++by) {
+        if (by < 0 || by >= 32) continue;
+        for (int bx = bx0; bx <= bx1; ++bx) {
+            if (bx < 0 || bx >= 256) continue;
+            const uint8_t id = g_gpu.layout[by * 256 + bx] & 0x7Fu;
+            if (id == 0x7Fu) continue;
+            const uint8_t* eid = &ctx->eram[0x0D00u + (size_t)id * 4u];
+            if (eid[0] == e7f[0] && eid[1] == e7f[1] && eid[2] == e7f[2] && eid[3] == e7f[3]) continue;
+            bool same = true;
+            for (int k = 0; k < 4 && same; ++k) {
+                const int tx = (bx * 2 + (k & 1)) & 31, ty = (by * 2 + (k >> 1)) & 31;
+                if (ctx->vram[map + ty * 32 + tx] != e7f[k]) same = false;
+            }
+            if (same) g_gpu.layout[by * 256 + bx] = 0xFFu;
+        }
+    }
+}
+
+/* Passo 3D-4b: a fase está na tela (o 3D usa o layout de blocos)? Modos do
+ * disassembly (GM_*, sSubMode $A8C4): 2/3 fase; 5 morte; $0A/$0C portas; 4
+ * (saída) e 6 (saída especial) só até o fade (sub 0-2: depois vêm a tela de
+ * Course Clear, a sala do tesouro/contador de moedas, ou a cena do mapa);
+ * 7 (tempo esgotado) até o fade (sub 0-4). */
+static bool level_on_screen(const GBContext* ctx) {
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x08C4u) return false;
+    const uint8_t mode = ctx->eram[0x08C3], sub = ctx->eram[0x08C4];
+    switch (mode) {
+        case 0x02: case 0x03: case 0x05: case 0x0A: case 0x0C: return true;
+        case 0x04: case 0x06: return sub <= 2;
+        case 0x07: return sub <= 4;
+        default: return false;
+    }
+}
+
 static void begin_frame(const GBContext* ctx, uint8_t first_line) {
     g_frame_open = true;
     if (g_gpu_on && ctx->vram) {   /* passo 14b-2: VRAM do início do quadro + registro vazio */
@@ -1259,8 +1311,22 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
         /* passo 3D-2; 3D-3m: também nos modos em que a fase continua na tela sem as
          * laterais (portas, saída, morte, tempo esgotado — a mesma lista do contexto
          * HD da fase), para o 3D não voltar a 2D nas transições */
-        g_gpu.level_layout = ctx->wram && (hd_context_from_ram_raw(ctx) & 0xFF00u) == PPU_NATIVE_CTX_LEVEL;
+        g_gpu.level_layout = ctx->wram && level_on_screen(ctx);
         if (g_gpu.level_layout) memcpy(g_gpu.layout, ctx->wram, sizeof(g_gpu.layout));
+        if (g_gpu.level_layout) mark_drawn_empty(ctx);   /* passo 3D-4j */
+        g_gpu.ext_on = false;   /* passo 3D-4a */
+        if (g_gpu.level_layout && g_world_ext) {
+            const uint8_t* l = g_gpu.line[0];
+            const int wx0 = (int16_t)(uint16_t)(l[8] | (l[9] << 8));
+            const int wy0 = (int16_t)(uint16_t)(l[10] | (l[11] << 8));
+            const int left = wx0 - GB_WIDESCREEN_MARGIN - PPU_NATIVE_GPU_EXT_X;
+            const int top = wy0 - PPU_NATIVE_GPU_EXT_Y;
+            g_gpu.ext_tx0 = (int16_t)((left >= 0 ? left / 8 : -((7 - left) / 8)) - 2);
+            g_gpu.ext_ty0 = (int16_t)((top >= 0 ? top / 8 : -((7 - top) / 8)) - 2);
+            ppu_world_tiles(ppu, ctx, g_gpu.ext_tx0, g_gpu.ext_ty0,
+                            PPU_NATIVE_GPU_EXT_TW, PPU_NATIVE_GPU_EXT_TH, g_gpu.ext);
+            g_gpu.ext_on = true;
+        }
         g_gpu.cpu_hd_margin = g_hd_m_valid_scale > 1 ? g_hd_m : NULL;
         if (hd) {
             gpu_hd_fill_slots();
@@ -1478,6 +1544,8 @@ int ppu_native_get_hd_scale(void) {
 }
 
 /* Passo 14c-2 */
+void ppu_native_set_world_ext(bool enabled) { g_world_ext = enabled; }   /* passo 3D-4a */
+
 void ppu_native_set_cpu_hd(bool enabled) {
     g_cpu_hd_req = enabled;
 }
