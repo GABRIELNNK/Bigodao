@@ -340,7 +340,16 @@ const char* kView3DFragment =
     "            if ((fl & 1) == 0) discard;\n"
     "            if (u_nospr != 0 && cls == 3) discard;\n"
     "            vec3 c = texture(u_tex, own ? v_uv : src).rgb;\n"
-    "            if (ref != 255) { vec3 d = abs(c - texture(u_tex, vec2(ux, (float(ref) + 0.5) / float(ws.y))).rgb); if (d.r + d.g + d.b < 0.04) discard; }\n"
+    /* 3D-6e: céu em degradê pontilhado (duas cores alternando): compara com as cores
+     * do céu em 2 linhas x 3 colunas em volta da linha de referência, não só com uma
+     * (sobravam riscos claros verticais nas cópias das ondas) */
+    "            if (ref != 255) {\n"
+    "                for (int j = 0; j < 2; ++j) for (int i = -1; i <= 1; ++i) {\n"
+    "                    vec2 su = vec2(ux + float(i) / float(ws.x), (float(max(ref - j, 0)) + 0.5) / float(ws.y));\n"
+    "                    vec3 d = abs(c - texture(u_tex, su).rgb);\n"
+    "                    if (d.r + d.g + d.b < 0.04) discard;\n"
+    "                }\n"
+    "            }\n"
     "            o_color = vec4(c * u_lshade, 1.0);\n"
     "            return;\n"
     "        }\n"
@@ -501,9 +510,24 @@ const char* kWaterPrepFragment =
     "    int yb = min(bot, top + 32);\n"
     /* cor do corpo num ponto de água (se caiu num objeto, sobe até a água acima dele) */
     "    for (int i = 0; i < 32 && yb > top && rk(x, yb) != 1; ++i) --yb;\n"
-    "    vec3 B = col(x, yb);\n"
-    "    int wb = yb;\n"
-    "    for (int yy = yb - 1; yy >= top; --yy) { if (!same(col(x, yy), B)) break; wb = yy; }\n"
+    /* 3D-6f: água parada com fileiras de pontos no corpo (fase da floresta): B = a
+     * cor que mais aparece em até 16 pontos de água a partir de yb (antes, a do
+     * próprio yb, que podia cair num ponto), e a subida aceita 1 ponto diferente
+     * no meio (para só em 2 seguidos) */
+    "    vec3 cv[16]; int nv = 0;\n"
+    "    for (int yy = yb; yy <= bot && nv < 16; ++yy) { if (rk(x, yy) == 1) { cv[nv] = col(x, yy); ++nv; } }\n"
+    "    vec3 B = col(x, yb); int bn = 0;\n"
+    "    for (int i = 0; i < nv; ++i) {\n"
+    "        int n = 0;\n"
+    "        for (int j = 0; j < nv; ++j) if (same(cv[i], cv[j])) ++n;\n"
+    "        if (n > bn) { bn = n; B = cv[i]; }\n"
+    "    }\n"
+    "    while (yb > top && !same(col(x, yb), B)) --yb;\n"
+    "    int wb = yb, miss = 0;\n"
+    "    for (int yy = yb - 1; yy >= top; --yy) {\n"
+    "        if (same(col(x, yy), B)) { wb = yy; miss = 0; }\n"
+    "        else if (++miss >= 2) break;\n"
+    "    }\n"
     "    if (wb - top < 2) return 4;\n"
     "    int bs = max(top, wb - 10);\n"
     "    if (y < bs) return 0;\n"
