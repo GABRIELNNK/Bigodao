@@ -48,6 +48,7 @@ typedef struct {
     bool hd_center;          /* usar o centro HD da GPU */
     bool hd_margins;         /* usar as laterais HD da GPU */
     const uint16_t* amb_q;   /* 256x144x4 (fundo ambiente * 256) ou NULL */
+    bool amb_on;             /* 3D-2i: laterais com o fundo ambiente (também em 1x, sem amb_q) */
     bool black_fill;         /* passo 3D-1: laterais sem cenário (vão para longe) */
 } GpuScreenInput;
 bool gpu_ppu_compose_screen(const GpuScreenInput* in);
@@ -77,10 +78,17 @@ typedef struct {
     float follow;     /* 3D-4q: 0..1, quanto a câmera mira no Wario (suavizado pela plataforma) */
     float follow_x, follow_y;   /* 3D-4q: ponto do Wario na tela do Game Boy (0..160, 0..144) */
     float front;      /* 3D-6a: plano da frente (cópia do chão e da água): distância em blocos à frente do chão; 0 = sem */
+    bool map_sprites; /* 3D-2h: mapas (geral/regional): sprites extrudidos como nas fases */
     float spr_depth;  /* 3D-5e: espessura dos sprites (1 = padrão; 0 = não informado = 1) */
     int hide;         /* 3D-4f: diagnóstico, esconde partes (bit = camada; 11 lados, 12 chão da superfície) */
 } Gpu3DView;
 bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* frame, const GpuScreenInput* in);
+/* Passo 3D-2b: fora das fases, tipo marcado à mão por tile da VRAM (banco * 384 +
+ * tile; 0 fundo, 1 chão, 2 água, 3 porta/escada); any = algum tile marcado. */
+void gpu_ppu_set_tile_marks(const uint8_t* marks768, bool any);
+/* Passo 3D-2g: a janela não é HUD nesta tela (g00: as ondas são janela e animam,
+ * então a marca por tile não pega todos os quadros): tiles da janela viram chão. */
+void gpu_ppu_set_window_floor(bool on);
 bool gpu_ppu_draw_3d(const Gpu3DView* view);
 /* Passo 3D-3: o 3D é desenhado fora da tela (com profundidade) no tamanho do
  * retângulo do jogo; esta é a imagem pronta para ir à janela (RGBA, linha 0 = topo). */

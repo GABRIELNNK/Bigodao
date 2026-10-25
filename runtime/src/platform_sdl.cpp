@@ -29,6 +29,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <map>   /* passo 3D-2b/2f */
 #if defined(_WIN32)
 #include <io.h>
 #include <windows.h>
@@ -245,6 +246,29 @@ static int g_3d_tilt = 10;         /* graus (pref display.tilt3d) */
 static int g_3d_depth = 60;        /* % (pref display.depth3d) */
 static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (diagnóstico, não grava) */
 static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
+/* Passo 3D-2b: fora das fases, o tipo de cada tile (pelo desenho dele) é marcado à
+ * mão: Desenvolvedor > "3D: marcar tiles". Clique esquerdo troca fundo -> chão ->
+ * água -> porta/escada -> fundo; clique direito volta a fundo. Gravado em
+ * mods/3d_marcas.txt (hash do tile em hex e o tipo). */
+static bool g_3d_mark = false;
+/* 3D-2f: por tela (contexto do pacote HD: "g00", "m44"...; 0 = todas as telas,
+ * das marcas antigas): a marca da tela vale antes da geral; tipo 0 na tela = fundo
+ * ali mesmo que a geral diga outra coisa */
+static std::map<std::pair<uint16_t, uint64_t>, uint8_t> g_3d_marks;
+static bool g_3d_marks_loaded = false;
+static std::string g_3d_mark_info;
+static bool g_3d_wide = true;   /* a imagem 3D tem as laterais (256 de largura) */
+/* Passo 3D-2c: congelar o jogo (Desenvolvedor, ao lado de "3D: marcar tiles") para
+ * marcar trechos que não têm pausa: o jogo para no fim do quadro e a tela continua
+ * sendo redesenhada com o último quadro (menu e cliques funcionando). */
+static bool g_freeze = false;
+static bool g_freeze_redraw = false;
+static bool g_freeze_quit = false;
+static const uint32_t* g_freeze_fb = NULL;
+static const PPUNativeGpuFrame* g_frame_last = NULL;
+static std::string marks3d_path(void);
+static void marks3d_load(void);
+static void marks3d_table(const GBContext* ctx);
 static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
 static int g_3d_follow = 1;        /* câmera 3D segue o Wario (pref display.follow3d, 3D-4q) */
@@ -368,8 +392,9 @@ static void gpu_compare_frame(void) {
     g_gpu_center_ok = false;   /* passo 14c-1 */
     g_gpu_margins_ok = false;
     g_frame3d = NULL;
-    const PPUNativeGpuFrame* fr = ppu_native_gpu_take_frame();
+    const PPUNativeGpuFrame* fr = g_freeze_redraw ? g_frame_last : ppu_native_gpu_take_frame();   /* 3D-2c */
     if (!fr) return;
+    g_frame_last = fr;
     g_frame3d = fr;   /* passo 3D-1: as camadas são montadas na apresentação */
     if (!g_gpu_compare && g3d_active()) return;
     if (!g_gpu_compare) {   /* passo 14c-2: só monta (sem ler de volta) para a tela */
@@ -4297,10 +4322,16 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     in.hd_center = !remap && g_gpu_center_ok && g_use_hd_frame;
     in.hd_margins = in.hd_center && g_gpu_margins_ok && in.wide && src_is_wide && !black_fill;
     in.amb_q = (ws_ambient && scale > 1) ? &g_ws_amb_q[0][0][0] : NULL;
+    in.amb_on = ws_ambient;   /* passo 3D-2i */
     in.black_fill = black_fill;
     if (g3d_active()) {   /* passo 3D-1: camadas (o filtro de pós-processamento não vale aqui) */
         GpuScreenInput in3 = in;
         in3.hd_margins = in.wide && src_is_wide && !black_fill;
+        marks3d_load();   /* passo 3D-2b */
+        marks3d_table(g_registered_ctx);
+        g_3d_wide = in3.wide;
+        /* passo 3D-2g: no g00 (título/slots) a janela são as ondas do mar, não o HUD */
+        gpu_ppu_set_window_floor(ppu_native_hd_context() == (PPU_NATIVE_CTX_MODE | 0x00));
         g_3d_valid = g_frame3d && gpu_ppu_compose_3d(g_frame3d, &in3);
         g_frame3d = NULL;
         if (g_3d_valid) {
@@ -4830,6 +4861,8 @@ static void render_frame_internal(const uint32_t* framebuffer,
             v.depth = (float)g_3d_depth / 100.0f;
             v.spr_depth = (float)g_3d_spr / 100.0f;   /* 3D-5e */
             v.front = (float)g_3d_front / 100.0f;      /* 3D-6a */
+            v.map_sprites = g_registered_ctx && g_registered_ctx->eram && g_registered_ctx->eram_size > 0x08C3 &&
+                            g_registered_ctx->eram[0x08C3] == 1;   /* 3D-2h: mapa geral / regional */
             {   /* passo 3D-4q: ponto do Wario na tela (sPlXRel/sPlYRel, ERAM $A91D/$A91C,
                  * coordenadas do OAM: x + 8, y + 16, origem nos pés), suavizado */
                 static float s_fx = 80.0f, s_fy = 72.0f, s_f = 0.0f;
@@ -4889,7 +4922,8 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw * s_dir + g_3d_cam_yaw));
             }
             v.linear = false;   /* 3D-6a: no 3D sempre Nearest (o Linear dava artefatos) */
-            v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
+            v.debug = g_3d_debug || g_3d_mark || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes; 3D-2b: marcando */
+            if (g_3d_mark) { v.tilt_deg = 0.0f; v.yaw_deg = 0.0f; }   /* 3D-2b: vista reta para o clique bater com o tile */
             v.hide = g_3d_hide | (getenv("BIGODAO_3D_ESCONDER") ? atoi(getenv("BIGODAO_3D_ESCONDER")) : 0);
             drawn3d = gpu_ppu_draw_3d(&v);
             if (drawn3d) {   /* passo 3D-3: desenhado fora da tela, com profundidade */
@@ -5194,6 +5228,20 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
             /* Passo 3D-3f: diagnóstico do 3D */
             ImGui::Checkbox("3D: mostrar classes", &g_3d_debug);
+            {   /* passo 3D-2b */
+                ImGui::Checkbox("3D: marcar tiles (fora das fases)", &g_3d_mark);
+                ImGui::SameLine();   /* passo 3D-2c */
+                if (ImGui::Button(g_freeze ? "Descongelar o jogo" : "Congelar o jogo")) g_freeze = !g_freeze;
+                if (g_3d_mark) {
+                    ImGui::TextWrapped("Feche o menu e clique no jogo: esquerdo troca fundo > chao > agua > porta/escada; "
+                                       "direito volta a fundo. Vale para o mesmo desenho de tile so nesta tela (g00, m44...), "
+                                       "tambem na janela (ondas, faixas). "
+                                       "Enquanto marca, a vista fica reta e com as classes pintadas.");
+                    marks3d_load();
+                    ImGui::TextDisabled("%u tiles marcados - %s", (unsigned)g_3d_marks.size(), marks3d_path().c_str());
+                    if (!g_3d_mark_info.empty()) ImGui::TextDisabled("Ultimo: %s", g_3d_mark_info.c_str());
+                }
+            }
             if (ImGui::TreeNode("3D: esconder partes (diagnostico)")) {   /* passo 3D-4f */
                 static const struct { const char* name; int bit; } kParts[] = {
                     {"Longe", 0}, {"Fundo", 1}, {"Agua (parede do fundo)", 5}, {"Porta / moedas / escada", 6},
@@ -7362,13 +7410,133 @@ static bool handle_runtime_event(const SDL_Event* event, GBContext* ctx) {
     return true;
 }
 
+/* Passo 3D-2b: marcas dos tiles fora das fases */
+static std::string marks3d_path(void) {
+    std::string d = hd_pack_io_dump_dir();   /* .../mods/dump */
+    const size_t c = d.find_last_of("/\\");
+    return (c == std::string::npos ? std::string("mods") : d.substr(0, c)) + "/3d_marcas.txt";
+}
+static void marks3d_load(void) {
+    if (g_3d_marks_loaded) return;
+    g_3d_marks_loaded = true;
+    FILE* f = fopen(marks3d_path().c_str(), "r");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        unsigned long long h = 0;
+        unsigned k = 0;
+        char cx[16] = "";
+        const int n = sscanf(line, "%llx %u %15s", &h, &k, cx);
+        if (n < 2 || k > 3) continue;
+        uint16_t c = 0;   /* 3D-2f: contexto "f07"/"m44"/"g00" (sem = todas as telas) */
+        if (n == 3) {
+            const unsigned v = (unsigned)strtoul(cx + 1, NULL, 16) & 0xFFu;
+            if (cx[0] == 'f') c = (uint16_t)(PPU_NATIVE_CTX_LEVEL | v);
+            else if (cx[0] == 'm') c = (uint16_t)(PPU_NATIVE_CTX_MAP | v);
+            else if (cx[0] == 'g') c = (uint16_t)(PPU_NATIVE_CTX_MODE | v);
+        }
+        if (c == 0 && k == 0) continue;
+        g_3d_marks[{c, (uint64_t)h}] = (uint8_t)k;
+    }
+    fclose(f);
+}
+static void marks3d_save(void) {
+    const std::string p = marks3d_path();
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(p).parent_path(), ec);
+    FILE* f = fopen(p.c_str(), "w");
+    if (!f) { g_3d_mark_info = "nao consegui gravar " + p; return; }
+    fprintf(f, "# Bigodao 3D-2b/2f: hash do tile (FNV-1a dos 16 bytes), tipo (0 fundo, 1 chao, 2 agua, 3 porta/escada) e tela (g00, m44...; sem = todas)\n");
+    for (const auto& e : g_3d_marks) {
+        char cx[8];
+        ppu_native_hd_context_suffix(e.first.first, cx);
+        fprintf(f, "%016llx %u%s%s\n", (unsigned long long)e.first.second, (unsigned)e.second, cx[0] ? " " : "", cx);
+    }
+    fclose(f);
+}
+static uint64_t marks3d_hash(const uint8_t* src) {
+    uint64_t h = 1469598103934665603ull;   /* FNV-1a 64, como o ppu_native */
+    for (int i = 0; i < 16; ++i) { h ^= src[i]; h *= 1099511628211ull; }
+    return h;
+}
+/* tabela por tile da VRAM (banco * 384 + tile) para a GPU */
+static void marks3d_table(const GBContext* ctx) {
+    static uint8_t tab[768];
+    bool any = false;
+    memset(tab, 0, sizeof(tab));
+    if (ctx && ctx->vram && !g_3d_marks.empty()) {
+        const uint16_t cx = ppu_native_hd_context();   /* 3D-2f: a tela atual */
+        for (int b = 0; b < 2; ++b) {
+            for (int t = 0; t < 384; ++t) {
+                const uint64_t h = marks3d_hash(ctx->vram + b * 0x2000 + t * 16);
+                auto it = g_3d_marks.find({cx, h});
+                if (it == g_3d_marks.end()) it = g_3d_marks.find({(uint16_t)0, h});
+                if (it != g_3d_marks.end() && it->second != 0) { tab[b * 384 + t] = it->second; any = true; }
+            }
+        }
+    }
+    gpu_ppu_set_tile_marks(tab, any);
+}
+/* clique no jogo: tile do fundo/janela debaixo do ponteiro */
+static void marks3d_click(GBContext* ctx, int mx, int my, bool clear) {
+    if (!ctx || !ctx->vram) return;
+    const SDL_Rect& vp = g_game_viewport;
+    if (vp.w <= 0 || vp.h <= 0 || mx < vp.x || my < vp.y || mx >= vp.x + vp.w || my >= vp.y + vp.h) return;
+    const int bw = g_3d_wide ? 256 : 160;
+    int sx = (mx - vp.x) * bw / vp.w - (bw == 256 ? 48 : 0);
+    const int sy = (my - vp.y) * 144 / vp.h;
+    if (sx < 0 || sx >= 160) { g_3d_mark_info = "clique no meio da tela (nas laterais nao vale)"; return; }
+    const uint8_t lcdc = gb_read8(ctx, 0xFF40), scy = gb_read8(ctx, 0xFF42), scx = gb_read8(ctx, 0xFF43);
+    const uint8_t wy = gb_read8(ctx, 0xFF4A), wx = gb_read8(ctx, 0xFF4B);
+    int bx, by, map;
+    if ((lcdc & 0x20) && sy >= wy && sx >= wx - 7) {
+        bx = sx - (wx - 7); by = sy - wy; map = (lcdc & 0x40) ? 0x1C00 : 0x1800;
+    } else {
+        bx = (sx + scx) & 255; by = (sy + scy) & 255; map = (lcdc & 0x08) ? 0x1C00 : 0x1800;
+    }
+    const int entry = map + ((by >> 3) & 31) * 32 + ((bx >> 3) & 31);
+    const int num = ctx->vram[entry], attr = ctx->vram[0x2000 + entry];
+    const int tidx = (lcdc & 0x10) ? num : (num < 128 ? 256 + num : num);
+    const int bank = (attr & 0x08) ? 1 : 0;
+    const uint64_t h = marks3d_hash(ctx->vram + bank * 0x2000 + tidx * 16);
+    marks3d_load();
+    /* 3D-2f: a marca vale só para esta tela */
+    const uint16_t cx = ppu_native_hd_context();
+    int cur = 0;
+    auto it = g_3d_marks.find({cx, h});
+    if (it == g_3d_marks.end()) it = g_3d_marks.find({(uint16_t)0, h});
+    if (it != g_3d_marks.end()) cur = it->second;
+    const int k = clear ? 0 : (cur + 1) % 4;
+    const bool general = g_3d_marks.count({(uint16_t)0, h}) != 0;
+    if (cx == 0) {
+        if (k == 0) g_3d_marks.erase({(uint16_t)0, h}); else g_3d_marks[{(uint16_t)0, h}] = (uint8_t)k;
+    } else if (k == 0 && !general) {
+        g_3d_marks.erase({cx, h});
+    } else {
+        g_3d_marks[{cx, h}] = (uint8_t)k;
+    }
+    static const char* kNames[] = {"fundo", "chao", "agua", "porta/escada"};
+    char sfx[8];
+    ppu_native_hd_context_suffix(cx, sfx);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "tile %03X (banco %d) na tela %s: %s", tidx, bank, sfx[0] ? sfx : "(todas)", kNames[k]);
+    g_3d_mark_info = buf;
+    marks3d_save();
+}
+
 bool gb_platform_poll_events(GBContext* ctx) {
     SDL_Event event;
 
+    if (g_freeze_quit) return false;   /* passo 3D-2c: fechou com o jogo congelado */
     if (!g_benchmark_mode) {
         while (SDL_PollEvent(&event)) {
             if (ImGui::GetCurrentContext() != NULL) {
                 ImGui_ImplSDL2_ProcessEvent(&event);
+            }
+            if (g_3d_mark && !g_show_menu && event.type == SDL_MOUSEBUTTONDOWN &&
+                (event.button.button == SDL_BUTTON_LEFT || event.button.button == SDL_BUTTON_RIGHT)) {   /* passo 3D-2b */
+                marks3d_click(ctx, event.button.x, event.button.y, event.button.button == SDL_BUTTON_RIGHT);
+                continue;
             }
             if (!handle_runtime_event(&event, ctx)) {
                 return false;
@@ -7448,6 +7616,7 @@ void gb_platform_submit_port_frame(void* user, const GBPortFrame* frame) {
 
 
 void gb_platform_render_frame(const uint32_t* framebuffer) {
+    if (!g_freeze_redraw) g_freeze_fb = framebuffer;   /* passo 3D-2c */
     ppu_native_set_hd_scale(effective_internal_scale()); /* passo 4b: segue a textura */
     music_monitor_update(); /* passo 6b */
     hd_pack_io_flush_dumps(128); /* passo 5a */
@@ -7591,6 +7760,35 @@ void gb_platform_vsync(uint32_t frame_cycles) {
         g_last_guest_widescreen_framebuffer_valid = false;
         g_present_count = g_registered_ctx->completed_frames;
         g_last_frame_time = SDL_GetTicks();
+    }
+    static const char* s_test_freeze = getenv("BIGODAO_TESTE_CONGELAR");   /* testes: congela por N redesenhos no quadro 30 */
+    if (s_test_freeze && g_registered_ctx && g_registered_ctx->completed_frames == 30) g_freeze = true;
+    if (g_freeze && !g_benchmark_mode && g_registered_ctx) {   /* passo 3D-2c: jogo congelado */
+        if (g_audio_device) SDL_PauseAudioDevice(g_audio_device, 1);
+        int redraws = 0;
+        while (g_freeze && !g_freeze_quit) {
+            if (s_test_freeze && redraws++ >= atoi(s_test_freeze)) { g_freeze = false; break; }
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                if (ImGui::GetCurrentContext() != NULL) ImGui_ImplSDL2_ProcessEvent(&ev);
+                if (g_3d_mark && !g_show_menu && ev.type == SDL_MOUSEBUTTONDOWN &&
+                    (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT)) {
+                    marks3d_click(g_registered_ctx, ev.button.x, ev.button.y, ev.button.button == SDL_BUTTON_RIGHT);
+                    continue;
+                }
+                if (!handle_runtime_event(&ev, g_registered_ctx)) { g_freeze_quit = true; break; }
+            }
+            if (g_freeze_quit) break;
+            if (g_freeze_fb) {
+                g_freeze_redraw = true;
+                gb_platform_render_frame(g_freeze_fb);
+                g_freeze_redraw = false;
+            }
+            SDL_Delay(16);
+        }
+        reset_audio_output_buffer(true);
+        g_last_frame_time = SDL_GetTicks();
+        if (g_audio_device) SDL_PauseAudioDevice(g_audio_device, (audio_output_should_run() && g_audio_started) ? 0 : 1);
     }
     if (g_benchmark_mode || g_app_suspended) {
         g_last_timing.pacing_cycles = (frame_cycles > 0) ? frame_cycles : 70224u;

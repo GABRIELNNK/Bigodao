@@ -44,7 +44,12 @@ uint32_t g_uploaded_serial = 0xFFFFFFFFu;
 
 /* Passo 14b-3: tiles HD. Atlas em camadas (2D array), uma entrada de
  * metadados por entrada da tabela de tiles HD do ppu_native. */
-GLuint g_tex_slot = 0;     /* R16UI 768x16: slot + 1 por tile e (tipo, paleta) */
+GLuint g_tex_slot = 0;     /* R16UI 768x17: slot + 1 por tile e (tipo, paleta); linha 16 = marcas do 3D-2b */
+uint16_t g_marks[768] = {0};
+bool g_marks_any = false, g_marks_dirty = true;
+GLint g_loc_marks = -1;
+bool g_winfloor = false;   /* passo 3D-2g */
+GLint g_loc_winfloor = -1;
 GLuint g_tex_meta = 0;     /* RGBA16UI 256x128: x, y, camada | tem_ref << 15, lado */
 GLuint g_tex_ref = 0;      /* RGBA8UI 1024x128: 4 cores de referência por slot */
 GLuint g_tex_atlas = 0;    /* RGBA8UI 2D array */
@@ -906,7 +911,8 @@ const char* kScreenFragment =
     "    } else if (u_wide != 0) {\n"
     "        int mx = X < c0 ? X : X - 160 * s;\n"
     "        if (u_hdm != 0) c = tex8(u_margins, ivec2(mx, Y));\n"
-    "        else if (u_cls != 0) c = uvec3(u_blackfill != 0 ? 0u : 1u, 0u, 0u);\n"
+    /* 3D-2h: laterais com o fundo ambiente (desfoque) ficam no plano do fundo, não longe */
+    "        else if (u_cls != 0) c = uvec3((u_blackfill != 0 && u_ambon == 0) ? 0u : 1u, 0u, 0u);\n"
     "        if (u_ambon != 0 && s > 1 && u_cls == 0) c = X < c0 ? amb(X, Y, s, 0, 47) : amb(X, Y, s, 208, 255);\n"
     "    } else if (u_cls != 0) {\n"
     "        c = uvec3(1u, 0u, 0u);\n"
@@ -956,6 +962,8 @@ const char* kFragment =
     "uniform int u_scale;\n"
     "uniform int u_hd;\n"
     "uniform int u_out;\n"   /* passo 3D-1: 0 = cor, 1 = só o fundo (sem sprites), 2 = classe */
+    "uniform int u_winfloor;\n"   /* passo 3D-2g: janela = chão (g00) */
+    "uniform int u_marks;\n"   /* passo 3D-2b: fora das fases, tipo marcado à mão por tile (linha 16 de u_slot) */
     "uniform int u_ext;\n"   /* passo 3D-4a: desenha a fase além da tela (tiles do mundo da CPU) */
     "uniform usampler2D u_extt;\n"   /* R16UI: tile | atributo << 8 (bit 12 = há tile) */
     "uniform ivec4 u_extg;\n"   /* tile do mundo do canto (x, y), largura, altura em tiles */
@@ -1294,6 +1302,14 @@ const char* kFragment =
     "    int bgpal = attr & 7;\n"
     "    bool bgpri = (attr & 0x80) != 0;\n"
     "    int bgi = bbank * 384 + tidx;\n"
+    /* 3D-2b; 3D-2f: também na janela (as ondas do g00 são janela): o tile marcado
+     * deixa de ser HUD */
+    "    bool mkwin = false;\n"
+    "    if (u_marks != 0 && !hudl) { int mk = int(texelFetch(u_slot, ivec2(bgi, 16), 0).r); if (mk >= 1 && mk <= 3) { g_kind = mk; mkwin = inwin; } }\n"
+    /* 3D-2g; 3D-2i: na janela do g00, o céu (cor 0 do tile) fica no plano do fundo,
+     * junto das laterais; só o desenhado (ondas, nuvens) vira chão */
+    "    if (u_winfloor != 0 && inwin && !mkwin && !hudl) { g_kind = bgraw != 0 ? 1 : 0; mkwin = true; }\n"
+    "    bool hudpix = (inwin && !mkwin) || hudl;\n"
     /* sprites: todos os 40; vencedor e a primeira caixa transparente (HD) */
     "    int oraw = 0, opal = 0, osx = 999, oidx = 99, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
     "    bool obehind = false;\n"
@@ -1333,7 +1349,7 @@ const char* kFragment =
     "    if (useobj && bgraw != 0 && (lcdc & 0x01) != 0 && (bgpri || obehind)) useobj = false;\n"
     "    uvec3 bgc1 = pal(bgpal * 4 + bgraw, y);\n"
     "    uvec3 c1 = useobj ? pal(32 + opal * 4 + oraw, y) : bgc1;\n"
-    "    int cls1 = useobj ? 3 : ((inwin || hudl) ? 2 : 1);\n"
+    "    int cls1 = useobj ? 3 : (hudpix ? 2 : 1);\n"
     "    if (u_hd == 0) { emit(c1, bgc1, cls1); return; }\n"
     /* HD (render_line com g_hd_scale > 1) */
     "    uint bs = slot_of(0, bgpal, bgi);\n"
@@ -1359,7 +1375,7 @@ const char* kFragment =
     "        if (hb.a != 0u) c = rc_apply(rc_setup(bs, bgraw, bg_orig), hb);\n"
     "    }\n"
     "    uvec3 cbg = c;\n"
-    "    int cls = (inwin || hudl) ? 2 : 1;\n"
+    "    int cls = hudpix ? 2 : 1;\n"
     "    if (can_win) {\n"
     "        if (os != 0u) {\n"
     "            uvec4 ho = hd_texel(os, cu, cv, cfl, sx, sy, n);\n"
@@ -1521,6 +1537,15 @@ void rebuild_atlas(void) {
 
 /* Manda os dados do quadro (uma vez por quadro, mesmo com 1x e HD). */
 bool upload_frame(const PPUNativeGpuFrame* f) {
+    if (g_marks_dirty && g_tex_slot) {   /* passo 3D-2b: linha 16 da tabela de slots */
+        gl.PixelStorei(kUnpackAlignment, 2);
+        gl.PixelStorei(kUnpackRowLength, 0);
+        gl.ActiveTexture(kTexture0);
+        gl.BindTexture(kTexture2D, g_tex_slot);
+        gl.TexSubImage2D(kTexture2D, 0, 0, 16, 768, 1, kRedInteger, kUnsignedShort, g_marks);
+        gl.PixelStorei(kUnpackAlignment, 1);
+        g_marks_dirty = false;
+    }
     if (f->serial == g_uploaded_serial) return true;
     gl.PixelStorei(kUnpackAlignment, 1);
     gl.PixelStorei(kUnpackRowLength, 0);
@@ -1600,6 +1625,8 @@ bool draw(GLuint fbo, int w, int h, int scale, bool hd, bool margin = false, int
     gl.Uniform1i(g_loc_margin, margin ? 1 : 0);
     gl.Uniform1i(g_loc_out, out);   /* passo 3D-1 */
     gl.Uniform1i(g_loc_level, (out == 2 && g_level) ? 1 : 0);   /* passo 3D-2: só a classe usa */
+    gl.Uniform1i(g_loc_marks, (out == 2 && !g_level && g_marks_any && !margin) ? 1 : 0);   /* passo 3D-2b */
+    gl.Uniform1i(g_loc_winfloor, (out == 2 && !g_level && g_winfloor && !margin) ? 1 : 0);   /* passo 3D-2g */
     gl.Uniform1i(g_loc_ext, (margin && g_nofade) ? 2 : 0);
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
@@ -1627,6 +1654,8 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
     gl.Uniform1i(g_loc_margin, 0);
     gl.Uniform1i(g_loc_out, out);
     gl.Uniform1i(g_loc_level, (out == 2 && g_level) ? 1 : 0);
+    gl.Uniform1i(g_loc_marks, 0);
+    gl.Uniform1i(g_loc_winfloor, 0);
     gl.Uniform1i(g_loc_ext, 1);
     gl.Uniform4i(g_loc_extg, f->ext_tx0, f->ext_ty0, PPU_NATIVE_GPU_EXT_TW, PPU_NATIVE_GPU_EXT_TH);
     gl.Uniform3i(g_loc_exto, ex, ey, side);
@@ -1686,6 +1715,8 @@ bool gpu_ppu_init(char* err, size_t err_size) {
                            "u_mrec", "u_fade", "u_layout"};
     for (int i = 0; i < 15; ++i) gl.Uniform1i(gl.GetUniformLocation(g_prog, names[i]), i);
     g_loc_level = gl.GetUniformLocation(g_prog, "u_level");
+    g_loc_marks = gl.GetUniformLocation(g_prog, "u_marks");
+    g_loc_winfloor = gl.GetUniformLocation(g_prog, "u_winfloor");
     g_loc_haslog = gl.GetUniformLocation(g_prog, "u_haslog");
     g_loc_scale = gl.GetUniformLocation(g_prog, "u_scale");
     g_loc_hd = gl.GetUniformLocation(g_prog, "u_hd");
@@ -1707,7 +1738,8 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     g_tex_pal = make_tex(kRGBA8UI, 64, kH, kRGBAInteger, kUnsignedByte);
     g_tex_dirty = make_tex(kRG16UI, 256, 64, kRGInteger, kUnsignedShort);
     g_tex_log = make_tex(kRG8UI, kLogW, kLogH, kRGInteger, kUnsignedByte);
-    g_tex_slot = make_tex(kR16UI, 768, 16, kRedInteger, kUnsignedShort);
+    g_tex_slot = make_tex(kR16UI, 768, 17, kRedInteger, kUnsignedShort);   /* 3D-2b: + linha das marcas */
+    g_marks_dirty = true;
     g_tex_meta = make_tex(kRGBA16UI, 256, 128, kRGBAInteger, kUnsignedShort);
     g_tex_ref = make_tex(kRGBA8UI, 1024, 128, kRGBAInteger, kUnsignedByte);
     g_tex_tldir = make_tex(kRG16UI, 768, 1, kRGInteger, kUnsignedShort);
@@ -1934,13 +1966,14 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
         gl.BindTexture(kTexture2D, margins ? g_3m.out[k] : 0);
         gl.ActiveTexture(kTexture0);
         gl.Uniform1i(g_sloc_cls, k == 2 ? 1 : 0);
-        gl.Uniform1i(g_sloc_amb, (k < 2 && in->amb_q) ? 1 : 0);
+        /* 3D-2h: a classe também sabe do fundo ambiente; 3D-2i: também em 1x (sem amb_q) */
+        gl.Uniform1i(g_sloc_amb, (in->amb_q || (k == 2 && in->amb_on)) ? 1 : 0);
         gl.DrawArrays(kTriangles, 0, 3);
     }
     gl.BindFramebuffer(kFramebuffer, 0);
     if (gl.GetError() != 0) return false;
     g_3d_bw = bw;
-    g_3d_level = f->level_layout;
+    g_3d_level = f->level_layout || g_marks_any || g_winfloor;   /* 3D-2b: tela marcada à mão também tem volume */
     /* Passo 3D-4a: nas fases, a tela dentro de uma imagem maior com a fase além
      * dela (EX de cada lado, EY em cima e embaixo) */
     g_cv = &g_3s;
@@ -2359,6 +2392,31 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     /* 3D-5c: um plano só, na frente do volume do sprite (os lados vêm do programa
      * dos blocos, modo 3); antes eram 5 cópias de −t a +t */
     plane({3, 0, g_3d_level ? t : 0.07f * dist * d});
+    /* 3D-2h: nos mapas, sprites extrudidos como nas fases (mesmo comprimento: 0,4 bloco
+     * + 0,2, vezes a espessura dos sprites), da frente deles para trás */
+    if (!g_3d_level && v->map_sprites && !(v->hide & (1 << 3))) {
+        const float bdm = 0.10f * dist * d, zs = 0.07f * dist * d;
+        const float sp = v->spr_depth > 0.0f ? std::min(1.0f, v->spr_depth) : 1.0f;
+        gl.UseProgram(g_bprog);
+        gl.ActiveTexture(kTexture0);
+        gl.BindTexture(kTexture2D, g_cv->out[0]);
+        gl.UniformMatrix4fv(g_bloc_mvp, 1, 0, mvp);
+        gl.Uniform2f(g_bloc_off, g_3d_offx, g_3d_offy);
+        gl.Uniform1f(g_bloc_bw, cw);
+        gl.Uniform1f(g_bloc_ch, ch);
+        gl.Uniform1f(g_bloc_dist, dist);
+        gl.Uniform1i(g_bloc_cols, g_cw / 8 + 2);
+        gl.Uniform1f(g_bloc_alpha, 0.0f);
+        gl.Uniform1f(g_bloc_light, 0.0f);
+        gl.Uniform1i(g_bloc_front, 0);
+        gl.Uniform1f(g_bloc_zf, zs);
+        gl.Uniform1f(g_bloc_zb, zs - sp * (0.4f * bdm + 0.2f));
+        gl.Uniform1i(g_bloc_mode, 3);
+        gl.Uniform1i(g_bloc_simple, 1);
+        gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
+        gl.Uniform1i(g_bloc_simple, 0);
+        gl.UseProgram(g_dprog);
+    }
     /* 3D-6a: plano da frente, cópia do chão e da água (Graphics > "Plano da frente") */
     if (g_3d_level && v->front > 0.0f && bd > 0.0f && !(v->hide & (1 << 13))) {
         const float zfr = bd * 0.5f + bd * v->front;
@@ -2417,6 +2475,19 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     gl.ActiveTexture(kTexture0);
     return gl.GetError() == 0;
 }
+
+/* Passo 3D-2b: marcas por tile vindas da plataforma (fora das fases). */
+void gpu_ppu_set_tile_marks(const uint8_t* m, bool any) {
+    bool ch = any != g_marks_any;
+    for (int i = 0; i < 768; ++i) {
+        const uint16_t v = m ? m[i] : 0;
+        if (g_marks[i] != v) { g_marks[i] = v; ch = true; }
+    }
+    g_marks_any = any;
+    if (ch) g_marks_dirty = true;
+}
+
+void gpu_ppu_set_window_floor(bool on) { g_winfloor = on; }   /* passo 3D-2g */
 
 /* Passo 3D-3: a imagem 3D pronta (RGBA, linha 0 = topo). */
 unsigned int gpu_ppu_3d_texture(int* w, int* h) {
