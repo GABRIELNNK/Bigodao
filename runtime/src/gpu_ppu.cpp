@@ -2196,7 +2196,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     const float t = g_3d_level ? bd * 0.2f : 0.0f;
     /* 3D-5b: as ondas começam no plano da frente do chão e se repetem até o fundo */
     const float zl = g_3d_level ? bd * 0.5f : 0.0f;
-    const float alpha = g_3d_level ? 0.30f * std::min(1.0f, std::max(0.0f, v->tilt_deg / 10.0f)) : 0.0f;
+    const float alpha = g_3d_level ? 0.30f * std::min(1.0f, std::fabs(v->tilt_deg) / 10.0f)   /* 3D-4t: também vendo por baixo */ : 0.0f;
     gl.UseProgram(g_dprog);
     gl.Uniform1f(g_dloc_alpha, alpha);
     gl.Uniform1f(g_dloc_lshade, 1.0f);

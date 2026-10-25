@@ -2157,7 +2157,7 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                 }
                 if (strcmp(key, "display.tilt3d") == 0) {
                     long v = strtol(value, NULL, 10);
-                    g_3d_tilt = (int)(v < 0 ? 0 : (v > 35 ? 35 : v));
+                    g_3d_tilt = (int)(v < -35 ? -35 : (v > 35 ? 35 : v));   /* 3D-4t: negativo = por baixo */
                     continue;
                 }
                 if (strcmp(key, "display.follow3d") == 0) {   /* passo 3D-4q */
@@ -4817,7 +4817,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 if (std::fabs(g_3d_cam_yaw) < 0.01f) g_3d_cam_yaw = 0.0f;
                 if (std::fabs(g_3d_cam_tilt) < 0.01f) g_3d_cam_tilt = 0.0f;
             }
-            v.tilt_deg = std::min(60.0f, std::max(0.0f, (float)g_3d_tilt + g_3d_cam_tilt));
+            v.tilt_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_tilt + g_3d_cam_tilt));   /* 3D-4t */
             v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw + g_3d_cam_yaw));
             v.depth = (float)g_3d_depth / 100.0f;
             v.spr_depth = (float)g_3d_spr / 100.0f;   /* 3D-5e */
@@ -4852,6 +4852,32 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 v.follow = s_f;
                 v.follow_x = s_fx;
                 v.follow_y = s_fy;
+                /* 3D-4s: o giro do menu acompanha o lado para onde o Wario anda: indo
+                 * para a esquerda vira o mesmo ângulo espelhado (antes, indo para a
+                 * esquerda, a câmera chegava no máximo de frente para a tela). Lado
+                 * pelo X do Wario no mundo (sPlX, ERAM $A913/$A914); parado, mantém
+                 * o último; troca devagar para não dar tranco. */
+                static float s_dir = 1.0f;
+                static int s_last_x = -1;
+                static float s_goal = 1.0f;
+                const char* fake_d = getenv("BIGODAO_TESTE_LADO");   /* testes: 1 direita, -1 esquerda */
+                if (g_3d_follow && fake_d) {
+                    s_goal = atoi(fake_d) < 0 ? -1.0f : 1.0f;
+                    s_dir = s_goal;
+                } else if (g_3d_follow && tf > 0.0f && c && c->eram && c->eram_size > 0x0914) {
+                    const int x = (c->eram[0x0913] << 8) | c->eram[0x0914];
+                    if (s_last_x >= 0) {
+                        const int dx = x - s_last_x;
+                        if (dx > 0 && dx < 16) s_goal = 1.0f;
+                        else if (dx < 0 && dx > -16) s_goal = -1.0f;
+                    }
+                    s_last_x = x;
+                } else {
+                    s_last_x = -1;
+                    s_goal = 1.0f;   /* fora da fase: o giro do menu como está */
+                }
+                s_dir += (s_goal - s_dir) * 0.04f;
+                v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw * s_dir + g_3d_cam_yaw));
             }
             v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
             v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
@@ -5677,7 +5703,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 save_runtime_preferences();
             }
             if (g_3d_mode == 1) {
-                if (ImGui::SliderInt("Inclinacao 3D (graus)", &g_3d_tilt, 0, 35)) save_runtime_preferences();
+                if (ImGui::SliderInt("Inclinacao 3D (graus)", &g_3d_tilt, -35, 35)) save_runtime_preferences();
                 if (ImGui::SliderInt("Profundidade 3D (%)", &g_3d_depth, 0, 200)) save_runtime_preferences();
                 if (ImGui::SliderInt("Giro 3D (graus)", &g_3d_yaw, -35, 35)) save_runtime_preferences();
                 if (ImGui::SliderInt("Espessura dos sprites (%)", &g_3d_spr, 5, 100)) save_runtime_preferences();   /* 3D-5e */
@@ -5686,6 +5712,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     if (ImGui::Checkbox("Camera 3D no analogico direito", &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }
                     bool fw = g_3d_follow != 0;   /* passo 3D-4q */
                     if (ImGui::Checkbox("Camera 3D segue o Wario", &fw)) { g_3d_follow = fw ? 1 : 0; save_runtime_preferences(); }
+                    if (g_3d_follow) ImGui::TextDisabled("Nas fases o giro vira para o lado em que o Wario anda.");
                     if (g_3d_stick) ImGui::TextDisabled("Analogico direito: inclina e gira; soltando, volta ao padrao.");
                 }
                 const char* why = g3d_blocker();
