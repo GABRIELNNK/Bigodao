@@ -131,8 +131,15 @@ const char* kBoxVertex =
     "out float v_tint;\n"   /* 3D-3e: célula solta dentro da água (véu) */
     "out vec2 v_wuv;\n"     /* cor da água para o véu */
     "out vec2 v_out;\n"     /* 3D-3f: ponto logo fora da borda (céu/água ao lado), em uv */
+    "out float v_dep;\n"    /* 3D-6c: 0 na frente da extrusão, 1 atrás */
+    "uniform int u_front;\n"   /* 3D-6c: extrusão do plano da frente (só blocos de terreno) */
     "bool pix_solid(int px, int py) {\n"
     "    if (px < 0 || py < 0 || float(px) >= u_bw || float(py) >= u_ch) return false;\n"
+    "    if (u_front != 0) {\n"
+    "        ivec2 cs = textureSize(u_clsmap, 0);\n"
+    "        ivec2 q = clamp(ivec2((vec2(float(px), float(py)) + 0.5) * vec2(cs) / vec2(u_bw, u_ch)), ivec2(0), cs - 1);\n"
+    "        if (texelFetch(u_clsmap, q, 0).g < 0.5) return false;\n"
+    "    }\n"
     "    if (u_mode == 3) {\n"   /* 3D-5c: ponto de sprite (extrusão dos sprites) */
     "        ivec2 cs = textureSize(u_clsmap, 0);\n"
     "        ivec2 q = clamp(ivec2((vec2(float(px), float(py)) + 0.5) * vec2(cs) / vec2(u_bw, u_ch)), ivec2(0), cs - 1);\n"
@@ -153,7 +160,7 @@ const char* kBoxVertex =
      * entre as cópias */
     "    if (u_mode == 1) {\n"
     "        float x0 = u_off.x + float(cx) * 8.0, y0 = u_off.y + float(cy) * 8.0;\n"
-    "        v_in = vec2(0.0); v_shade = 0.9; v_tint = 0.0; v_wuv = vec2(0.0); v_out = vec2(-1.0);\n"
+    "        v_in = vec2(0.0); v_shade = 0.9; v_tint = 0.0; v_wuv = vec2(0.0); v_out = vec2(-1.0); v_dep = 0.0;\n"
     "        if (face != 0 || !band_at(x0 + 4.0, y0 + 4.0) || band_at(x0 + 4.0, y0 + 12.0)) { v_uv = vec2(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }\n"
     "        vec2 ab = ci == 0 ? vec2(0.0, 0.0) : (ci == 1 ? vec2(1.0, 0.0) : (ci == 2 ? vec2(1.0, 1.0) : vec2(0.0, 1.0)));\n"
     "        float z = mix(u_zf, u_zb, ab.y);\n"
@@ -178,10 +185,12 @@ const char* kBoxVertex =
     "    int px = gl_InstanceID % int(u_bw), py = gl_InstanceID / int(u_bw);\n"
     "    ivec2 nd = face == 0 ? ivec2(0, -1) : (face == 1 ? ivec2(0, 1) : (face == 2 ? ivec2(-1, 0) : ivec2(1, 0)));\n"
     "    v_uv = vec2(0.0); v_in = vec2(0.0); v_shade = 0.0; v_tint = 0.0; v_wuv = vec2(0.0); v_out = vec2(-1.0);\n"
+    "    v_dep = 0.0;\n"
     "    if (!pix_solid(px, py) || pix_solid(px + nd.x, py + nd.y)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }\n"
     "    float x0 = float(px), y0 = float(py);\n"
     "    vec2 ab = ci == 0 ? vec2(0.0, 0.0) : (ci == 1 ? vec2(1.0, 0.0) : (ci == 2 ? vec2(1.0, 1.0) : vec2(0.0, 1.0)));\n"
     "    float z = mix(u_zf, u_zb, ab.y);\n"
+    "    v_dep = ab.y;\n"
     "    {\n"
     "        vec4 w = texelFetch(u_wp, ivec2(px, py), 0);\n"
     "        int fl = int(round(w.r * 255.0)), row = int(round(w.g * 255.0));\n"
@@ -209,8 +218,14 @@ const char* kBoxFragment =
     "in float v_tint;\n"
     "in vec2 v_wuv;\n"
     "in vec2 v_out;\n"
+    "in float v_dep;\n"
+    "uniform int u_front;\n"
+    "uniform float u_edge;\n"   /* 3D-6c: espessura do contorno preto (fração da extrusão) */
     "out vec4 o_color;\n"
     "void main() {\n"
+    /* 3D-6c: contorno preto onde a extrusão do plano da frente encosta no chão de
+     * antes (aspecto de camada nova) */
+    "    if (u_front != 0 && v_dep >= 1.0 - u_edge) { o_color = vec4(0.0, 0.0, 0.0, 1.0); return; }\n"
     "    if (u_simple != 0) {\n"
     /* 3D-5d: como nos blocos, a cor que mais aparece para dentro (8 pontos), sem
      * os escuros do contorno e só pontos do próprio sprite */
@@ -254,6 +269,7 @@ const char* kBoxFragment =
     "}\n";
 GLuint g_bprog = 0;
 GLint g_bloc_mode = -1, g_bloc_alpha = -1, g_bloc_light = -1, g_bloc_simple = -1;
+GLint g_bloc_front = -1, g_bloc_edge = -1;   /* 3D-6c */
 GLint g_bloc_mvp = -1, g_bloc_off = -1, g_bloc_bw = -1, g_bloc_dist = -1, g_bloc_zf = -1, g_bloc_zb = -1, g_bloc_cols = -1;
 /* imagem 3D fora da tela (com profundidade), do tamanho do retângulo do jogo */
 GLuint g_fbo_v = 0, g_out_v = 0, g_rb_v = 0;
@@ -330,6 +346,25 @@ const char* kView3DFragment =
     "        }\n"
     "        if ((fl & 2) == 0) discard;\n"
     "        o_color = vec4(texture(u_tex, (fl & 4) != 0 ? v_uv : src).rgb, u_alpha);\n"
+    "        return;\n"
+    "    }\n"
+    /* 3D-6a: plano da frente: cópia só dos pontos de chão (sem porta/escada/moeda,
+     * sem sprites), na frente de tudo; 3D-6b: sem a água */
+    "    if (u_layer == 11) {\n"
+    "        if (cls != 4) discard;\n"
+    "        if (texelFetch(u_clsmap, p, 0).g < 0.5) discard;\n"
+    "        if ((code & 64) != 0) discard;\n"
+    "        ivec2 ws = textureSize(u_wp, 0);\n"
+    "        vec4 w = texelFetch(u_wp, clamp(ivec2(v_uv * vec2(ws)), ivec2(0), ws - 1), 0);\n"
+    "        int fl = int(round(w.r * 255.0)), ref = int(round(w.a * 255.0));\n"
+    "        vec3 c = texture(u_tex, v_uv).rgb;\n"
+    "        if (cls == 4) {\n"
+    "            if ((fl & (16 | 128)) != 0) discard;\n"   /* buracos e enfeite da porta */
+    "        } else if ((fl & 4) == 0) {\n"   /* água: o corpo; na faixa das ondas, sem os pontos de céu */
+    "            if ((fl & 1) == 0) discard;\n"
+    "            if (ref != 255) { vec3 d = abs(c - texture(u_tex, vec2(v_uv.x, (float(ref) + 0.5) / float(ws.y))).rgb); if (d.r + d.g + d.b < 0.04) discard; }\n"
+    "        }\n"
+    "        o_color = vec4(c, 1.0);\n"
     "        return;\n"
     "    }\n"
     "    bool deco = false;\n"   /* 3D-3k: enfeite da porta (vai com a porta) */
@@ -903,9 +938,11 @@ const char* kFragment =
     "uniform ivec3 u_exto;\n"   /* EX, EY (pontos além da tela), lateral (48 com widescreen) */
     "out vec4 o_color;\n"
     "int g_y;\n"
+    "int g_fid = -1;\n"   /* 3D-6c: bloco da fase deste ponto (para o plano da frente) */
     "int g_kind = 0;\n"   /* 3D-2: o fundo deste ponto é 0 fundo, 1 chão (bloco sólido), 2 água, 3 porta */
     /* classe do ponto (3D-1): 1 = fundo, 2 = janela (HUD), 3 = sprite; 3D-2: 4 = chão,
      * e +8 no sprite quando o que está atrás dele é chão */
+    "bool front_block(int id);\n"   /* 3D-6c (abaixo) */
     "void emit(uvec3 col, uvec3 bgc, int cls) {\n"
     "    int code = cls;\n"
     "    if (cls == 1 && g_kind == 1) code = 4;\n"
@@ -922,12 +959,18 @@ const char* kFragment =
     /* 3D-4l: sprite sobre o bloco desenhado como vazio (a caixa subindo): \"atrás\"
      * dele é transparente também (antes o fundo mostrava a peça azul do bloco vazio) */
     "    if (cls == 3 && g_kind == 6) code = 3 + 24 + 64;\n"
-    "    if (u_out == 2) o_color = vec4(float(code) / 255.0, 0.0, 0.0, 1.0);\n"
+    /* 3D-6c: verde = bloco de terreno que vai para o plano da frente (sem caixas,
+     * quebráveis, gelo, interruptores etc.) */
+    "    if (u_out == 2) o_color = vec4(float(code) / 255.0, (cls == 1 && g_kind == 1 && front_block(g_fid)) ? 1.0 : 0.0, 0.0, 1.0);\n"
     "    else o_color = vec4(vec3(u_out == 1 ? bgc : col) / 255.0, 1.0);\n"
     "}\n"
     /* Blocos da fase que viram chão no 3D (disassembly, bank02 ActBGColi_IsSolid):
      * $00-$27 sólidos; $28-$3F caixas, quebráveis, gelo, areia etc. (menos $37 vazio e
      * $3D sem uso); $40-$43 plataformas; quebráveis na água; espinhos $5D-$5F. */
+    /* 3D-6c: blocos do plano da frente: sólidos comuns $00-$27, areia $3E/$3F e
+     * plataformas $40-$43 (fora: caixa de item $28, quebráveis $29-$2E, mola $2F,
+     * esteiras, interruptores, gelo, temporizados, caixa usada $3C) */
+    "bool front_block(int id) { return id >= 0 && (id < 0x28 || id == 0x3E || id == 0x3F || (id >= 0x40 && id < 0x44)); }\n"
     "bool ground_block(int id) {\n"
     "    if (id < 0x28) return true;\n"
     "    if (id < 0x40) return id != 0x37 && id != 0x3D;\n"
@@ -1003,6 +1046,7 @@ const char* kFragment =
     "    if (b.x < 0) return 0;\n"
     "    if (lay_gone(b.x, b.y)) return 6;\n"
     "    int id = lay(b.x, b.y);\n"
+    "    g_fid = id;\n"
     "    int k = kind_of(id, lay(b.x, b.y + 1));\n"
     "    if (k == 0 && id >= 0x60 && wave_over(b.x, b.y)) k = 2;\n"
     "    return plat_split(k, id, y);\n"
@@ -1110,7 +1154,8 @@ const char* kFragment =
     /* 3D-1: sem HD o ponto é o rgba; só o fundo = rgba sem sprite, ou o fundo escurecido */
     "    uvec3 bg1 = obj_raw != 0 ? fade3(fade, m, bg_rgba) : rgba;\n"
     "    bool hudl = (texelFetch(u_line, ivec2(1, y), 0).a & 1u) != 0u;\n"   /* 3D-1b: faixa do mapa regional */
-    "    g_kind = (u_level != 0 && !hudl && hs.z != 0u) ? kind_of(int(hs.z) - 1, int(hs.w) - 1) : 0;\n"   /* 3D-2 */
+    "    g_kind = (u_level != 0 && !hudl && hs.z != 0u) ? kind_of(int(hs.z) - 1, int(hs.w) - 1) : 0;\n"
+    "    g_fid = (u_level != 0 && !hudl && hs.z != 0u) ? int(hs.z) - 1 : -1;\n"   /* 3D-2 */
     "    if (u_level != 0 && !hudl && hs.z != 0u) g_kind = plat_split(g_kind, int(hs.z) - 1, y);\n"   /* 3D-3l */
     "    if (g_kind == 0 && u_level != 0 && !hudl && hs.z != 0u && int(hs.z) - 1 >= 0x60) {\n"   /* 3D-3c: onda sobre blocos */
     "        ivec2 b = blk_at(m < 48 ? m - 48 : m + 112, y);\n"
@@ -1181,6 +1226,7 @@ const char* kFragment =
     "        int bx = wx >> 4, by = wy >> 4;\n"
     "        int id = lay(bx, by);\n"
     "        g_kind = kind_of(id, lay(bx, by + 1));\n"
+    "        g_fid = lay_gone(bx, by) ? -1 : id;\n"
     "        if (g_kind == 0 && id >= 0x60 && wave_over(bx, by)) g_kind = 2;\n"
     "        g_kind = plat_split_w(g_kind, id, wy);\n"
     "        if (lay_gone(bx, by)) g_kind = 6;\n"
@@ -1569,9 +1615,16 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
 
 const char* kCopyFragment =
     "uniform sampler2D u_src;\n"
+    "uniform sampler2D u_scls;\n"   /* 3D-6d: classes da tela */
     "uniform ivec2 u_off;\n"
     "out vec4 o_color;\n"
-    "void main() { o_color = texelFetch(u_src, ivec2(gl_FragCoord.xy) - u_off, 0); }\n";
+    /* 3D-6d: onde a tela tem o HUD, fica a fase (tiles do mundo, como além da tela):
+     * o HUD é desenhado por cima, fixo, e os planos não perdem os tiles atrás dele */
+    "void main() {\n"
+    "    ivec2 q = ivec2(gl_FragCoord.xy) - u_off;\n"
+    "    if ((int(round(texelFetch(u_scls, q, 0).r * 255.0)) & 7) == 2) discard;\n"
+    "    o_color = texelFetch(u_src, q, 0);\n"
+    "}\n";
 
 bool read_target(GLuint fbo, int w, int h, uint32_t* argb) {
     std::vector<unsigned char> rgba((size_t)w * h * 4);
@@ -1882,6 +1935,7 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
             gl.UseProgram(g_cprog);
             gl.Uniform1i(gl.GetUniformLocation(g_cprog, "u_src"), 0);
             g_cloc_off = gl.GetUniformLocation(g_cprog, "u_off");
+            gl.Uniform1i(gl.GetUniformLocation(g_cprog, "u_scls"), 1);
         }
         const int ex = PPU_NATIVE_GPU_EXT_X, ey = PPU_NATIVE_GPU_EXT_Y;
         const int cw = bw + 2 * ex, ch = kH + 2 * ey;
@@ -1898,6 +1952,8 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
             gl.Viewport(ex * n, ey * n, bw * n, kH * n);
             gl.UseProgram(g_cprog);
             gl.Uniform2i(g_cloc_off, ex * n, ey * n);
+            gl.ActiveTexture(kTexture0 + 1);
+            gl.BindTexture(kTexture2D, g_3s.out[2]);
             gl.ActiveTexture(kTexture0);
             gl.BindTexture(kTexture2D, g_3s.out[k]);
             gl.BindVertexArray(g_vao);
@@ -2026,6 +2082,8 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         g_bloc_ch = gl.GetUniformLocation(g_bprog, "u_ch");
         g_bloc_light = gl.GetUniformLocation(g_bprog, "u_light");
         g_bloc_simple = gl.GetUniformLocation(g_bprog, "u_simple");
+        g_bloc_front = gl.GetUniformLocation(g_bprog, "u_front");
+        g_bloc_edge = gl.GetUniformLocation(g_bprog, "u_edge");
         gl.Uniform1i(gl.GetUniformLocation(g_bprog, "u_wp"), 2);
     }
     if (!g_wprog) {   /* passo 3D-3c */
@@ -2277,6 +2335,27 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     /* 3D-5c: um plano só, na frente do volume do sprite (os lados vêm do programa
      * dos blocos, modo 3); antes eram 5 cópias de −t a +t */
     plane({3, 0, g_3d_level ? t : 0.07f * dist * d});
+    /* 3D-6a: plano da frente, cópia do chão e da água (Graphics > "Plano da frente") */
+    if (g_3d_level && v->front > 0.0f && bd > 0.0f && !(v->hide & (1 << 13))) {
+        const float zfr = bd * 0.5f + bd * v->front;
+        plane({11, 1, zfr});
+        /* 3D-6b: os blocos do plano da frente extrudidos até a frente do chão (os
+         * mesmos lados dos blocos, modo 0) */
+        if (!(v->hide & (1 << 11))) {
+            gl.UseProgram(g_bprog);
+            gl.ActiveTexture(kTexture0);
+            gl.BindTexture(kTexture2D, g_cv->out[1]);
+            gl.Uniform1f(g_bloc_zf, zfr);
+            gl.Uniform1f(g_bloc_zb, bd * 0.5f);
+            gl.Uniform1i(g_bloc_mode, 0);
+            gl.Uniform1f(g_bloc_light, 0.0f);
+            gl.Uniform1i(g_bloc_front, 1);   /* 3D-6c: só terreno, contorno preto atrás */
+            gl.Uniform1f(g_bloc_edge, std::min(0.5f, 1.0f / (bd * v->front)));
+            gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
+            gl.Uniform1i(g_bloc_front, 0);
+            gl.UseProgram(g_dprog);
+        }
+    }
     /* 3D-3g: HUD fixo na tela (sem perspectiva nem giro), no lugar do 2D, por cima */
     if (!(v->hide & (1 << 2))) {
         float ortho[16] = {0};
@@ -2284,15 +2363,22 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         ortho[5] = -2.0f / bh;   /* linha 0 da imagem = topo, como o mvp */
         ortho[15] = 1.0f;
         gl.Disable(kDepthTest);
+        /* 3D-6d: o HUD vem da tela (g_3s): na imagem com a fase além da tela, o lugar
+         * dele agora tem os tiles da fase */
+        gl.ActiveTexture(kTexture0 + 1);
+        gl.BindTexture(kTexture2D, g_3s.out[2]);
         gl.ActiveTexture(kTexture0);
-        gl.BindTexture(kTexture2D, g_cv->out[0]);
+        gl.BindTexture(kTexture2D, g_3s.out[0]);
         gl.UniformMatrix4fv(g_dloc_mvp, 1, 0, ortho);
         gl.Uniform4f(g_dloc_rect, -bw * 0.5f, bh * 0.5f, bw, bh);
-        gl.Uniform4f(g_dloc_uvr, (float)g_ex / cw, (float)g_ey / ch, bw / cw, bh / ch);   /* só a tela */
+        gl.Uniform4f(g_dloc_uvr, 0.0f, 0.0f, 1.0f, 1.0f);   /* só a tela */
         gl.Uniform1f(g_dloc_z, 0.0f);
         gl.Uniform1i(g_dloc_layer, 2);
         gl.DrawArrays(kTriangleStrip, 0, 4);
         gl.Uniform4f(g_dloc_uvr, 0.0f, 0.0f, 1.0f, 1.0f);
+        gl.ActiveTexture(kTexture0 + 1);
+        gl.BindTexture(kTexture2D, g_cv->out[2]);
+        gl.ActiveTexture(kTexture0);
         gl.Enable(kDepthTest);
     }
     if (v->debug) {   /* 3D-3f: classes por cima, chapadas */

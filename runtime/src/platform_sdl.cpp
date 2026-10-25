@@ -241,15 +241,16 @@ static bool g_gpu_frame_on_gpu = false;  /* passo 14d-1: o quadro do jogo atual 
 static std::string g_gpu_screen_error;
 /* Passo 3D-1: modo 3D em camadas (Graphics > "Modo 3D"). */
 static int g_3d_mode = 0;          /* 0 = desligado, 1 = camadas (pref display.mode3d) */
-static int g_3d_tilt = 15;         /* graus (pref display.tilt3d) */
-static int g_3d_depth = 100;       /* % (pref display.depth3d) */
+static int g_3d_tilt = 10;         /* graus (pref display.tilt3d) */
+static int g_3d_depth = 60;        /* % (pref display.depth3d) */
 static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (diagnóstico, não grava) */
 static bool g_3d_debug = false;    /* 3D-3f: Desenvolvedor > "3D: mostrar classes" */
 static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
 static int g_3d_follow = 1;        /* câmera 3D segue o Wario (pref display.follow3d, 3D-4q) */
-static int g_3d_spr = 50;          /* % espessura dos sprites (pref display.spr3d, 3D-5e) */
-static int g_3d_yaw = 0;           /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
+static int g_3d_front = 90;        /* % de um bloco à frente do chão; 0 = sem (pref display.front3d, 3D-6a) */
+static int g_3d_spr = 90;          /* % espessura dos sprites (pref display.spr3d, 3D-5e) */
+static int g_3d_yaw = -5;          /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
 static bool g_3d_valid = false;    /* as camadas da GPU têm o quadro atual */
 static int g_3d_w = 0, g_3d_h = 0;
@@ -2168,6 +2169,11 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_stick = (strtol(value, NULL, 10) != 0) ? 1 : 0;
                     continue;
                 }
+                if (strcmp(key, "display.front3d") == 0) {   /* passo 3D-6a */
+                    long v = strtol(value, NULL, 10);
+                    g_3d_front = (int)(v < 0 ? 0 : (v > 300 ? 300 : v));
+                    continue;
+                }
                 if (strcmp(key, "display.spr3d") == 0) {   /* passo 3D-5e */
                     long v = strtol(value, NULL, 10);
                     g_3d_spr = (int)(v < 5 ? 5 : (v > 100 ? 100 : v));
@@ -2356,6 +2362,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.depth3d=%d\n", g_3d_depth);
     fprintf(file, "display.yaw3d=%d\n", g_3d_yaw);
     fprintf(file, "display.spr3d=%d\n", g_3d_spr);
+    fprintf(file, "display.front3d=%d\n", g_3d_front);
     fprintf(file, "display.stick3d=%d\n", g_3d_stick);
     fprintf(file, "display.follow3d=%d\n", g_3d_follow);
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
@@ -3120,11 +3127,12 @@ static void reset_runtime_display_defaults(void) {
     g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
     g_gpu_screen_pref = 1;                            /* passo 14c-3: a GPU monta a tela */
     g_3d_mode = 0;                                    /* passo 3D-1 */
-    g_3d_tilt = 15;
-    g_3d_depth = 100;
-    g_3d_yaw = 0;
+    g_3d_tilt = 10;    /* 3D-6d: padrões escolhidos pelo usuário */
+    g_3d_depth = 60;
+    g_3d_yaw = -5;
     g_3d_follow = 1;
-    g_3d_spr = 50;   /* 3D-4p: padrão escolhido pelo usuário */
+    g_3d_front = 90;
+    g_3d_spr = 90;
     g_3d_stick = 1;
     g_gpu_screen_error.clear();
     g_renderer_reset_pending = true;
@@ -4821,6 +4829,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw + g_3d_cam_yaw));
             v.depth = (float)g_3d_depth / 100.0f;
             v.spr_depth = (float)g_3d_spr / 100.0f;   /* 3D-5e */
+            v.front = (float)g_3d_front / 100.0f;      /* 3D-6a */
             {   /* passo 3D-4q: ponto do Wario na tela (sPlXRel/sPlYRel, ERAM $A91D/$A91C,
                  * coordenadas do OAM: x + 8, y + 16, origem nos pés), suavizado */
                 static float s_fx = 80.0f, s_fy = 72.0f, s_f = 0.0f;
@@ -4879,7 +4888,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 s_dir += (s_goal - s_dir) * 0.04f;
                 v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw * s_dir + g_3d_cam_yaw));
             }
-            v.linear = g_render_filter_mode == GB_RENDER_FILTER_LINEAR;
+            v.linear = false;   /* 3D-6a: no 3D sempre Nearest (o Linear dava artefatos) */
             v.debug = g_3d_debug || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes */
             v.hide = g_3d_hide | (getenv("BIGODAO_3D_ESCONDER") ? atoi(getenv("BIGODAO_3D_ESCONDER")) : 0);
             drawn3d = gpu_ppu_draw_3d(&v);
@@ -5613,6 +5622,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
             update_render_filter();
             save_runtime_preferences();
         }
+        if (g3d_active() && g_render_filter_mode == GB_RENDER_FILTER_LINEAR) {   /* 3D-6a */
+            ImGui::TextDisabled("No 3D o Scale Filter fica sempre em Nearest.");
+        }
 
         int current_post_filter = (int)g_post_filter_mode;
         if (ImGui::Combo("Post-Processing Filter", &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
@@ -5707,6 +5719,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 if (ImGui::SliderInt("Profundidade 3D (%)", &g_3d_depth, 0, 200)) save_runtime_preferences();
                 if (ImGui::SliderInt("Giro 3D (graus)", &g_3d_yaw, -35, 35)) save_runtime_preferences();
                 if (ImGui::SliderInt("Espessura dos sprites (%)", &g_3d_spr, 5, 100)) save_runtime_preferences();   /* 3D-5e */
+                if (ImGui::SliderInt("Plano da frente (% de bloco, 0 = sem)", &g_3d_front, 0, 300)) save_runtime_preferences();   /* 3D-6a */
                 {   /* passo 3D-5a */
                     bool st = g_3d_stick != 0;
                     if (ImGui::Checkbox("Camera 3D no analogico direito", &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }
