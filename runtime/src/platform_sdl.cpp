@@ -578,6 +578,62 @@ static bool g_show_menu = false;
 static int g_ui_lang = 0;
 static int g_menu_page = 0;
 static inline const char* TR(const char* en, const char* pt) { return g_ui_lang == 1 ? pt : en; }
+/* Passo 15b: tema do menu (pref ui.theme): 0 Wario clássico (padrão), 1 Ouro, 2 Creme
+ * (claro), 3 Amarelo (claro), 4 Original (o escuro do ImGui, azul) */
+static int g_ui_theme = 0;
+/* Passo 15b: temas do menu com as cores do Wario (amarelo do boné e da camisa, roxo
+ * do macacão). O fundo da janela continua com a mesma transparência de antes
+ * (SetNextWindowBgAlpha 0.96 no menu) e os painéis da lista e da página ficam com o
+ * fundo transparente (só a borda), como no original. */
+static ImVec4 theme_rgb(unsigned rgb) {
+    return ImVec4((float)((rgb >> 16) & 255u) / 255.0f, (float)((rgb >> 8) & 255u) / 255.0f, (float)(rgb & 255u) / 255.0f, 1.0f);
+}
+static void apply_menu_theme(int t) {
+    ImGuiStyle& st = ImGui::GetStyle();
+    if (t == 2 || t == 3) ImGui::StyleColorsLight(); else ImGui::StyleColorsDark();
+    if (t == 4) {   /* original */
+        st.FrameRounding = st.GrabRounding = st.ChildRounding = st.PopupRounding = 0.0f;
+        return;
+    }
+    st.FrameRounding = st.GrabRounding = st.ChildRounding = st.PopupRounding = 4.0f;
+    struct P { unsigned bg, frame, frameH, btn, btnH, btnA, hdr, hdrH, accent, text, textDis, sep; };
+    static const P kP[4] = {
+        /* 0 Wario clássico: roxo escuro, botões dourados, seleção roxa, detalhes amarelos */
+        {0x241433, 0x4A2A6B, 0x5E3787, 0x8F6A12, 0xAD8217, 0xC8961E, 0x6A2C91, 0x7D3AAA, 0xF8D030, 0xF4EEDC, 0xB8A6C8, 0x6A4A88},
+        /* 1 Ouro: quase preto, botões dourados, seleção roxa */
+        {0x16140F, 0x3A3220, 0x4C4128, 0x7A5A0E, 0x977012, 0xB8860B, 0x5B2A86, 0x6E36A0, 0xF8D030, 0xF2EBD9, 0x9C927C, 0x4A4230},
+        /* 2 Creme (claro): botões amarelos, seleção lilás, detalhes roxos */
+        {0xF7F1E1, 0xE9DFC6, 0xF2D98A, 0xF2C84B, 0xF8D766, 0xE0B232, 0xD7C3EA, 0xC7ABE3, 0x6A2C91, 0x2B1B38, 0x857A8F, 0xC9BC9C},
+        /* 3 Amarelo (claro): botões e seleção lilás, detalhes roxos */
+        {0xFFF4C2, 0xF3DF95, 0xEED27A, 0xCDB4E6, 0xBC9BDD, 0xA982D3, 0xCDB4E6, 0xBC9BDD, 0x5B2A86, 0x2A1A36, 0x8A7A55, 0xD9C27A},
+    };
+    const P& p = kP[t < 0 || t > 3 ? 0 : t];
+    ImVec4* c = st.Colors;
+    c[ImGuiCol_WindowBg] = theme_rgb(p.bg);
+    c[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);   /* transparente, como no original */
+    c[ImGuiCol_PopupBg] = theme_rgb(p.bg);
+    c[ImGuiCol_FrameBg] = theme_rgb(p.frame);
+    c[ImGuiCol_FrameBgHovered] = theme_rgb(p.frameH);
+    c[ImGuiCol_FrameBgActive] = theme_rgb(p.frameH);
+    c[ImGuiCol_Button] = theme_rgb(p.btn);
+    c[ImGuiCol_ButtonHovered] = theme_rgb(p.btnH);
+    c[ImGuiCol_ButtonActive] = theme_rgb(p.btnA);
+    c[ImGuiCol_Header] = theme_rgb(p.hdr);
+    c[ImGuiCol_HeaderHovered] = theme_rgb(p.hdrH);
+    c[ImGuiCol_HeaderActive] = theme_rgb(p.hdrH);
+    c[ImGuiCol_CheckMark] = theme_rgb(p.accent);
+    c[ImGuiCol_SliderGrab] = theme_rgb(p.accent);
+    c[ImGuiCol_SliderGrabActive] = theme_rgb(p.accent);
+    c[ImGuiCol_Text] = theme_rgb(p.text);
+    c[ImGuiCol_TextDisabled] = theme_rgb(p.textDis);
+    c[ImGuiCol_Separator] = theme_rgb(p.sep);
+    c[ImGuiCol_Border] = theme_rgb(p.sep);
+    c[ImGuiCol_ScrollbarGrab] = theme_rgb(p.sep);
+    c[ImGuiCol_ScrollbarGrabHovered] = theme_rgb(p.hdrH);
+    c[ImGuiCol_ScrollbarGrabActive] = theme_rgb(p.hdr);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_NavHighlight] = theme_rgb(p.accent);   /* foco do controle */
+}
 /* Passo 3D-5a: o menu não abre sozinho na abertura do jogo. Tecla/botão que
  * chega na primeira fração de segundo (de quem abriu o jogo: launcher, Steam,
  * atalho, controle conectando) não abre o menu. */
@@ -2208,6 +2264,11 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_ui_lang = (strtol(value, NULL, 10) == 1) ? 1 : 0;
                     continue;
                 }
+                if (strcmp(key, "ui.theme") == 0) {   /* passo 15b */
+                    long v = strtol(value, NULL, 10);
+                    g_ui_theme = (int)(v < 0 ? 0 : (v > 4 ? 4 : v));
+                    continue;
+                }
                 if (strcmp(key, "ui.menu_page") == 0) {   /* passo 15a */
                     long v = strtol(value, NULL, 10);
                     g_menu_page = (int)(v < 0 ? 0 : (v > 6 ? 6 : v));
@@ -2419,6 +2480,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.follow3d=%d\n", g_3d_follow);
     fprintf(file, "ui.language=%d\n", g_ui_lang);     /* passo 15a */
     fprintf(file, "ui.menu_page=%d\n", g_menu_page);
+    fprintf(file, "ui.theme=%d\n", g_ui_theme);       /* passo 15b */
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
@@ -5094,6 +5156,18 @@ static void render_frame_internal(const uint32_t* framebuffer,
         ImGui::BeginChild("SettingsScroll", ImVec2(0.0f, -footer_height), true);
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);   /* 15a: sobra espaço para o nome à direita */
         if (g_menu_page == 0) {   /* Display */
+            ImGui::SeparatorText("Menu");   /* passo 15b */
+            {
+                const char* kThemes[] = {TR("Wario classic (dark)", "Wario classico (escuro)"), TR("Gold (dark)", "Ouro (escuro)"),
+                                         TR("Cream (light)", "Creme (claro)"), TR("Yellow (light)", "Amarelo (claro)"),
+                                         TR("Original (dark blue)", "Original (azul escuro)")};
+                int th = g_ui_theme;
+                if (ImGui::Combo(TR("Menu theme", "Tema do menu"), &th, kThemes, IM_ARRAYSIZE(kThemes))) {
+                    g_ui_theme = th;
+                    apply_menu_theme(g_ui_theme);
+                    save_runtime_preferences();
+                }
+            }
             ImGui::SeparatorText(TR("Window", "Janela"));
             bool fullscreen = g_fullscreen;
             if (ImGui::Checkbox(TR("Fullscreen", "Tela cheia"), &fullscreen)) {
@@ -7146,7 +7220,7 @@ bool gb_platform_init(int scale) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
     // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
+    apply_menu_theme(g_ui_theme);   /* passo 15b (antes: StyleColorsDark) */
 
     // Setup Platform/Renderer backends
     if (g_use_gl) {   /* passo 14a */
