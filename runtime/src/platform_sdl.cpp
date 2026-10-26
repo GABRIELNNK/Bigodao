@@ -573,6 +573,11 @@ static const char* g_internal_res_names[] = {
 
 /* Menu State */
 static bool g_show_menu = false;
+/* Passo 15a: idioma do menu (0 inglês, padrão; 1 português; pref ui.language) e a
+ * categoria aberta na lista da esquerda (pref ui.menu_page) */
+static int g_ui_lang = 0;
+static int g_menu_page = 0;
+static inline const char* TR(const char* en, const char* pt) { return g_ui_lang == 1 ? pt : en; }
 /* Passo 3D-5a: o menu não abre sozinho na abertura do jogo. Tecla/botão que
  * chega na primeira fração de segundo (de quem abriu o jogo: launcher, Steam,
  * atalho, controle conectando) não abre o menu. */
@@ -1232,6 +1237,13 @@ static GBInputAction g_binding_capture_action = GB_INPUT_ACTION_RIGHT;
 static int g_binding_capture_slot = 0;
 static bool g_fast_forward_active = false;
 static bool g_max_speed_mode = false;
+/* passo 15a: nomes em português (o menu escolhe pelo idioma) */
+static const char* g_input_action_names_pt[GB_INPUT_ACTION_COUNT] = {
+    "Direita", "Esquerda", "Cima", "Baixo", "Game Boy A", "Game Boy B", "Select", "Start",
+    "Avanco rapido (segurar)", "Velocidade maxima", "Salvar estado", "Carregar estado",
+    "Posicao anterior", "Proxima posicao", "Mostrar overlay", "Mudo", "Abrir menu", "Painel do jogo",
+};
+static const char* action_name_ui(int a);
 static const char* g_input_action_names[GB_INPUT_ACTION_COUNT] = {
     "Right",
     "Left",
@@ -1252,6 +1264,8 @@ static const char* g_input_action_names[GB_INPUT_ACTION_COUNT] = {
     "Toggle Menu",
     "Toggle Game Panel",
 };
+
+static const char* action_name_ui(int a) { return g_ui_lang == 1 ? g_input_action_names_pt[a] : g_input_action_names[a]; }
 
 static bool has_interpreter_activity(const GBContext* ctx) {
     return ctx != NULL &&
@@ -1395,9 +1409,9 @@ static float settings_ui_scale_for_size(const ImVec2& display_size) {
 
 static const char* controller_menu_hint_text(void) {
 #if defined(__ANDROID__)
-    return "Guide, L3, or R3: Settings Menu";
+    return "Guide, L3, R3";
 #else
-    return "Guide / Home: Settings Menu";
+    return "Guide / Home";
 #endif
 }
 
@@ -2190,6 +2204,15 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_tilt = (int)(v < -35 ? -35 : (v > 35 ? 35 : v));   /* 3D-4t: negativo = por baixo */
                     continue;
                 }
+                if (strcmp(key, "ui.language") == 0) {   /* passo 15a */
+                    g_ui_lang = (strtol(value, NULL, 10) == 1) ? 1 : 0;
+                    continue;
+                }
+                if (strcmp(key, "ui.menu_page") == 0) {   /* passo 15a */
+                    long v = strtol(value, NULL, 10);
+                    g_menu_page = (int)(v < 0 ? 0 : (v > 6 ? 6 : v));
+                    continue;
+                }
                 if (strcmp(key, "display.follow3d") == 0) {   /* passo 3D-4q */
                     g_3d_follow = (strtol(value, NULL, 10) != 0) ? 1 : 0;
                     continue;
@@ -2394,6 +2417,8 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.front3d=%d\n", g_3d_front);
     fprintf(file, "display.stick3d=%d\n", g_3d_stick);
     fprintf(file, "display.follow3d=%d\n", g_3d_follow);
+    fprintf(file, "ui.language=%d\n", g_ui_lang);     /* passo 15a */
+    fprintf(file, "ui.menu_page=%d\n", g_menu_page);
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
@@ -3280,9 +3305,9 @@ static void render_binding_editor(const char* section_label,
     for (int action = (int)action_begin; action < (int)action_end; action++) {
         ImGui::PushID(section_label);
         ImGui::PushID(action);
-        ImGui::Text("%s", g_input_action_names[action]);
+        ImGui::Text("%s", action_name_ui(action));
 
-        const float clear_width = ImGui::CalcTextSize("Clear").x + style.FramePadding.x * 2.0f + 12.0f;
+        const float clear_width = ImGui::CalcTextSize(TR("Clear", "Limpar")).x + style.FramePadding.x * 2.0f + 12.0f;
         if (!compact_layout) {
             const float action_column_width = content_width * 0.26f;
             float binding_width =
@@ -3298,7 +3323,7 @@ static void render_binding_editor(const char* section_label,
                     g_binding_capture_device == device &&
                     g_binding_capture_action == (GBInputAction)action &&
                     g_binding_capture_slot == slot) {
-                    label = "Press Input...";
+                    label = TR("Press a key...", "Aperte...");
                 } else {
                     label = binding_display_label(bindings[action][slot]);
                 }
@@ -3308,7 +3333,7 @@ static void render_binding_editor(const char* section_label,
                     start_binding_capture(device, (GBInputAction)action, slot);
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Clear", ImVec2(clear_width, 0.0f))) {
+                if (ImGui::Button(TR("Clear", "Limpar"), ImVec2(clear_width, 0.0f))) {
                     assign_binding_slot(device, (GBInputAction)action, slot, make_binding(GB_INPUT_BINDING_NONE, 0));
                 }
                 ImGui::PopID();
@@ -3327,7 +3352,7 @@ static void render_binding_editor(const char* section_label,
                     g_binding_capture_device == device &&
                     g_binding_capture_action == (GBInputAction)action &&
                     g_binding_capture_slot == slot) {
-                    label = "Press Input...";
+                    label = TR("Press a key...", "Aperte...");
                 } else {
                     label = binding_display_label(bindings[action][slot]);
                 }
@@ -3337,7 +3362,7 @@ static void render_binding_editor(const char* section_label,
                     start_binding_capture(device, (GBInputAction)action, slot);
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Clear", ImVec2(clear_width, 0.0f))) {
+                if (ImGui::Button(TR("Clear", "Limpar"), ImVec2(clear_width, 0.0f))) {
                     assign_binding_slot(device, (GBInputAction)action, slot, make_binding(GB_INPUT_BINDING_NONE, 0));
                 }
                 ImGui::PopID();
@@ -4239,8 +4264,8 @@ static void remap_base_row(int y, const uint32_t* src, int src_pixel_count, int 
  * CPU faz está em uso (paleta alternativa, filtro de pós-processamento,
  * 120 fps). */
 static const char* gpu_screen_blocker(void) {
-    if (!g_use_gl) return "precisa do Video OpenGL";
-    if (ppu_native_get_mode() == PPU_RENDERER_EMULATED) return "renderizador Emulado em uso";
+    if (!g_use_gl) return TR("needs the OpenGL video", "precisa do Video OpenGL");
+    if (ppu_native_get_mode() == PPU_RENDERER_EMULATED) return TR("Emulated renderer in use", "renderizador Emulado em uso");
     if (!g_gpu_screen_error.empty()) return g_gpu_screen_error.c_str();
     return NULL;
 }
@@ -4251,10 +4276,10 @@ static bool gpu_screen_active(void) {
 
 /* Passo 3D-1: por que o 3D não está valendo (NULL = está). */
 static const char* g3d_blocker(void) {
-    if (g_gpu_screen_pref != 1) return "precisa de Montagem da tela: GPU";
+    if (g_gpu_screen_pref != 1) return TR("needs Screen composition: GPU", "precisa de Montagem da tela: GPU");
     if (const char* w = gpu_screen_blocker()) return w;
-    if (g_gpu_compare) return "a comparacao da GPU esta ligada (a tela fica em 2D)";
-    if (g_palette_idx != 0) return "paleta alternativa em uso";
+    if (g_gpu_compare) return TR("the GPU comparison is on (the screen stays 2D)", "a comparacao da GPU esta ligada (a tela fica em 2D)");
+    if (g_palette_idx != 0) return TR("alternative palette in use", "paleta alternativa em uso");
     return NULL;
 }
 
@@ -4492,15 +4517,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
     if (count_guest_frame && (g_frame_count % 60) == 0) {
         char title[64];
-        snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Frame %d", g_frame_count);
+        snprintf(title, sizeof(title), "Bigodão - Wario Land: Super Mario Land 3 - Frame %d", g_frame_count);
         SDL_SetWindowTitle(g_window, title);
     } else if (!count_guest_frame && !g_ip_mid_draw && (g_present_count % 30) == 0) {
         char title[96];
         if (g_frame_count == 0) {
-            snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Starting... (%llu)",
+            snprintf(title, sizeof(title), "Bigodão - Wario Land: Super Mario Land 3 - Starting... (%llu)",
                      (unsigned long long)(g_present_count / 30));
         } else {
-            snprintf(title, sizeof(title), "Bigodão - GameBoy Recompiled - Frame %d (Working...)",
+            snprintf(title, sizeof(title), "Bigodão - Wario Land: Super Mario Land 3 - Frame %d (Working...)",
                      g_frame_count);
         }
         SDL_SetWindowTitle(g_window, title);
@@ -5005,91 +5030,677 @@ static void render_frame_internal(const uint32_t* framebuffer,
                          ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoCollapse);
-        ImGui::Text("Bigodão - GameBoy Recompiled");
-        ImGui::TextDisabled("Settings");
-        ImGui::SameLine();
-        if (ImGui::Button("Resume")) {
+        ImGui::Text("Bigodão - Wario Land: Super Mario Land 3");
+        {   /* passo 15a: idioma do menu, no canto de cima */
+            const char* kLangs[] = {"English", "Portugues"};
+            const float lw = 170.0f * ui_scale;
+            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - lw - ImGui::CalcTextSize("Language / Idioma").x -
+                            ImGui::GetStyle().ItemInnerSpacing.x);
+            ImGui::SetNextItemWidth(lw);
+            int lang = g_ui_lang;
+            if (ImGui::Combo("Language / Idioma", &lang, kLangs, 2)) {
+                g_ui_lang = lang;
+                save_runtime_preferences();
+            }
+        }
+        if (ImGui::Button(TR("Resume", "Continuar"))) {
             g_show_menu = false;
         }
         ImGui::SameLine();   /* passo 14p: reiniciar o jogo (com confirmação) */
-        if (ImGui::Button("Reset")) {
-            ImGui::OpenPopup("Reiniciar o jogo?");
+        if (ImGui::Button(TR("Reset game", "Reiniciar jogo"))) {
+            ImGui::OpenPopup("##reiniciar");
         }
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        if (ImGui::BeginPopupModal("Reiniciar o jogo?", NULL,
-                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-            ImGui::TextUnformatted("O jogo volta para a tela de titulo.");
-            ImGui::TextUnformatted("O save do cartucho continua; o que nao foi salvo se perde.");
-            if (ImGui::Button("Reiniciar")) {
+        if (ImGui::BeginPopupModal("##reiniciar", NULL,
+                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar)) {
+            ImGui::TextUnformatted(TR("Reset the game?", "Reiniciar o jogo?"));
+            ImGui::TextUnformatted(TR("The game goes back to the title screen.", "O jogo volta para a tela de titulo."));
+            ImGui::TextUnformatted(TR("The cartridge save stays; anything not saved is lost.",
+                                      "O save do cartucho continua; o que nao foi salvo se perde."));
+            if (ImGui::Button(TR("Reset", "Reiniciar"))) {
                 g_game_reset_pending = true;
                 g_show_menu = false;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancelar")) {
+            if (ImGui::Button(TR("Cancel", "Cancelar"))) {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();
         }
-        ImGui::Separator();
-        ImGui::TextWrapped("Toggle menu: %s", controller_menu_hint_text());
+        ImGui::SameLine();
 #if defined(__ANDROID__)
-        ImGui::TextWrapped("Android Back / Escape also opens or closes the menu.");
+        ImGui::TextDisabled("   %s / %s", controller_menu_hint_text(), TR("Back: open or close the menu", "Voltar: abre ou fecha o menu"));
 #else
-        ImGui::TextWrapped("Escape also opens or closes the menu.");
+        ImGui::TextDisabled("   %s / %s", controller_menu_hint_text(), TR("Esc: open or close the menu", "Esc: abre ou fecha o menu"));
 #endif
         ImGui::Separator();
-        ImGui::BeginChild("SettingsScroll", ImVec2(0.0f, -footer_height), false);
-        if (ImGui::CollapsingHeader("Desenvolvedor")) {
+        /* Passo 15a: menu com a lista de categorias à esquerda (opção B escolhida
+         * pelo usuário) e a página da categoria à direita */
+        static const char* const kMenuCatsEn[] = {"Display", "3D", "Audio", "Controls", "Emulation", "Mods", "Developer"};
+        static const char* const kMenuCatsPt[] = {"Video", "3D", "Som", "Controles", "Emulacao", "Mods", "Desenvolvedor"};
+        const float side_w = 210.0f * ui_scale;
+        ImGui::BeginChild("Categorias", ImVec2(side_w, -footer_height), true);
+        for (int c = 0; c < 7; ++c) {
+            if (c == 6) ImGui::Separator();
+            if (ImGui::Selectable(g_ui_lang == 1 ? kMenuCatsPt[c] : kMenuCatsEn[c], g_menu_page == c, 0,
+                                  ImVec2(0.0f, ImGui::GetFrameHeight()))) {
+                g_menu_page = c;
+                save_runtime_preferences();
+            }
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("SettingsScroll", ImVec2(0.0f, -footer_height), true);
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);   /* 15a: sobra espaço para o nome à direita */
+        if (g_menu_page == 0) {   /* Display */
+            ImGui::SeparatorText(TR("Window", "Janela"));
+            bool fullscreen = g_fullscreen;
+            if (ImGui::Checkbox(TR("Fullscreen", "Tela cheia"), &fullscreen)) {
+                set_fullscreen_enabled(fullscreen);
+            }
+
+            if (!g_fullscreen) {
+                int scale_idx = g_scale - 1;
+                if (ImGui::Combo(TR("Window size", "Tamanho da janela"),
+                                 &scale_idx,
+                                 g_scale_names,
+                                 IM_ARRAYSIZE(g_scale_names))) {
+                    g_scale = scale_idx + 1;
+                    apply_window_scale_preset();
+                }
+            } else {
+                ImGui::TextDisabled(TR("Window size is disabled in fullscreen.", "Tamanho da janela nao vale em tela cheia."));
+            }
+
+            if (ImGui::Checkbox("V-Sync", &g_vsync)) {
+                vid_set_vsync(g_vsync);   /* passo 14a */
+            }
+            ImGui::SeparatorText(TR("Image", "Imagem"));
+            int current_internal_scale = g_internal_res_scale - 1;
+            const char* res_names[] = {TR("1x (native, 160x144)", "1x (nativo, 160x144)"), "2x (320x288)", "3x (480x432)", "4x (640x576)"};   /* 15a */
+            if (ImGui::Combo(TR("Internal resolution", "Resolucao interna"), &current_internal_scale, res_names, IM_ARRAYSIZE(res_names))) {
+                g_internal_res_scale = current_internal_scale + 1;
+                g_renderer_reset_pending = true;
+                save_runtime_preferences();
+            }
+
+            if (effective_internal_scale() == 1 && g_internal_res_scale > 1) {
+                ImGui::TextDisabled(TR("No effect with the Nearest filter and no post-processing: the GPU already scales up.", "Sem efeito com filtro Nearest e sem pos-processamento: a GPU ja amplia."));
+            }
+
+
+            int filter_mode = (int)g_render_filter_mode;
+            if (ImGui::Combo(TR("Scale filter", "Filtro de escala"),
+                             &filter_mode,
+                             g_render_filter_names,
+                             IM_ARRAYSIZE(g_render_filter_names))) {
+                g_render_filter_mode = (GBRenderFilterMode)filter_mode;
+                update_render_filter();
+                save_runtime_preferences();
+            }
+            if (g3d_active() && g_render_filter_mode == GB_RENDER_FILTER_LINEAR) {   /* 3D-6a */
+                ImGui::TextDisabled(TR("In 3D the scale filter is always Nearest.", "No 3D o filtro de escala fica sempre em Nearest."));
+            }
+
+            int current_post_filter = (int)g_post_filter_mode;
+            if (ImGui::Combo(TR("Post-processing filter", "Filtro de pos-processamento"), &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
+                g_post_filter_mode = (GBPostFilterMode)current_post_filter;
+                save_runtime_preferences();
+            }
+
+            ImGui::SeparatorText("Widescreen");
+            bool widescreen = g_widescreen_mode;
+            if (ImGui::Checkbox("Widescreen (16:9)", &widescreen)) {
+                GBPPU* ppu = active_ppu();
+                if (widescreen && !ppu) {
+                    widescreen = false;
+                }
+                g_widescreen_mode = widescreen;
+                if (ppu) {
+                    ppu_set_widescreen_enabled(ppu, g_widescreen_mode);
+                }
+                g_renderer_reset_pending = true;
+                update_game_viewport();
+                save_runtime_preferences();
+            }
+            if (g_widescreen_mode) {
+                ImGui::TextDisabled(TR("Extends the background at the sides; may reveal unused tiles.", "Estende o cenario nas laterais; pode mostrar tiles nao usados."));
+
+                /* Passo 8a */
+                int fill_mode = g_ws_fill_mode;
+                const char* fill_names[] = {TR("Black", "Preto"), TR("Blurred edge", "Borda desfocada"), TR("Blurred center", "Centro desfocado")};
+                if (ImGui::Combo(TR("Sides without scenery", "Laterais sem cenario"), &fill_mode, fill_names, IM_ARRAYSIZE(fill_names))) {
+                    g_ws_fill_mode = fill_mode;
+                    g_ws_amb_valid = false;
+                    save_runtime_preferences();
+                }
+                if (g_ws_fill_mode != WS_FILL_BLACK) {
+                    int dim = g_ws_fill_dim_percent;
+                    if (ImGui::SliderInt(TR("Darken sides (%)", "Escurecer laterais (%)"), &dim, 0, 90)) {
+                        g_ws_fill_dim_percent = dim;
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        save_runtime_preferences();
+                    }
+                }
+                ImGui::TextDisabled(TR("Title, COURSE, boss, transitions. Room walls stay black.", "Titulo, COURSE, chefe, transicoes. Paredes das salas ficam pretas."));
+
+                bool fade_enabled = g_widescreen_fade_enabled;
+                if (ImGui::Checkbox(TR("Edge fade", "Esmaecer bordas"), &fade_enabled)) {
+                    g_widescreen_fade_enabled = fade_enabled;
+                    GBPPU* ppu = active_ppu();
+                    if (ppu) {
+                        ppu_set_widescreen_fade_enabled(ppu, g_widescreen_fade_enabled);
+                    }
+                    save_runtime_preferences();
+                }
+
+                if (g_widescreen_fade_enabled) {
+                    int fade_percent = g_widescreen_fade_percent;
+                    if (ImGui::SliderInt(TR("Edge fade amount (%)", "Intensidade do esmaecimento (%)"), &fade_percent, 0, 100)) {
+                        g_widescreen_fade_percent = fade_percent;
+                        GBPPU* ppu = active_ppu();
+                        if (ppu) {
+                            ppu_set_widescreen_fade_amount(ppu, (float)g_widescreen_fade_percent / 100.0f);
+                        }
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        save_runtime_preferences();
+                    }
+                }
+            }
+
+
+            ImGui::SeparatorText(TR("Renderer", "Renderizador"));
+            {   /* Passo 14a: caminho de vídeo (vale ao abrir o jogo de novo). */
+                const char* kVideoNames[] = {TR("SDL (default)", "SDL (padrao)"), "OpenGL"};
+                int video = g_video_backend_pref;
+                if (ImGui::Combo("Video", &video, kVideoNames, IM_ARRAYSIZE(kVideoNames))) {
+                    g_video_backend_pref = video;
+                    save_runtime_preferences();
+                }
+                if (g_video_backend_pref != (g_use_gl ? 1 : 0)) {
+                    ImGui::TextDisabled(TR("Close and reopen the game to switch.", "Feche e abra o jogo para trocar."));
+                }
+                ImGui::TextDisabled(TR("In use: %s", "Em uso: %s"), g_video_status.c_str());
+            }
+            {   /* Passo 14c-2: quem monta a tela */
+                const char* kScreenNames[] = {"CPU", TR("GPU (OpenGL, default)", "GPU (OpenGL, padrao)")};
+                int scr = g_gpu_screen_pref;
+                if (ImGui::Combo(TR("Screen composition", "Montagem da tela"), &scr, kScreenNames, IM_ARRAYSIZE(kScreenNames))) {
+                    g_gpu_screen_pref = scr;
+                    g_gpu_screen_error.clear();   /* tenta de novo */
+                    save_runtime_preferences();
+                }
+                if (g_gpu_screen_pref == 1) {
+                    const char* why = gpu_screen_blocker();
+                    if (why) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), TR("Composing on the CPU: %s.", "Montando na CPU: %s."), why);
+                    } else {
+                        ImGui::TextDisabled(TR("In use: %s", "Em uso: %s"), g_gpu_screen_shown ? "GPU" : TR("CPU (waiting for the GPU)", "CPU (esperando a GPU)"));
+                    }
+                }
+            }
+            {   /* passo 10a */
+                int fps_mode = g_fps_mode;
+                const char* fps_names[] = {TR("60 fps (original)", "60 fps (original)"), TR("120 fps (in-between frames)", "120 fps (quadros intermediarios)")};   /* 15a */
+                if (ImGui::Combo(TR("Frame rate", "Quadros por segundo"), &fps_mode, fps_names, IM_ARRAYSIZE(fps_names))) {
+                    g_fps_mode = fps_mode;
+                    ip_invalidate();
+                    save_runtime_preferences();
+                }
+                if (g_fps_mode == 1) {
+                    ImGui::TextDisabled(TR("The game still runs at 60: physics and music at the same speed.", "O jogo continua a 60: fisica e musica na mesma velocidade."));
+                    ImGui::TextDisabled(TR("In-between frame = halfway between the previous and the current one (~8 ms delay).", "Quadro do meio = meio do caminho entre o anterior e o atual (atraso ~8 ms)."));
+                    const int hz = ip_display_refresh_hz();
+                    if (!ip_refresh_ok()) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                           TR("Monitor at %d Hz: needs 100 Hz or more. In-between frame off.", "Monitor a %d Hz: precisa de 100 Hz ou mais. Quadro do meio desligado."), hz);
+                    } else if (effective_speed_percent() != 100) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                           TR("Off while the speed is not 100%%.", "Desligado enquanto a velocidade nao for 100%%."));
+                    } else if (hz > 0) {
+                        ImGui::TextDisabled(TR("Monitor: %d Hz. In-between frames: %u per second.", "Monitor: %d Hz. Quadros do meio: %u por segundo."), hz, ip_mid_per_second());
+                        char ip_why[256];
+                        ip_skip_text(ip_why, sizeof(ip_why));
+                        ImGui::TextDisabled("%s", ip_why);   /* passo 10b */
+                    } else {
+                        ImGui::TextDisabled(TR("Monitor: unknown refresh rate. In-between frames: %u per second.", "Monitor: frequencia desconhecida. Quadros do meio: %u por segundo."), ip_mid_per_second());
+                    }
+                }
+            }
+            ImGui::SeparatorText(TR("Info", "Informacoes"));
+            {
+                int window_w = 0;
+                int window_h = 0;
+                SDL_GetWindowSize(g_window, &window_w, &window_h);
+                ImGui::TextDisabled(TR("Performance: %.1f FPS", "Desempenho: %.1f FPS"), ImGui::GetIO().Framerate);
+                ImGui::TextDisabled(TR("Window: %d x %d", "Janela: %d x %d"), window_w, window_h);
+                ImGui::TextDisabled(TR("Game area: %d x %d (%.2fx)", "Area do jogo: %d x %d (%.2fx)"),
+                                    g_game_viewport.w,
+                                    g_game_viewport.h,
+                                    (double)g_game_viewport.w / (double)GB_SCREEN_WIDTH);
+            }
+        } else if (g_menu_page == 1) {   /* 3D */
+            {   /* Passo 3D-1: modo 3D em camadas; 15a: em grupos */
+                const char* k3DNames[] = {TR("Off", "Desligado"), TR("Layers", "Camadas")};
+                ImGui::SeparatorText(TR("3D mode", "Modo 3D"));
+                int m3 = g_3d_mode;
+                if (ImGui::Combo(TR("3D mode", "Modo 3D"), &m3, k3DNames, IM_ARRAYSIZE(k3DNames))) {
+                    g_3d_mode = m3;
+                    save_runtime_preferences();
+                }
+                if (g_3d_mode == 1) {
+                    const char* why = g3d_blocker();
+                    if (why) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), TR("3D stopped: %s.", "3D parado: %s."), why);
+                    } else {
+                        ImGui::TextDisabled(TR("In use: %s", "Em uso: %s"),
+                                            g_3d_shown ? TR("3D (layers)", "3D (camadas)") : TR("2D (waiting for a frame)", "2D (esperando o quadro)"));
+                        ImGui::TextDisabled("%s", TR("In 3D the scale filter is always Nearest.", "No 3D o filtro de escala fica sempre em Nearest."));
+                        if (g_post_filter_mode != GB_POST_FILTER_NONE || g_fps_mode == 1) {
+                            ImGui::TextDisabled("%s", TR("In 3D the post-processing filter and the in-between frame (120 fps) are off.",
+                                                         "No 3D o filtro de pos-processamento e o quadro do meio (120 fps) ficam desligados."));
+                        }
+                    }
+                    ImGui::SeparatorText(TR("Camera", "Camera"));
+                    if (ImGui::SliderInt(TR("Tilt (degrees)", "Inclinacao (graus)"), &g_3d_tilt, -35, 35)) save_runtime_preferences();
+                    if (ImGui::SliderInt(TR("Turn (degrees)", "Giro (graus)"), &g_3d_yaw, -35, 35)) save_runtime_preferences();
+                    {   /* passo 3D-5a / 3D-4q */
+                        bool st = g_3d_stick != 0;
+                        if (ImGui::Checkbox(TR("Right stick moves the camera", "Analogico direito mexe a camera"), &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }
+                        if (g_3d_stick) ImGui::TextDisabled("%s", TR("Right stick: tilts and turns; let go and it comes back.", "Analogico direito: inclina e gira; soltando, volta ao padrao."));
+                        bool fw = g_3d_follow != 0;
+                        if (ImGui::Checkbox(TR("Camera follows Wario", "Camera segue o Wario"), &fw)) { g_3d_follow = fw ? 1 : 0; save_runtime_preferences(); }
+                        if (g_3d_follow) ImGui::TextDisabled("%s", TR("In levels the turn faces the side Wario is walking to.", "Nas fases o giro vira para o lado em que o Wario anda."));
+                    }
+                    ImGui::SeparatorText(TR("Depth", "Profundidade"));
+                    if (ImGui::SliderInt(TR("Depth (%)", "Profundidade (%)"), &g_3d_depth, 0, 200)) save_runtime_preferences();
+                    if (ImGui::SliderInt(TR("Sprite thickness (%)", "Espessura dos sprites (%)"), &g_3d_spr, 5, 100)) save_runtime_preferences();   /* 3D-5e */
+                    if (ImGui::SliderInt(TR("Front layer (% of a block, 0 = off)", "Plano da frente (% de bloco, 0 = sem)"), &g_3d_front, 0, 300)) save_runtime_preferences();   /* 3D-6a */
+                }
+            }
+
+            ImGui::SeparatorText(TR("Tools", "Ferramentas"));
+            /* Passo 3D-3f: diagnóstico do 3D */
+            ImGui::Checkbox(TR("Show classes", "Mostrar classes"), &g_3d_debug);
+            {   /* passo 3D-2b */
+                ImGui::Checkbox(TR("Mark tiles (outside levels)", "Marcar tiles (fora das fases)"), &g_3d_mark);
+                ImGui::SameLine();   /* passo 3D-2c */
+                if (ImGui::Button(g_freeze ? TR("Unfreeze the game", "Descongelar o jogo") : TR("Freeze the game", "Congelar o jogo"))) g_freeze = !g_freeze;
+                if (g_3d_mark) {
+                    ImGui::TextWrapped("%s", TR("Close the menu and click on the game: left click cycles background > floor > half floor > water > door/ladder; "
+                                          "right click goes back to background. A mark is for that tile drawing on this screen only (g00, m44...), "
+                                          "also on the window layer (waves, bars). While marking, the view is straight and the classes are painted.",
+                                          "Feche o menu e clique no jogo: esquerdo troca fundo > chao > meio chao > agua > porta/escada; "
+                                          "direito volta a fundo. Vale para o mesmo desenho de tile so nesta tela (g00, m44...), "
+                                          "tambem na janela (ondas, faixas). Enquanto marca, a vista fica reta e com as classes pintadas."));
+                    marks3d_load();
+                    ImGui::TextDisabled(TR("%u tiles marked - %s", "%u tiles marcados - %s"), (unsigned)g_3d_marks.size(), marks3d_path().c_str());
+                    {   /* passo 3D-2j: a tela onde as marcas valem agora */
+                        const uint16_t cx = marks3d_context(g_registered_ctx);
+                        char sfx[8];
+                        ppu_native_hd_context_suffix(cx, sfx);
+                        const char* nm = marks3d_context_name(cx);
+                        ImGui::TextDisabled(TR("Current screen: %s%s%s%s", "Tela atual: %s%s%s%s"), sfx[0] ? sfx : TR("(none)", "(nenhuma)"), nm[0] ? " - " : "", nm, "");
+                    }
+                    if (!g_3d_mark_info.empty()) ImGui::TextDisabled(TR("Last: %s", "Ultimo: %s"), g_3d_mark_info.c_str());
+                }
+            }
+            if (ImGui::TreeNode(TR("Hide parts (diagnostics)", "Esconder partes (diagnostico)"))) {   /* passo 3D-4f */
+                const struct { const char* name; int bit; } kParts[] = {
+                    {TR("Far", "Longe"), 0}, {TR("Background", "Fundo"), 1}, {TR("Water (back wall)", "Agua (parede do fundo)"), 5}, {TR("Door / coins / ladder", "Porta / moedas / escada"), 6},
+                    {TR("Floor (front)", "Chao (frente)"), 4}, {TR("Waves (surface copies)", "Ondas (copias da superficie)"), 8}, {TR("Water surface floor", "Chao da superficie da agua"), 12},
+                    {TR("Block and door sides", "Lados dos blocos e da porta"), 11}, {"Sprites", 3}, {"HUD", 2}};
+                for (const auto& part : kParts) {
+                    bool hid = (g_3d_hide >> part.bit) & 1;
+                    if (ImGui::Checkbox(part.name, &hid)) g_3d_hide = hid ? (g_3d_hide | (1 << part.bit)) : (g_3d_hide & ~(1 << part.bit));
+                }
+                ImGui::TreePop();
+            }
+            if (g_3d_debug) {
+                ImGui::TextWrapped("%s", TR("grey background, blue water, cyan wave band, light blue sky inside water, "
+                                              "brown floor, yellow half floor, orange door/ladder/coin, magenta sprite, white HUD, black far",
+                                              "cinza fundo, azul agua, ciano faixa das ondas, azul-claro ceu dentro da agua, "
+                                              "marrom chao, amarelo meio chao, laranja porta/escada/moeda, magenta sprite, branco HUD, preto longe"));
+            }
+        } else if (g_menu_page == 2) {   /* Audio */
+            if (ImGui::Checkbox(TR("Enable audio", "Ligar o som"), &g_audio_output_enabled)) {
+                reset_audio_output_buffer(true);
+                save_runtime_preferences();
+            }
+            bool audio_muted = g_audio_muted.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox(TR("Mute", "Mudo"), &audio_muted)) {
+                g_audio_muted.store(audio_muted, std::memory_order_relaxed);
+                save_runtime_preferences();
+            }
+            int audio_volume_percent =
+                (int)g_audio_volume_percent.load(std::memory_order_relaxed);
+            if (ImGui::SliderInt(TR("Master volume (%)", "Volume geral (%)"), &audio_volume_percent, 0, 200)) {
+                g_audio_volume_percent.store((uint32_t)audio_volume_percent,
+                                             std::memory_order_relaxed);
+                save_runtime_preferences();
+            }
+            {   /* Passo 6e */
+                int gb_volume_percent = (int)g_audio_gb_volume_percent.load(std::memory_order_relaxed);
+                if (ImGui::SliderInt(TR("Game Boy volume (%)", "Volume do Game Boy (%)"), &gb_volume_percent, 0, 200)) {
+                    g_audio_gb_volume_percent.store((uint32_t)gb_volume_percent, std::memory_order_relaxed);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    save_runtime_preferences();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", TR("Only the Game Boy sound (GB effects and music).\nThe .ogg tracks have their own volume in Mods.",
+                                              "So o som do Game Boy (efeitos e musica do GB).\nAs trilhas .ogg tem o volume delas em Mods."));
+                }
+            }
+            if (ImGui::BeginCombo(TR("Output device", "Dispositivo de saida"), current_audio_output_device_label())) {
+                bool selected_default = g_audio_target_device_name.empty();
+                if (ImGui::Selectable(TR("System default", "Padrao do sistema"), selected_default)) {
+                    g_audio_target_device_name.clear();
+                    save_runtime_preferences();
+                    reopen_audio_output_device(true);
+                }
+                if (selected_default) {
+                    ImGui::SetItemDefaultFocus();
+                }
+
+                for (size_t i = 0; i < g_audio_output_devices.size(); i++) {
+                    const bool selected = g_audio_output_devices[i] == g_audio_target_device_name;
+                    if (ImGui::Selectable(g_audio_output_devices[i].c_str(), selected)) {
+                        g_audio_target_device_name = g_audio_output_devices[i];
+                        save_runtime_preferences();
+                        reopen_audio_output_device(true);
+                    }
+                    if (selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            int audio_latency_ms = (int)g_audio_latency_ms;
+            if (ImGui::SliderInt(TR("Target latency (ms)", "Latencia alvo (ms)"), &audio_latency_ms, 20, 250)) {
+                g_audio_latency_ms = (uint32_t)audio_latency_ms;
+                recompute_audio_targets();
+                reset_audio_output_buffer(true);
+                save_runtime_preferences();
+            }
+            if (ImGui::Button(TR("Refresh devices", "Atualizar dispositivos"))) {
+                refresh_audio_output_devices();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(TR("Reconnect", "Reconectar"))) {
+                reopen_audio_output_device(true);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(TR("Clear buffer", "Limpar buffer"))) {
+                reset_audio_output_buffer(true);
+            }
+            ImGui::Text(TR("Requested output: %s", "Saida pedida: %s"), current_audio_output_device_label());
+            ImGui::Text(TR("Active output: %s", "Saida em uso: %s"), g_audio_active_device_name.empty() ? TR("Unavailable", "Indisponivel") : g_audio_active_device_name.c_str());
+            if (!current_audio_output_device_available()) {
+                ImGui::TextDisabled(TR("Requested device is unavailable. Using the default output when possible.", "O dispositivo pedido nao esta disponivel. Usando a saida padrao quando possivel."));
+            }
+            ImGui::Text(TR("Ring buffer: %u / %u samples", "Buffer: %u / %u amostras"), current_audio_ring_fill_samples(), current_audio_ring_capacity());
+            ImGui::Text(TR("Device: %u Hz, device buffer %u, start %u, low-water %u", "Dispositivo: %u Hz, buffer %u, inicio %u, minimo %u"),
+                        g_audio_device_sample_rate,
+                        g_audio_device_buffer_samples,
+                        g_audio_start_threshold,
+                        g_audio_low_watermark);
+            if (effective_speed_percent() != 100) {
+                ImGui::TextDisabled(TR("Audio pauses while the speed is not 100%%.", "O som pausa enquanto a velocidade nao for 100%%."));
+            }
+            if (ImGui::Button(TR("Reset audio", "Restaurar som"))) {
+                reset_runtime_audio_defaults();
+            }
+
+        } else if (g_menu_page == 3) {   /* Controls */
+            if (!g_controller_name.empty()) {
+                ImGui::Text(TR("Detected controller: %s", "Controle detectado: %s"), g_controller_name.c_str());
+                ImGui::TextDisabled(TR("Profile: %s", "Perfil: %s"), controller_type_name(g_controller_type));
+            } else {
+    #if defined(__ANDROID__)
+                ImGui::TextDisabled(TR("No controller detected. Controller mappings will apply when one is connected.", "Nenhum controle detectado. Os mapeamentos valem quando um for conectado."));
+    #else
+                ImGui::TextDisabled(TR("No controller detected.", "Nenhum controle detectado."));
+    #endif
+            }
+            render_binding_editor(TR("Keyboard - game", "Teclado - jogo"),
+                                  GB_CAPTURE_DEVICE_KEYBOARD,
+                                  g_keyboard_bindings,
+                                  GB_INPUT_ACTION_RIGHT,
+                                  GB_INPUT_ACTION_FAST_FORWARD);
+            ImGui::Spacing();
+            render_binding_editor(TR("Controller - game", "Controle - jogo"),
+                                  GB_CAPTURE_DEVICE_CONTROLLER,
+                                  g_controller_bindings,
+                                  GB_INPUT_ACTION_RIGHT,
+                                  GB_INPUT_ACTION_FAST_FORWARD);
+            ImGui::Spacing();
+            render_binding_editor(TR("Keyboard - shortcuts", "Teclado - atalhos"),
+                                  GB_CAPTURE_DEVICE_KEYBOARD,
+                                  g_keyboard_bindings,
+                                  GB_INPUT_ACTION_FAST_FORWARD,
+                                  GB_INPUT_ACTION_COUNT);
+            ImGui::Spacing();
+            render_binding_editor(TR("Controller - shortcuts", "Controle - atalhos"),
+                                  GB_CAPTURE_DEVICE_CONTROLLER,
+                                  g_controller_bindings,
+                                  GB_INPUT_ACTION_FAST_FORWARD,
+                                  GB_INPUT_ACTION_COUNT);
+            if (g_binding_capture_active) {
+                ImGui::Separator();
+                ImGui::TextDisabled(TR("Waiting for %s input for %s slot %d", "Esperando entrada do %s para %s, posicao %d"),
+                                    g_binding_capture_device == GB_CAPTURE_DEVICE_KEYBOARD ? TR("keyboard", "teclado") : TR("controller", "controle"),
+                                    action_name_ui(g_binding_capture_action),
+                                    g_binding_capture_slot + 1);
+                if (ImGui::Button(TR("Cancel", "Cancelar"))) {
+                    cancel_binding_capture();
+                }
+            }
+            {   /* [android-port] */
+                bool touch_on = touch_controls::enabled();
+                if (ImGui::Checkbox(TR("Touch controls (on-screen gamepad)", "Controles na tela (toque)"), &touch_on)) {
+                    touch_controls::set_enabled(touch_on);
+                    update_effective_joypad_state();
+                    save_runtime_preferences();
+                }
+            }
+            if (ImGui::Button(TR("Reset controls", "Restaurar controles"))) {
+                reset_runtime_control_defaults();
+            }
+            ImGui::TextDisabled(TR("Shortcuts can also control fast forward, max speed, save states, overlay, mute and the menu.", "Os atalhos tambem controlam avanco rapido, velocidade maxima, estados salvos, overlay, mudo e o menu."));
+            ImGui::BulletText(TR("%s: settings menu", "%s: menu de configuracoes"), controller_menu_hint_text());
+    #if defined(__ANDROID__)
+            ImGui::BulletText(TR("Android Back / Escape: settings menu", "Voltar do Android / Escape: menu de configuracoes"));
+    #else
+            ImGui::BulletText(TR("Escape: settings menu", "Escape: menu de configuracoes"));
+    #endif
+
+        } else if (g_menu_page == 4) {   /* Emulation */
+            ImGui::SeparatorText(TR("Speed", "Velocidade"));
+            ImGui::Checkbox(TR("Show overlay", "Mostrar overlay"), &g_show_overlay);
+            ImGui::Checkbox(TR("Smooth slow frames", "Suavizar quadros lentos"), &g_smooth_lcd_transitions);
+            if (ImGui::SliderInt(TR("Speed (%)", "Velocidade (%)"), &g_speed_percent, 10, 500)) {
+                reset_audio_output_buffer(true);
+            }
+            if (ImGui::Button(TR("Reset speed", "Velocidade padrao"))) {
+                g_speed_percent = 100;
+                g_max_speed_mode = false;
+                reset_audio_output_buffer(true);
+            }
+            ImGui::Text(TR("Effective speed: %d%%", "Velocidade efetiva: %d%%"), effective_speed_percent());
+            if (g_fast_forward_active) {
+                ImGui::TextDisabled(TR("Fast forward shortcut is active.", "Atalho de avanco rapido ativo."));
+            } else if (g_max_speed_mode) {
+                ImGui::TextDisabled(TR("Max speed shortcut is active.", "Atalho de velocidade maxima ativo."));
+            }
+
+            ImGui::SeparatorText(TR("Save states", "Estados salvos"));
+            int savestate_slot = g_savestate_slot + 1;
+            if (ImGui::SliderInt(TR("Slot", "Posicao"), &savestate_slot, 1, GB_SAVESTATE_SLOT_COUNT)) {
+                g_savestate_slot = savestate_slot - 1;
+                save_runtime_preferences();
+            }
+            if (ImGui::Button(TR("Save state (F5)", "Salvar estado (F5)"))) {
+                save_savestate_slot(g_registered_ctx, g_savestate_slot);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(TR("Load state (F8)", "Carregar estado (F8)"))) {
+                load_savestate_slot(g_registered_ctx, g_savestate_slot);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(TR("Delete slot", "Apagar posicao"))) {
+                delete_savestate_slot(g_registered_ctx, g_savestate_slot);
+            }
+            {
+                std::string savestate_path;
+                const bool slot_exists = savestate_slot_exists(g_registered_ctx, g_savestate_slot, &savestate_path);
+                ImGui::Text(TR("File: %s", "Arquivo: %s"), savestate_path.empty() ? TR("(unavailable)", "(indisponivel)") : savestate_path.c_str());
+                ImGui::Text(TR("Status: %s", "Situacao: %s"), slot_exists ? TR("Saved", "Gravado") : TR("Empty", "Vazio"));
+            }
+            if (!g_savestate_status.empty()) {
+                ImGui::TextWrapped("%s", g_savestate_status.c_str());
+            }
+
+        } else if (g_menu_page == 5) {   /* Mods */
+            bool hd_tiles = ppu_native_hd_get_tiles_enabled();
+            if (ImGui::Checkbox(TR("HD tiles", "Tiles HD"), &hd_tiles)) {
+                ppu_native_hd_set_tiles_enabled(hd_tiles);
+                g_renderer_reset_pending = true;
+                save_runtime_preferences();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(TR("Reload", "Recarregar"))) {
+                hd_pack_io_load_pack();
+                g_renderer_reset_pending = true;
+            }
+            ImGui::TextDisabled("%s", hd_pack_io_pack_status());
+            {
+                /* Passo 11a: contexto atual, que vira o sufixo _fXX/_mXX dos tiles. */
+                char hd_ctx[8];
+                ppu_native_hd_context_suffix(ppu_native_hd_context(), hd_ctx);
+                if (hd_ctx[0]) {
+                    ImGui::TextDisabled(TR("Current context: %s (suffix _%s)", "Contexto agora: %s (sufixo _%s)"),
+                                        hd_ctx[0] == 'f' ? TR("level", "fase") : hd_ctx[0] == 'm' ? TR("map", "mapa") : TR("screen", "tela"),
+                                        hd_ctx);
+                } else {
+                    ImGui::TextDisabled(TR("Current context: none (only _pN and generic)", "Contexto agora: nenhum (so _pN e genericos)"));
+                }
+                if (ppu_native_hd_variant_count() > 0) {
+                    ImGui::TextDisabled(TR("Tiles per level/palette: %u", "Tiles por fase/paleta: %u"),
+                                        ppu_native_hd_variant_count());
+                }
+            }
+            {   /* Passo 6c: trilhas .ogg */
+                bool music_on = music_replace_get_enabled();
+                if (ImGui::Checkbox(TR(".ogg tracks", "Trilhas .ogg"), &music_on)) {
+                    music_replace_set_enabled(music_on);
+                    save_runtime_preferences();
+                }
+                ImGui::SameLine();
+                float music_vol = music_replace_get_volume() * 100.0f;
+                ImGui::SetNextItemWidth(140.0f);
+                if (ImGui::SliderFloat("Volume##trilhas", &music_vol, 0.0f, 200.0f, "%.0f%%")) {
+                    music_replace_set_volume(music_vol / 100.0f);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    save_runtime_preferences();
+                }
+                if (music_replace_track_count() > 0) {
+                    /* Passo 6e: volume do GB aqui tambem, para equilibrar. */
+                    int gb_vol = (int)g_audio_gb_volume_percent.load(std::memory_order_relaxed);
+                    ImGui::SetNextItemWidth(140.0f);
+                    if (ImGui::SliderInt(TR("Game Boy volume##mods", "Volume do GB##mods"), &gb_vol, 0, 200, "%d%%")) {
+                        g_audio_gb_volume_percent.store((uint32_t)gb_vol, std::memory_order_relaxed);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        save_runtime_preferences();
+                    }
+                    ImGui::TextDisabled(TR("%d track(s): %s", "%d trilha(s): %s"), music_replace_track_count(),
+                                        music_replace_track_list());
+                } else {
+                    ImGui::TextDisabled(TR("No tracks (mods/music/XX.ogg or music/ inside a .o2r)", "Nenhuma trilha (mods/music/XX.ogg ou music/ dentro de um .o2r)"));
+                }
+            }
+            if (hd_tiles && ppu_native_hd_tile_count() > 0 && g_internal_res_scale < 2) {
+                ImGui::TextDisabled(TR("Choose internal resolution 2x or more to see the HD tiles.", "Escolha resolucao interna 2x ou mais para ver os tiles HD."));
+            }
+            const int mod_count = hd_pack_io_mod_count();
+            if (mod_count == 0) {
+                ImGui::TextWrapped(TR("Put .o2r files in %s and click Reload.", "Coloque arquivos .o2r em %s e clique em Recarregar."),
+                                   hd_pack_io_mods_dir());
+            } else {
+                ImGui::TextDisabled(TR("When the same tile is in more than one mod, the lower one wins.", "Quando o mesmo tile esta em mais de um mod, vale o de baixo."));
+                for (int i = 0; i < mod_count; ++i) {
+                    ImGui::PushID(i);
+                    bool mod_on = hd_pack_io_mod_enabled(i);
+                    std::string mod_label = hd_pack_io_mod_name(i);
+                    if (hd_pack_io_mod_is_folder(i)) {
+                        mod_label += TR(" (folder)", " (pasta)");
+                    }
+                    if (ImGui::Checkbox(mod_label.c_str(), &mod_on)) {
+                        hd_pack_io_set_mod_enabled(i, mod_on);
+                        g_renderer_reset_pending = true;
+                        save_runtime_preferences();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", hd_pack_io_mod_info(i));
+                    ImGui::PopID();
+                }
+                ImGui::TextWrapped(TR("Folder: %s", "Pasta: %s"), hd_pack_io_mods_dir());
+            }
+        } else {   /* Developer */
             int renderer_mode = (int)ppu_native_get_mode();
             const char* renderer_names[PPU_RENDERER_COUNT];
             for (int i = 0; i < PPU_RENDERER_COUNT; ++i) {
                 renderer_names[i] = ppu_native_mode_name((PPURendererMode)i);
             }
-            if (ImGui::Combo("Renderer", &renderer_mode, renderer_names, PPU_RENDERER_COUNT)) {
+            if (ImGui::Combo(TR("Renderer", "Renderizador"), &renderer_mode, renderer_names, PPU_RENDERER_COUNT)) {
                 ppu_native_set_mode((PPURendererMode)renderer_mode);
                 ppu_native_reset_compare_stats();
                 save_runtime_preferences();
             }
             bool hd_check = ppu_native_get_hd_check();
-            if (ImGui::Checkbox("Conferir amostragem HD", &hd_check)) {
+            if (ImGui::Checkbox(TR("Check HD sampling", "Conferir amostragem HD"), &hd_check)) {
                 ppu_native_set_hd_check(hd_check);
                 ppu_native_reset_hd_stats();
             }
-            ImGui::TextDisabled("Escala HD: %dx (segue a escala da textura)",
+            ImGui::TextDisabled(TR("HD scale: %dx (follows the texture scale)", "Escala HD: %dx (segue a escala da textura)"),
                                 ppu_native_get_hd_scale());
-            ImGui::Checkbox("Usar frame HD na tela", &g_use_hd_frame);
+            ImGui::Checkbox(TR("Use the HD frame on screen", "Usar frame HD na tela"), &g_use_hd_frame);
             {   /* Passo 7h */
                 bool attr_dbg = ppu_get_widescreen_attr_debug();
-                if (ImGui::Checkbox("Laterais: mostrar origem da cor", &attr_dbg)) {
+                if (ImGui::Checkbox(TR("Sides: show color source", "Laterais: mostrar origem da cor"), &attr_dbg)) {
                     ppu_set_widescreen_attr_debug(attr_dbg);
                 }
                 if (attr_dbg) {
-                    ImGui::TextDisabled("sem tinta = VRAM | verde = cache | azul = tabela DX calibrada");
-                    ImGui::TextDisabled("amarelo = bloco aprendido | magenta = tabela pela fase");
-                    ImGui::TextDisabled("ciano = cor do mesmo tile na tela (7j/7k)");
-                    ImGui::TextDisabled("vermelho = palpite do tile | cinza = nada");
+                    ImGui::TextDisabled(TR("no tint = VRAM | green = cache | blue = calibrated DX table", "sem tinta = VRAM | verde = cache | azul = tabela DX calibrada"));
+                    ImGui::TextDisabled(TR("yellow = learned block | magenta = table by level", "amarelo = bloco aprendido | magenta = tabela pela fase"));
+                    ImGui::TextDisabled(TR("cyan = color of the same tile on screen (7j/7k)", "ciano = cor do mesmo tile na tela (7j/7k)"));
+                    ImGui::TextDisabled(TR("red = tile guess | grey = nothing", "vermelho = palpite do tile | cinza = nada"));
                     const int page = ppu_get_dx_page();
-                    if (page >= 0) ImGui::TextDisabled("Tabela DX: pagina %02X", page);
-                    else ImGui::TextDisabled("Tabela DX: sem calibracao");
+                    if (page >= 0) ImGui::TextDisabled(TR("DX table: page %02X", "Tabela DX: pagina %02X"), page);
+                    else ImGui::TextDisabled(TR("DX table: not calibrated", "Tabela DX: sem calibracao"));
                     if (g_registered_ctx) {   /* passo 7r */
-                        ImGui::TextDisabled("game_mode_2: %u (21 fase, 22 chefe, 23 carregando, 13 mapa se preparando, 14 COURSE)",
+                        ImGui::TextDisabled(TR("game_mode_2: %u (21 level, 22 boss, 23 loading, 13 map preparing, 14 COURSE)", "game_mode_2: %u (21 fase, 22 chefe, 23 carregando, 13 mapa se preparando, 14 COURSE)"),
                                             (unsigned)gb_wl_game_mode_2(g_registered_ctx));
-                        ImGui::Checkbox("Registrar estado no terminal ([Estado] ...)", &g_state_log);   /* passo 7t */
+                        ImGui::Checkbox(TR("Log state to the terminal ([Estado] ...)", "Registrar estado no terminal ([Estado] ...)"), &g_state_log);   /* passo 7t */
                     }
                 }
             }
             bool rate_control = g_audio_rate_control.load(std::memory_order_relaxed);
-            if (ImGui::Checkbox("Audio: controle de taxa (mixer)", &rate_control)) {
+            if (ImGui::Checkbox(TR("Audio: rate control (mixer)", "Audio: controle de taxa (mixer)"), &rate_control)) {
                 g_audio_rate_control.store(rate_control, std::memory_order_relaxed);
             }
             /* Passo 6b: musicas vistas (mais nova em cima). */
-            if (ImGui::TreeNode("Musicas vistas")) {
-                if (ImGui::Checkbox("Registrar no terminal ([Musica] ...)", &g_music_log)) {
+            if (ImGui::TreeNode(TR("Songs seen", "Musicas vistas"))) {
+                if (ImGui::Checkbox(TR("Log to the terminal ([Musica] ...)", "Registrar no terminal ([Musica] ...)"), &g_music_log)) {
                     music_replace_set_log(g_music_log);
                     save_runtime_preferences();
                 }
-                ImGui::TextDisabled("Tocando: %s%02X   ($A61D; pedido em $A61C)",
+                ImGui::TextDisabled(TR("Playing: %s%02X   ($A61D; requested at $A61C)", "Tocando: %s%02X   ($A61D; pedido em $A61C)"),
                                     g_music_current < 0 ? "-- " : "",
                                     (unsigned)(g_music_current < 0 ? 0 : g_music_current));
                 const uint32_t shown = g_music_history_total < MUSIC_HISTORY_MAX
@@ -5097,25 +5708,25 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 for (uint32_t i = 0; i < shown; i++) {
                     const MusicHistoryEntry& e =
                         g_music_history[(g_music_history_total - 1u - i) % MUSIC_HISTORY_MAX];
-                    ImGui::Text("%02X   modo %02X   frame %u",
+                    ImGui::Text(TR("%02X   mode %02X   frame %u", "%02X   modo %02X   frame %u"),
                                 (unsigned)e.song, (unsigned)e.game_mode, e.frame);
                 }
                 if (shown == 0) {
-                    ImGui::TextDisabled("(nenhuma ainda)");
+                    ImGui::TextDisabled(TR("(none yet)", "(nenhuma ainda)"));
                 }
-                if (ImGui::Button("Limpar lista")) {
+                if (ImGui::Button(TR("Clear list", "Limpar lista"))) {
                     g_music_history_total = 0;
                 }
                 ImGui::TreePop();
             }
             /* Passo 6c.1: laboratorio de audio. */
-            if (ImGui::TreeNode("Laboratorio de audio")) {
-                static const char* kChannelNames[4] = {"CH1 pulso", "CH2 pulso", "CH3 onda", "CH4 ruido"};
+            if (ImGui::TreeNode(TR("Audio lab", "Laboratorio de audio"))) {
+                const char* kChannelNames[4] = {TR("CH1 pulse", "CH1 pulso"), TR("CH2 pulse", "CH2 pulso"), TR("CH3 wave", "CH3 onda"), TR("CH4 noise", "CH4 ruido")};
                 uint8_t mute = gb_audio_get_channel_mute_mask();
                 for (int ch = 0; ch < 4; ch++) {
                     bool m = (mute >> ch) & 1;
                     char label[32];
-                    snprintf(label, sizeof(label), "Mudo %d", ch + 1);
+                    snprintf(label, sizeof(label), TR("Mute %d", "Mudo %d"), ch + 1);
                     if (ch > 0) ImGui::SameLine();
                     if (ImGui::Checkbox(label, &m)) {
                         mute = (uint8_t)(m ? (mute | (1u << ch)) : (mute & ~(1u << ch)));
@@ -5129,7 +5740,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                                       info[ch].panning == 1 ? "D" : "-";
                     ImGui::TextColored(info[ch].enabled ? ImVec4(0.6f, 1.0f, 0.6f, 1.0f)
                                                          : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                                       "%s  %s  vol %2d  %s %04X  saida %-3s  disparos %u",
+                                       TR("%s  %s  vol %2d  %s %04X  out %-3s  triggers %u", "%s  %s  vol %2d  %s %04X  saida %-3s  disparos %u"),
                                        kChannelNames[ch], info[ch].enabled ? "ON " : "off",
                                        info[ch].volume, ch == 3 ? "nr43" : "freq",
                                        (unsigned)info[ch].freq, pan, info[ch].triggers);
@@ -5137,16 +5748,16 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 /* Passo 6c.2: silenciar a musica do GB deixando os efeitos. */
                 ImGui::Separator();
                 bool gate = g_audio_lab_gate;
-                if (ImGui::Checkbox("Silenciar musica do GB (deixar so efeitos)", &gate)) {
+                if (ImGui::Checkbox(TR("Silence GB music (keep only effects)", "Silenciar musica do GB (deixar so efeitos)"), &gate)) {
                     g_audio_lab_gate = gate;
                 }
                 if (music_replace_active()) {
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(ligado pela trilha .ogg)");
+                    ImGui::TextDisabled(TR("(on because of the .ogg track)", "(ligado pela trilha .ogg)"));
                 }
                 gate = gb_audio_get_gate_enabled();
                 {
-                    static const char* kGateModes[3] = {"tocar sempre", "mudo", "so com efeito"};
+                    const char* kGateModes[3] = {TR("always play", "tocar sempre"), TR("muted", "mudo"), TR("only with effect", "so com efeito")};
                     const uint8_t open_mask = gb_audio_get_gate_open_mask();
                     for (int ch = 0; ch < 4; ch++) {
                         int mode = 0;
@@ -5171,7 +5782,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                             const bool open = (open_mask >> ch) & 1;
                             ImGui::TextColored(open ? ImVec4(0.6f, 1.0f, 0.6f, 1.0f)
                                                     : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                                               open ? "[passa]" : "[fechado]");
+                                               open ? TR("[open]", "[passa]") : TR("[closed]", "[fechado]"));
                         }
                         if (changed) {
                             gb_audio_set_channel_gate(ch, mode, addr);
@@ -5183,13 +5794,13 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 uint16_t base = g_audio_lab_base;
                 const uint16_t step = 0x40, step_fast = 0x100;
                 ImGui::SetNextItemWidth(120.0f);
-                if (ImGui::InputScalar("Inicio (hex)", ImGuiDataType_U16, &base, &step, &step_fast,
+                if (ImGui::InputScalar(TR("Start (hex)", "Inicio (hex)"), ImGuiDataType_U16, &base, &step, &step_fast,
                                        "%04X", ImGuiInputTextFlags_CharsHexadecimal)) {
                     if (base < 0xA000) base = 0xA000;
                     if (base > 0xBFFF - AUDIO_LAB_BYTES + 1) base = (uint16_t)(0xBFFF - AUDIO_LAB_BYTES + 1);
                     g_audio_lab_base = base;
                 }
-                ImGui::TextDisabled("Amarelo = mudou agora; laranja = no ultimo segundo.");
+                ImGui::TextDisabled(TR("Yellow = changed now; orange = in the last second.", "Amarelo = mudou agora; laranja = no ultimo segundo."));
                 for (int row = 0; row < AUDIO_LAB_BYTES / 16; row++) {
                     ImGui::Text("%04X:", (unsigned)(g_audio_lab_base + row * 16));
                     for (int col = 0; col < 16; col++) {
@@ -5207,76 +5818,38 @@ static void render_frame_internal(const uint32_t* framebuffer,
                             ImGui::TextColored(color, "%02X", (unsigned)g_audio_lab_value[i]);
                         }
                         if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("$%04X = %02X  (mudou %u vezes)",
+                            ImGui::SetTooltip(TR("$%04X = %02X  (changed %u times)", "$%04X = %02X  (mudou %u vezes)"),
                                               (unsigned)(g_audio_lab_base + i),
                                               (unsigned)(g_audio_lab_value[i] < 0 ? 0 : g_audio_lab_value[i]),
                                               g_audio_lab_change_count[i]);
                         }
                     }
                 }
-                if (ImGui::Button("Zerar contagens")) {
+                if (ImGui::Button(TR("Reset counts", "Zerar contagens"))) {
                     g_audio_lab_base_seen = 0; /* forca releitura sem destaque */
                 }
                 ImGui::TreePop();
             }
             bool tile_dump = ppu_native_get_tile_dump();
-            if (ImGui::Checkbox("Despejar tiles (PNG)", &tile_dump)) {
+            if (ImGui::Checkbox(TR("Dump tiles (PNG)", "Despejar tiles (PNG)"), &tile_dump)) {
                 ppu_native_set_tile_dump(tile_dump);
             }
             if (tile_dump || hd_pack_io_dumped_total() > 0) {
-                ImGui::TextDisabled("Vistos: %u  Gravados: %u",
+                ImGui::TextDisabled(TR("Seen: %u  Saved: %u", "Vistos: %u  Gravados: %u"),
                                     ppu_native_tile_dump_seen(),
                                     hd_pack_io_dumped_total());
-                ImGui::TextWrapped("Pasta: %s", hd_pack_io_dump_dir());
-                if (ImGui::Button("Esquecer tiles vistos")) {
+                ImGui::TextWrapped(TR("Folder: %s", "Pasta: %s"), hd_pack_io_dump_dir());
+                if (ImGui::Button(TR("Forget seen tiles", "Esquecer tiles vistos"))) {
                     ppu_native_reset_tile_dump();
                 }
             }
-            /* Passo 3D-3f: diagnóstico do 3D */
-            ImGui::Checkbox("3D: mostrar classes", &g_3d_debug);
-            {   /* passo 3D-2b */
-                ImGui::Checkbox("3D: marcar tiles (fora das fases)", &g_3d_mark);
-                ImGui::SameLine();   /* passo 3D-2c */
-                if (ImGui::Button(g_freeze ? "Descongelar o jogo" : "Congelar o jogo")) g_freeze = !g_freeze;
-                if (g_3d_mark) {
-                    ImGui::TextWrapped("Feche o menu e clique no jogo: esquerdo troca fundo > chao > meio chao > agua > porta/escada; "
-                                       "direito volta a fundo. Vale para o mesmo desenho de tile so nesta tela (g00, m44...), "
-                                       "tambem na janela (ondas, faixas). "
-                                       "Enquanto marca, a vista fica reta e com as classes pintadas.");
-                    marks3d_load();
-                    ImGui::TextDisabled("%u tiles marcados - %s", (unsigned)g_3d_marks.size(), marks3d_path().c_str());
-                    {   /* passo 3D-2j: a tela onde as marcas valem agora */
-                        const uint16_t cx = marks3d_context(g_registered_ctx);
-                        char sfx[8];
-                        ppu_native_hd_context_suffix(cx, sfx);
-                        const char* nm = marks3d_context_name(cx);
-                        ImGui::TextDisabled("Tela atual: %s%s%s%s", sfx[0] ? sfx : "(nenhuma)", nm[0] ? " - " : "", nm, "");
-                    }
-                    if (!g_3d_mark_info.empty()) ImGui::TextDisabled("Ultimo: %s", g_3d_mark_info.c_str());
-                }
-            }
-            if (ImGui::TreeNode("3D: esconder partes (diagnostico)")) {   /* passo 3D-4f */
-                static const struct { const char* name; int bit; } kParts[] = {
-                    {"Longe", 0}, {"Fundo", 1}, {"Agua (parede do fundo)", 5}, {"Porta / moedas / escada", 6},
-                    {"Chao (frente)", 4}, {"Ondas (copias da superficie)", 8}, {"Chao da superficie da agua", 12},
-                    {"Lados dos blocos e da porta", 11}, {"Sprites", 3}, {"HUD", 2}};
-                for (const auto& part : kParts) {
-                    bool hid = (g_3d_hide >> part.bit) & 1;
-                    if (ImGui::Checkbox(part.name, &hid)) g_3d_hide = hid ? (g_3d_hide | (1 << part.bit)) : (g_3d_hide & ~(1 << part.bit));
-                }
-                ImGui::TreePop();
-            }
-            if (g_3d_debug) {
-                ImGui::TextWrapped("cinza fundo, azul agua, ciano faixa das ondas, azul-claro ceu dentro da agua, "
-                                   "marrom chao, amarelo meio chao, laranja porta/escada/moeda, magenta sprite, branco HUD, preto longe");
-            }
             /* Passo 14b-1: centro pela GPU x CPU. */
-            if (ImGui::TreeNode("Comparar GPU (14b)")) {
+            if (ImGui::TreeNode(TR("Compare GPU (14b)", "Comparar GPU (14b)"))) {
                 if (!g_use_gl) {
-                    ImGui::TextWrapped("Precisa do Video OpenGL (Graphics > Video).");
+                    ImGui::TextWrapped(TR("Needs the OpenGL video (Display > Video).", "Precisa do Video OpenGL (Video > Video)."));
                 } else {
                     bool on = g_gpu_compare;
-                    if (ImGui::Checkbox("Montar o centro tambem na GPU e comparar", &on)) {
+                    if (ImGui::Checkbox(TR("Also compose the center on the GPU and compare", "Montar o centro tambem na GPU e comparar"), &on)) {
                         char err[256] = "";
                         if (on && !gpu_ppu_init(err, sizeof(err))) {
                             g_gpu_error = err;
@@ -5286,146 +5859,147 @@ static void render_frame_internal(const uint32_t* framebuffer,
                         ppu_native_gpu_capture(on);
                     }
                     if (!g_gpu_error.empty()) {
-                        ImGui::TextWrapped("Erro: %s", g_gpu_error.c_str());
+                        ImGui::TextWrapped(TR("Error: %s", "Erro: %s"), g_gpu_error.c_str());
                     }
                     const GpuCompareStats& st = g_gpu_stats;
-                    ImGui::Text("Conferidos: %llu  iguais: %llu  com diferenca: %llu",
+                    ImGui::Text(TR("Checked: %llu  equal: %llu  different: %llu", "Conferidos: %llu  iguais: %llu  com diferenca: %llu"),
                                 (unsigned long long)st.compared, (unsigned long long)st.equal,
                                 (unsigned long long)(st.compared - st.equal));
-                    ImGui::Text("Sem escrita no meio: conferidos acima. Com escrita no meio: %llu (abaixo)",
+                    ImGui::Text(TR("No mid-frame writes: checked above. With mid-frame writes: %llu (below)", "Sem escrita no meio: conferidos acima. Com escrita no meio: %llu (abaixo)"),
                                 (unsigned long long)st.skipped_mid);
-                    ImGui::Text("Pulados: registro de escritas cheio %llu, nao CGB %llu",
+                    ImGui::Text(TR("Skipped: write log full %llu, not CGB %llu", "Pulados: registro de escritas cheio %llu, nao CGB %llu"),
                                 (unsigned long long)st.skipped_overflow, (unsigned long long)st.skipped_mode);
                     if (st.skipped_mid > 0) {   /* passo 14b-2a: diagnóstico */
                         const double n = (double)st.skipped_mid;
-                        ImGui::Text("  Conferidos mesmo assim: %llu, iguais: %llu, diferentes: %llu",
+                        ImGui::Text(TR("  Checked anyway: %llu, equal: %llu, different: %llu", "  Conferidos mesmo assim: %llu, iguais: %llu, diferentes: %llu"),
                                     (unsigned long long)st.mid_compared, (unsigned long long)st.mid_equal,
                                     (unsigned long long)(st.mid_compared - st.mid_equal));
-                        ImGui::Text("  Diferentes so com escrita em tiles: %llu, so no mapa: %llu",
+                        ImGui::Text(TR("  Different with tile writes only: %llu, map only: %llu", "  Diferentes so com escrita em tiles: %llu, so no mapa: %llu"),
                                     (unsigned long long)st.mid_bad_tile_frames,
                                     (unsigned long long)st.mid_bad_map_frames);
-                        ImGui::Text("  Por quadro: %.1f escritas (tiles %.1f, mapa %.1f) em %.1f linhas",
+                        ImGui::Text(TR("  Per frame: %.1f writes (tiles %.1f, map %.1f) on %.1f lines", "  Por quadro: %.1f escritas (tiles %.1f, mapa %.1f) em %.1f linhas"),
                                     (double)st.mid_writes / n, (double)st.mid_tile / n,
                                     (double)st.mid_map / n, (double)st.mid_lines / n);
-                        ImGui::Text("  Ultimo: linhas %d a %d", st.last_mid_first, st.last_mid_last);
+                        ImGui::Text(TR("  Last: lines %d to %d", "  Ultimo: linhas %d a %d"), st.last_mid_first, st.last_mid_last);
                         if (st.last_mid_x >= 0) {
-                            ImGui::Text("  Ultima diferenca: %u pontos, primeiro (%d,%d)",
+                            ImGui::Text(TR("  Last difference: %u pixels, first (%d,%d)", "  Ultima diferenca: %u pontos, primeiro (%d,%d)"),
                                         st.last_mid_diff, st.last_mid_x, st.last_mid_y);
                         }
                     }
                     if (st.compared > 0) {
-                        ImGui::Text("GPU (montar + ler de volta): %.2f ms por quadro",
+                        ImGui::Text(TR("GPU (compose + read back): %.2f ms per frame", "GPU (montar + ler de volta): %.2f ms por quadro"),
                                     st.ms_total / (double)st.compared);
                     }
                     if (st.first_x >= 0) {
-                        ImGui::TextWrapped("Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                        ImGui::TextWrapped(TR("Last difference: %u pixels, first (%d,%d) CPU %08X GPU %08X", "Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X"),
                                            st.last_diff, st.first_x, st.first_y, st.first_cpu, st.first_gpu);
                     }
                     /* Passo 14b-3: HD */
                     ImGui::Separator();
                     if (st.hd_compared + st.hd_mid_compared == 0) {
-                        ImGui::TextWrapped("HD: so confere com Internal Resolution acima de 1x.");
+                        ImGui::TextWrapped(TR("HD: only checked with internal resolution above 1x.", "HD: so confere com resolucao interna acima de 1x."));
                     } else {
-                        ImGui::Text("HD %dx: conferidos %llu  iguais: %llu  com diferenca: %llu",
+                        ImGui::Text(TR("HD %dx: checked %llu  equal: %llu  different: %llu", "HD %dx: conferidos %llu  iguais: %llu  com diferenca: %llu"),
                                     st.hd_scale, (unsigned long long)st.hd_compared,
                                     (unsigned long long)st.hd_equal,
                                     (unsigned long long)(st.hd_compared - st.hd_equal));
-                        ImGui::Text("  Com tiles HD na tela: %llu", (unsigned long long)st.hd_with_tiles);
-                        ImGui::Text("  Tile escrito no meio: %llu, iguais: %llu, diferentes: %llu",
+                        ImGui::Text(TR("  With HD tiles on screen: %llu", "  Com tiles HD na tela: %llu"), (unsigned long long)st.hd_with_tiles);
+                        ImGui::Text(TR("  Tile written mid-frame: %llu, equal: %llu, different: %llu", "  Tile escrito no meio: %llu, iguais: %llu, diferentes: %llu"),
                                     (unsigned long long)st.hd_mid_compared,
                                     (unsigned long long)st.hd_mid_equal,
                                     (unsigned long long)(st.hd_mid_compared - st.hd_mid_equal));
-                        ImGui::Text("  GPU HD (montar + ler de volta): %.2f ms por quadro",
+                        ImGui::Text(TR("  GPU HD (compose + read back): %.2f ms per frame", "  GPU HD (montar + ler de volta): %.2f ms por quadro"),
                                     st.hd_ms_total / (double)(st.hd_compared + st.hd_mid_compared));
                         if (st.hd_x >= 0) {
-                            ImGui::TextWrapped("  Ultima diferenca HD: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                            ImGui::TextWrapped(TR("  Last HD difference: %u pixels, first (%d,%d) CPU %08X GPU %08X", "  Ultima diferenca HD: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X"),
                                                st.hd_last_diff, st.hd_x, st.hd_y, st.hd_cpu, st.hd_gpu);
                         }
                     }
                     /* Passo 14b-4: laterais */
                     if (st.m_compared == 0) {
-                        ImGui::TextWrapped("Laterais HD: so conferem com widescreen, Internal Resolution "
-                                           "acima de 1x e tiles HD ligados.");
+                        ImGui::TextWrapped("%s", TR("HD sides: only checked with widescreen, internal resolution above 1x and HD tiles on.",
+                                                      "Laterais HD: so conferem com widescreen, resolucao interna acima de 1x e tiles HD ligados."));
                     } else {
-                        ImGui::Text("Laterais HD: conferidas %llu  iguais: %llu  com diferenca: %llu",
+                        ImGui::Text(TR("HD sides: checked %llu  equal: %llu  different: %llu", "Laterais HD: conferidas %llu  iguais: %llu  com diferenca: %llu"),
                                     (unsigned long long)st.m_compared, (unsigned long long)st.m_equal,
                                     (unsigned long long)(st.m_compared - st.m_equal));
-                        ImGui::Text("  GPU laterais (montar + ler de volta): %.2f ms por quadro",
+                        ImGui::Text(TR("  GPU sides (compose + read back): %.2f ms per frame", "  GPU laterais (montar + ler de volta): %.2f ms por quadro"),
                                     st.m_ms_total / (double)st.m_compared);
                         if (st.m_fade_conflict) {
-                            ImGui::Text("  Escurecimento com dois valores na coluna: %llu quadros",
+                            ImGui::Text(TR("  Fade with two values in the column: %llu frames", "  Escurecimento com dois valores na coluna: %llu quadros"),
                                         (unsigned long long)st.m_fade_conflict);
                         }
                         if (st.m_x >= 0) {
-                            ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                            ImGui::TextWrapped(TR("  Last difference: %u pixels, first (%d,%d) CPU %08X GPU %08X", "  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X"),
                                                st.m_last_diff, st.m_x, st.m_y, st.m_cpu, st.m_gpu);
                         }
                     }
                     /* Passo 14c-1: tela inteira */
                     if (st.s_compared + st.s_skipped == 0) {
-                        ImGui::TextWrapped("Tela inteira: confere em quadro novo do jogo.");
+                        ImGui::TextWrapped(TR("Whole screen: checked on a new game frame.", "Tela inteira: confere em quadro novo do jogo."));
                     } else {
-                        ImGui::Text("Tela inteira %dx%d: conferidas %llu  iguais: %llu  com diferenca: %llu",
+                        ImGui::Text(TR("Whole screen %dx%d: checked %llu  equal: %llu  different: %llu", "Tela inteira %dx%d: conferidas %llu  iguais: %llu  com diferenca: %llu"),
                                     st.s_w, st.s_h, (unsigned long long)st.s_compared,
                                     (unsigned long long)st.s_equal,
                                     (unsigned long long)(st.s_compared - st.s_equal));
-                        ImGui::Text("  Puladas (GPU sem o HD do quadro): %llu", (unsigned long long)st.s_skipped);
+                        ImGui::Text(TR("  Skipped (GPU without the frame HD): %llu", "  Puladas (GPU sem o HD do quadro): %llu"), (unsigned long long)st.s_skipped);
                         if (st.s_compared > 0) {
-                            ImGui::Text("  GPU tela (montar + ler de volta): %.2f ms por quadro",
+                            ImGui::Text(TR("  GPU screen (compose + read back): %.2f ms per frame", "  GPU tela (montar + ler de volta): %.2f ms por quadro"),
                                         st.s_ms_total / (double)st.s_compared);
                         }
                         if (st.s_x >= 0) {
-                            ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                            ImGui::TextWrapped(TR("  Last difference: %u pixels, first (%d,%d) CPU %08X GPU %08X", "  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X"),
                                                st.s_last_diff, st.s_x, st.s_y, st.s_cpu, st.s_gpu);
                         }
                     }
                     if (st.f_compared > 0) {   /* passo 14e-1 */
-                        ImGui::Text("Filtro (%s): conferidas %llu  iguais: %llu  com diferenca: %llu",
+                        ImGui::Text(TR("Filter (%s): checked %llu  equal: %llu  different: %llu", "Filtro (%s): conferidas %llu  iguais: %llu  com diferenca: %llu"),
                                     post_processing_get_names()[st.f_mode], (unsigned long long)st.f_compared,
                                     (unsigned long long)st.f_equal,
                                     (unsigned long long)(st.f_compared - st.f_equal));
                         if (st.f_x >= 0) {
-                            ImGui::TextWrapped("  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X",
+                            ImGui::TextWrapped(TR("  Last difference: %u pixels, first (%d,%d) CPU %08X GPU %08X", "  Ultima diferenca: %u pontos, primeiro (%d,%d) CPU %08X GPU %08X"),
                                                st.f_last_diff, st.f_x, st.f_y, st.f_cpu, st.f_gpu);
                         }
                     }
                     if (st.ip_compared > 0) {   /* passo 14d-1 */
-                        ImGui::Text("Camadas 120 fps: conferidas %llu  iguais: %llu  com diferenca: %llu",
+                        ImGui::Text(TR("120 fps layers: checked %llu  equal: %llu  different: %llu", "Camadas 120 fps: conferidas %llu  iguais: %llu  com diferenca: %llu"),
                                     (unsigned long long)st.ip_compared, (unsigned long long)st.ip_equal,
                                     (unsigned long long)(st.ip_compared - st.ip_equal));
                         if (st.ip_x >= 0) {
-                            ImGui::TextWrapped("  Ultima diferenca: cenario %u, sprites %u pontos, primeiro (%d,%d)",
+                            ImGui::TextWrapped(TR("  Last difference: scenery %u, sprites %u pixels, first (%d,%d)", "  Ultima diferenca: cenario %u, sprites %u pontos, primeiro (%d,%d)"),
                                                st.ip_last_bg, st.ip_last_obj, st.ip_x, st.ip_y);
                         }
                     } else if (g_fps_mode == 1) {
-                        ImGui::TextWrapped("Camadas 120 fps: aparecem quando o quadro do meio estiver ligado.");
+                        ImGui::TextWrapped(TR("120 fps layers: show up when the in-between frame is on.", "Camadas 120 fps: aparecem quando o quadro do meio estiver ligado."));
                     }
                     ImGui::TextWrapped("Atlas: %s", gpu_ppu_atlas_info());
-                    if (ImGui::Button("Zerar contagem")) {
+                    if (ImGui::Button(TR("Reset count", "Zerar contagem"))) {
                         g_gpu_stats = GpuCompareStats();
                         g_gpu_error.clear();
                     }
                 }
                 ImGui::TreePop();
             }
-            if (ImGui::Button("Capturar cena (F9)") && !hd_pack_io_sprite_rec_active()) {
+            if (ImGui::Button(TR("Capture scene (F9)", "Capturar cena (F9)")) && !hd_pack_io_sprite_rec_active()) {
                 ppu_native_request_scene_capture();
             }
             /* Passo 12a: gabarito do renderizador. */
-            if (ImGui::TreeNode("Gabarito do renderizador")) {
-                ImGui::TextWrapped("Grava o estado do jogo e o quadro que o renderizador desenha "
-                                   "a partir dele. Depois de mudar o desenho, Conferir repete "
-                                   "cada um e compara ponto a ponto.");
-                if (ImGui::Button("Gravar gabarito (F4)")) {
+            if (ImGui::TreeNode(TR("Renderer reference frames", "Gabarito do renderizador"))) {
+                ImGui::TextWrapped("%s", TR("Records the game state and the frame the renderer draws from it. After changing the "
+                                              "renderer, Check replays each one and compares pixel by pixel.",
+                                              "Grava o estado do jogo e o quadro que o renderizador desenha a partir dele. Depois de "
+                                              "mudar o desenho, Conferir repete cada um e compara ponto a ponto."));
+                if (ImGui::Button(TR("Record reference (F4)", "Gravar gabarito (F4)"))) {
                     gabarito_request_capture();
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Conferir gabaritos")) {
+                if (ImGui::Button(TR("Check references", "Conferir gabaritos"))) {
                     gabarito_request_check();
                 }
                 if (gabarito_busy()) {
                     ImGui::SameLine();
-                    ImGui::TextDisabled("rodando...");
+                    ImGui::TextDisabled(TR("running...", "rodando..."));
                 }
                 ImGui::TextWrapped("%s", gabarito_status());
                 for (int i = 0; i < gabarito_result_count(); ++i) {
@@ -5433,12 +6007,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
                                                                : ImVec4(1.0f, 0.45f, 0.40f, 1.0f);
                     ImGui::TextColored(color, "%s", gabarito_result_text(i));
                 }
-                ImGui::TextWrapped("Pasta: %s", gabarito_dir());
+                ImGui::TextWrapped(TR("Folder: %s", "Pasta: %s"), gabarito_dir());
                 static bool confirm_rewrite = false;
-                ImGui::Checkbox("Liberar regravar", &confirm_rewrite);
+                ImGui::Checkbox(TR("Allow re-recording", "Liberar regravar"), &confirm_rewrite);
                 if (confirm_rewrite) {
                     ImGui::SameLine();
-                    if (ImGui::Button("Regravar todos com o resultado atual")) {
+                    if (ImGui::Button(TR("Re-record all with the current result", "Regravar todos com o resultado atual"))) {
                         gabarito_request_rewrite();
                         confirm_rewrite = false;
                     }
@@ -5446,591 +6020,78 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 ImGui::TreePop();
             }
             /* Passo 7a: gravador de poses de sprites. */
-            if (ImGui::TreeNode("Gravar poses de sprites")) {
+            if (ImGui::TreeNode(TR("Record sprite poses", "Gravar poses de sprites"))) {
                 if (!hd_pack_io_sprite_rec_active()) {
-                    if (ImGui::Button("Comecar a gravar")) {
+                    if (ImGui::Button(TR("Start recording", "Comecar a gravar"))) {
                         hd_pack_io_sprite_rec_start();
                     }
                 } else {
-                    if (ImGui::Button("Parar e salvar")) {
+                    if (ImGui::Button(TR("Stop and save", "Parar e salvar"))) {
                         hd_pack_io_sprite_rec_stop();
                     }
                     ImGui::SameLine();
-                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "gravando");
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), TR("recording", "gravando"));
                 }
-                ImGui::Text("Poses: %u   quadros: %u", hd_pack_io_sprite_rec_pose_count(),
+                ImGui::Text(TR("Poses: %u   frames: %u", "Poses: %u   quadros: %u"), hd_pack_io_sprite_rec_pose_count(),
                             hd_pack_io_sprite_rec_frames());
-                ImGui::Checkbox("So dentro do retangulo", &g_rec_rect_enabled);
+                ImGui::Checkbox(TR("Only inside the rectangle", "So dentro do retangulo"), &g_rec_rect_enabled);
                 if (g_rec_rect_enabled) {
                     ImGui::SetNextItemWidth(220.0f);
                     ImGui::SliderInt2("X / Y", g_rec_rect, 0, 159);
                     ImGui::SetNextItemWidth(220.0f);
-                    ImGui::SliderInt2("Largura / Altura", g_rec_rect + 2, 8, 160);
+                    ImGui::SliderInt2(TR("Width / Height", "Largura / Altura"), g_rec_rect + 2, 8, 160);
                     if (g_rec_rect[1] > 143) g_rec_rect[1] = 143;
                     if (g_rec_rect[3] > 144) g_rec_rect[3] = 144;
-                    ImGui::TextDisabled("Entram as poses com o centro dentro do retangulo vermelho.");
+                    ImGui::TextDisabled(TR("Poses with their center inside the red rectangle are recorded.", "Entram as poses com o centro dentro do retangulo vermelho."));
                 } else {
-                    ImGui::TextDisabled("Entram todos os sprites da tela (inclusive laterais).");
+                    ImGui::TextDisabled(TR("All sprites on screen are recorded (sides included).", "Entram todos os sprites da tela (inclusive laterais)."));
                 }
                 if (hd_pack_io_sprite_rec_last()[0]) {
-                    ImGui::TextWrapped("Ultima folha: %s_obj_4x.png", hd_pack_io_sprite_rec_last());
+                    ImGui::TextWrapped(TR("Last sheet: %s_obj_4x.png", "Ultima folha: %s_obj_4x.png"), hd_pack_io_sprite_rec_last());
                 }
                 ImGui::TreePop();
             }
             if (ppu_native_scene_capture_pending()) {
                 ImGui::SameLine();
-                ImGui::TextDisabled("capturando...");
+                ImGui::TextDisabled(TR("capturing...", "capturando..."));
             }
             if (hd_pack_io_last_scene()[0]) {
-                ImGui::TextWrapped("Ultima cena: %s", hd_pack_io_last_scene());
+                ImGui::TextWrapped(TR("Last scene: %s", "Ultima cena: %s"), hd_pack_io_last_scene());
             } else {
-                ImGui::TextWrapped("Cenas: %s", hd_pack_io_scene_dir());
+                ImGui::TextWrapped(TR("Scenes: %s", "Cenas: %s"), hd_pack_io_scene_dir());
             }
-        }
-
-        if (ImGui::CollapsingHeader("Mods")) {
-            bool hd_tiles = ppu_native_hd_get_tiles_enabled();
-            if (ImGui::Checkbox("Tiles HD", &hd_tiles)) {
-                ppu_native_hd_set_tiles_enabled(hd_tiles);
-                g_renderer_reset_pending = true;
-                save_runtime_preferences();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Recarregar")) {
-                hd_pack_io_load_pack();
-                g_renderer_reset_pending = true;
-            }
-            ImGui::TextDisabled("%s", hd_pack_io_pack_status());
-            {
-                /* Passo 11a: contexto atual, que vira o sufixo _fXX/_mXX dos tiles. */
-                char hd_ctx[8];
-                ppu_native_hd_context_suffix(ppu_native_hd_context(), hd_ctx);
-                if (hd_ctx[0]) {
-                    ImGui::TextDisabled("Contexto agora: %s (sufixo _%s)",
-                                        hd_ctx[0] == 'f' ? "fase" : hd_ctx[0] == 'm' ? "mapa" : "tela",
-                                        hd_ctx);
-                } else {
-                    ImGui::TextDisabled("Contexto agora: nenhum (so _pN e genericos)");
+            if (has_interpreter_activity(g_registered_ctx)) {
+                const GBInterpreterHotspot* hotspot = &g_registered_ctx->interpreter_hotspots[0];
+                ImGui::Separator();
+                ImGui::TextDisabled(TR("Interpreter fallback", "Interpretador (fallback)"));
+                ImGui::Text("Frame Fallbacks: %u", g_registered_ctx->frame_dispatch_fallbacks);
+                ImGui::Text("Interp Entries: %llu",
+                            (unsigned long long)g_registered_ctx->total_interpreter_entries);
+                ImGui::Text("Total Fallbacks: %llu",
+                            (unsigned long long)g_registered_ctx->total_dispatch_fallbacks);
+                ImGui::Text("Interp Instr: frame %llu total %llu",
+                            (unsigned long long)g_registered_ctx->frame_interpreter_instructions,
+                            (unsigned long long)g_registered_ctx->total_interpreter_instructions);
+                ImGui::Text("Interp Cycles: frame %llu total %llu",
+                            (unsigned long long)g_registered_ctx->frame_interpreter_cycles,
+                            (unsigned long long)g_registered_ctx->total_interpreter_cycles);
+                if (hotspot->valid && hotspot->entries > 0) {
+                    ImGui::Text("Top Hotspot: %03X:%04X", hotspot->bank, hotspot->addr);
+                    ImGui::Text("Hits %llu Instr %llu Cycles %llu",
+                                (unsigned long long)hotspot->entries,
+                                (unsigned long long)hotspot->instructions,
+                                (unsigned long long)hotspot->cycles);
                 }
-                if (ppu_native_hd_variant_count() > 0) {
-                    ImGui::TextDisabled("Tiles por fase/paleta: %u",
-                                        ppu_native_hd_variant_count());
+                if (g_registered_ctx->has_unimplemented_interpreter_opcode) {
+                    ImGui::Text("Coverage Gap: %02X at %03X:%04X",
+                                g_registered_ctx->last_unimplemented_opcode,
+                                g_registered_ctx->last_unimplemented_bank,
+                                g_registered_ctx->last_unimplemented_addr);
                 }
             }
-            {   /* Passo 6c: trilhas .ogg */
-                bool music_on = music_replace_get_enabled();
-                if (ImGui::Checkbox("Trilhas .ogg", &music_on)) {
-                    music_replace_set_enabled(music_on);
-                    save_runtime_preferences();
-                }
-                ImGui::SameLine();
-                float music_vol = music_replace_get_volume() * 100.0f;
-                ImGui::SetNextItemWidth(140.0f);
-                if (ImGui::SliderFloat("Volume##trilhas", &music_vol, 0.0f, 200.0f, "%.0f%%")) {
-                    music_replace_set_volume(music_vol / 100.0f);
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    save_runtime_preferences();
-                }
-                if (music_replace_track_count() > 0) {
-                    /* Passo 6e: volume do GB aqui tambem, para equilibrar. */
-                    int gb_vol = (int)g_audio_gb_volume_percent.load(std::memory_order_relaxed);
-                    ImGui::SetNextItemWidth(140.0f);
-                    if (ImGui::SliderInt("Volume do GB##mods", &gb_vol, 0, 200, "%d%%")) {
-                        g_audio_gb_volume_percent.store((uint32_t)gb_vol, std::memory_order_relaxed);
-                    }
-                    if (ImGui::IsItemDeactivatedAfterEdit()) {
-                        save_runtime_preferences();
-                    }
-                    ImGui::TextDisabled("%d trilha(s): %s", music_replace_track_count(),
-                                        music_replace_track_list());
-                } else {
-                    ImGui::TextDisabled("Nenhuma trilha (mods/music/XX.ogg ou music/ dentro de um .o2r)");
-                }
-            }
-            if (hd_tiles && ppu_native_hd_tile_count() > 0 && g_internal_res_scale < 2) {
-                ImGui::TextDisabled("Escolha Internal Resolution 2x ou mais para ver os tiles HD.");
-            }
-            const int mod_count = hd_pack_io_mod_count();
-            if (mod_count == 0) {
-                ImGui::TextWrapped("Coloque arquivos .o2r em %s e clique em Recarregar.",
-                                   hd_pack_io_mods_dir());
-            } else {
-                ImGui::TextDisabled("Quando o mesmo tile esta em mais de um mod, vale o de baixo.");
-                for (int i = 0; i < mod_count; ++i) {
-                    ImGui::PushID(i);
-                    bool mod_on = hd_pack_io_mod_enabled(i);
-                    std::string mod_label = hd_pack_io_mod_name(i);
-                    if (hd_pack_io_mod_is_folder(i)) {
-                        mod_label += " (pasta)";
-                    }
-                    if (ImGui::Checkbox(mod_label.c_str(), &mod_on)) {
-                        hd_pack_io_set_mod_enabled(i, mod_on);
-                        g_renderer_reset_pending = true;
-                        save_runtime_preferences();
-                    }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("%s", hd_pack_io_mod_info(i));
-                    ImGui::PopID();
-                }
-                ImGui::TextWrapped("Pasta: %s", hd_pack_io_mods_dir());
-            }
-        }
 
-        ImGui::Text("Performance: %.1f FPS", ImGui::GetIO().Framerate);
-
-        int window_w = 0;
-        int window_h = 0;
-        SDL_GetWindowSize(g_window, &window_w, &window_h);
-
-        ImGui::Separator();
-        ImGui::TextDisabled("Graphics & Supersampling");
-        ImGui::Text("Window: %d x %d", window_w, window_h);
-        ImGui::Text("Viewport: %d x %d (%.2fx)",
-                    g_game_viewport.w,
-                    g_game_viewport.h,
-                    (double)g_game_viewport.w / (double)GB_SCREEN_WIDTH);
-
-        int current_internal_scale = g_internal_res_scale - 1;
-        if (ImGui::Combo("Internal Resolution (Supersampling)", &current_internal_scale, g_internal_res_names, IM_ARRAYSIZE(g_internal_res_names))) {
-            g_internal_res_scale = current_internal_scale + 1;
-            g_renderer_reset_pending = true;
-            save_runtime_preferences();
         }
-
-        if (effective_internal_scale() == 1 && g_internal_res_scale > 1) {
-            ImGui::TextDisabled("Sem efeito com filtro Nearest e sem pos-processamento: a GPU ja amplia.");
-        }
-
-
-        bool fullscreen = g_fullscreen;
-        if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
-            set_fullscreen_enabled(fullscreen);
-        }
-
-        /* Passo 14p: "Scaling Mode" saiu do menu. O viewport sempre cabe na
-         * janela mantendo a proporção (update_game_viewport); a escolha não
-         * era usada. */
-
-        bool widescreen = g_widescreen_mode;
-        if (ImGui::Checkbox("Widescreen (16:9)", &widescreen)) {
-            GBPPU* ppu = active_ppu();
-            if (widescreen && !ppu) {
-                widescreen = false;
-            }
-            g_widescreen_mode = widescreen;
-            if (ppu) {
-                ppu_set_widescreen_enabled(ppu, g_widescreen_mode);
-            }
-            g_renderer_reset_pending = true;
-            update_game_viewport();
-            save_runtime_preferences();
-        }
-        if (g_widescreen_mode) {
-            ImGui::TextDisabled("Extends the background at the sides; may reveal unused tiles.");
-
-            /* Passo 8a */
-            int fill_mode = g_ws_fill_mode;
-            static const char* fill_names[] = {"Preto", "Borda desfocada", "Centro desfocado"};
-            if (ImGui::Combo("Laterais sem cenario", &fill_mode, fill_names, IM_ARRAYSIZE(fill_names))) {
-                g_ws_fill_mode = fill_mode;
-                g_ws_amb_valid = false;
-                save_runtime_preferences();
-            }
-            if (g_ws_fill_mode != WS_FILL_BLACK) {
-                int dim = g_ws_fill_dim_percent;
-                if (ImGui::SliderInt("Escurecer laterais (%)", &dim, 0, 90)) {
-                    g_ws_fill_dim_percent = dim;
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    save_runtime_preferences();
-                }
-            }
-            ImGui::TextDisabled("Titulo, COURSE, chefe, transicoes. Paredes das salas ficam pretas.");
-
-            bool fade_enabled = g_widescreen_fade_enabled;
-            if (ImGui::Checkbox("Widescreen Edge Fade", &fade_enabled)) {
-                g_widescreen_fade_enabled = fade_enabled;
-                GBPPU* ppu = active_ppu();
-                if (ppu) {
-                    ppu_set_widescreen_fade_enabled(ppu, g_widescreen_fade_enabled);
-                }
-                save_runtime_preferences();
-            }
-
-            if (g_widescreen_fade_enabled) {
-                int fade_percent = g_widescreen_fade_percent;
-                if (ImGui::SliderInt("Edge Fade Amount (%)", &fade_percent, 0, 100)) {
-                    g_widescreen_fade_percent = fade_percent;
-                    GBPPU* ppu = active_ppu();
-                    if (ppu) {
-                        ppu_set_widescreen_fade_amount(ppu, (float)g_widescreen_fade_percent / 100.0f);
-                    }
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    save_runtime_preferences();
-                }
-            }
-        }
-
-
-        int filter_mode = (int)g_render_filter_mode;
-        if (ImGui::Combo("Scale Filter",
-                         &filter_mode,
-                         g_render_filter_names,
-                         IM_ARRAYSIZE(g_render_filter_names))) {
-            g_render_filter_mode = (GBRenderFilterMode)filter_mode;
-            update_render_filter();
-            save_runtime_preferences();
-        }
-        if (g3d_active() && g_render_filter_mode == GB_RENDER_FILTER_LINEAR) {   /* 3D-6a */
-            ImGui::TextDisabled("No 3D o Scale Filter fica sempre em Nearest.");
-        }
-
-        int current_post_filter = (int)g_post_filter_mode;
-        if (ImGui::Combo("Post-Processing Filter", &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
-            g_post_filter_mode = (GBPostFilterMode)current_post_filter;
-            save_runtime_preferences();
-        }
-
-        if (!g_fullscreen) {
-            int scale_idx = g_scale - 1;
-            if (ImGui::Combo("Window Size",
-                             &scale_idx,
-                             g_scale_names,
-                             IM_ARRAYSIZE(g_scale_names))) {
-                g_scale = scale_idx + 1;
-                apply_window_scale_preset();
-            }
-        } else {
-            ImGui::TextDisabled("Window Size is disabled while fullscreen is active.");
-        }
-
-        ImGui::Separator();
-        ImGui::TextDisabled("Runtime");
-        {   /* passo 10a */
-            int fps_mode = g_fps_mode;
-            if (ImGui::Combo("Quadros por segundo", &fps_mode, g_fps_mode_names,
-                             IM_ARRAYSIZE(g_fps_mode_names))) {
-                g_fps_mode = fps_mode;
-                ip_invalidate();
-                save_runtime_preferences();
-            }
-            if (g_fps_mode == 1) {
-                ImGui::TextDisabled("O jogo continua a 60: fisica e musica na mesma velocidade.");
-                ImGui::TextDisabled("Quadro do meio = meio do caminho entre o anterior e o atual (atraso ~8 ms).");
-                const int hz = ip_display_refresh_hz();
-                if (!ip_refresh_ok()) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                                       "Monitor a %d Hz: precisa de 100 Hz ou mais. Quadro do meio desligado.", hz);
-                } else if (effective_speed_percent() != 100) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                                       "Desligado enquanto a velocidade nao for 100%%.");
-                } else if (hz > 0) {
-                    ImGui::TextDisabled("Monitor: %d Hz. Quadros do meio: %u por segundo.", hz, ip_mid_per_second());
-                    char ip_why[256];
-                    ip_skip_text(ip_why, sizeof(ip_why));
-                    ImGui::TextDisabled("%s", ip_why);   /* passo 10b */
-                } else {
-                    ImGui::TextDisabled("Monitor: frequencia desconhecida. Quadros do meio: %u por segundo.", ip_mid_per_second());
-                }
-            }
-        }
-        if (ImGui::Checkbox("V-Sync", &g_vsync)) {
-            vid_set_vsync(g_vsync);   /* passo 14a */
-        }
-        {   /* Passo 14a: caminho de vídeo (vale ao abrir o jogo de novo). */
-            static const char* kVideoNames[] = {"SDL (padrao)", "OpenGL"};
-            int video = g_video_backend_pref;
-            if (ImGui::Combo("Video", &video, kVideoNames, IM_ARRAYSIZE(kVideoNames))) {
-                g_video_backend_pref = video;
-                save_runtime_preferences();
-            }
-            if (g_video_backend_pref != (g_use_gl ? 1 : 0)) {
-                ImGui::TextDisabled("Feche e abra o jogo para trocar.");
-            }
-            ImGui::TextDisabled("Em uso: %s", g_video_status.c_str());
-        }
-        {   /* Passo 14c-2: quem monta a tela */
-            static const char* kScreenNames[] = {"CPU", "GPU (OpenGL, padrao)"};
-            int scr = g_gpu_screen_pref;
-            if (ImGui::Combo("Montagem da tela", &scr, kScreenNames, IM_ARRAYSIZE(kScreenNames))) {
-                g_gpu_screen_pref = scr;
-                g_gpu_screen_error.clear();   /* tenta de novo */
-                save_runtime_preferences();
-            }
-            if (g_gpu_screen_pref == 1) {
-                const char* why = gpu_screen_blocker();
-                if (why) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Montando na CPU: %s.", why);
-                } else {
-                    ImGui::TextDisabled("Em uso: %s", g_gpu_screen_shown ? "GPU" : "CPU (esperando a GPU)");
-                }
-            }
-        }
-        {   /* Passo 3D-1: modo 3D em camadas */
-            static const char* k3DNames[] = {"Desligado", "Camadas"};
-            int m3 = g_3d_mode;
-            if (ImGui::Combo("Modo 3D", &m3, k3DNames, IM_ARRAYSIZE(k3DNames))) {
-                g_3d_mode = m3;
-                save_runtime_preferences();
-            }
-            if (g_3d_mode == 1) {
-                if (ImGui::SliderInt("Inclinacao 3D (graus)", &g_3d_tilt, -35, 35)) save_runtime_preferences();
-                if (ImGui::SliderInt("Profundidade 3D (%)", &g_3d_depth, 0, 200)) save_runtime_preferences();
-                if (ImGui::SliderInt("Giro 3D (graus)", &g_3d_yaw, -35, 35)) save_runtime_preferences();
-                if (ImGui::SliderInt("Espessura dos sprites (%)", &g_3d_spr, 5, 100)) save_runtime_preferences();   /* 3D-5e */
-                if (ImGui::SliderInt("Plano da frente (% de bloco, 0 = sem)", &g_3d_front, 0, 300)) save_runtime_preferences();   /* 3D-6a */
-                {   /* passo 3D-5a */
-                    bool st = g_3d_stick != 0;
-                    if (ImGui::Checkbox("Camera 3D no analogico direito", &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }
-                    bool fw = g_3d_follow != 0;   /* passo 3D-4q */
-                    if (ImGui::Checkbox("Camera 3D segue o Wario", &fw)) { g_3d_follow = fw ? 1 : 0; save_runtime_preferences(); }
-                    if (g_3d_follow) ImGui::TextDisabled("Nas fases o giro vira para o lado em que o Wario anda.");
-                    if (g_3d_stick) ImGui::TextDisabled("Analogico direito: inclina e gira; soltando, volta ao padrao.");
-                }
-                const char* why = g3d_blocker();
-                if (why) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "3D parado: %s.", why);
-                } else {
-                    ImGui::TextDisabled("Em uso: %s", g_3d_shown ? "3D (camadas)" : "2D (esperando o quadro)");
-                    if (g_post_filter_mode != GB_POST_FILTER_NONE || g_fps_mode == 1) {
-                        ImGui::TextDisabled("No 3D o filtro de pos-processamento e o quadro do meio (120 fps) ficam desligados.");
-                    }
-                }
-            }
-        }
-
-        ImGui::Checkbox("Show Overlay", &g_show_overlay);
-        ImGui::Checkbox("Smooth Slow Frames", &g_smooth_lcd_transitions);
-        if (ImGui::SliderInt("Speed %", &g_speed_percent, 10, 500)) {
-            reset_audio_output_buffer(true);
-        }
-        if (ImGui::Button("Reset Speed")) {
-            g_speed_percent = 100;
-            g_max_speed_mode = false;
-            reset_audio_output_buffer(true);
-        }
-        ImGui::Text("Effective Speed: %d%%", effective_speed_percent());
-        if (g_fast_forward_active) {
-            ImGui::TextDisabled("Fast forward shortcut is active.");
-        } else if (g_max_speed_mode) {
-            ImGui::TextDisabled("Max speed shortcut is active.");
-        }
-
-        ImGui::Separator();
-        ImGui::TextDisabled("Audio");
-        if (ImGui::Checkbox("Enable Audio Output", &g_audio_output_enabled)) {
-            reset_audio_output_buffer(true);
-            save_runtime_preferences();
-        }
-        bool audio_muted = g_audio_muted.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Mute", &audio_muted)) {
-            g_audio_muted.store(audio_muted, std::memory_order_relaxed);
-            save_runtime_preferences();
-        }
-        int audio_volume_percent =
-            (int)g_audio_volume_percent.load(std::memory_order_relaxed);
-        if (ImGui::SliderInt("Master Volume (%)", &audio_volume_percent, 0, 200)) {
-            g_audio_volume_percent.store((uint32_t)audio_volume_percent,
-                                         std::memory_order_relaxed);
-            save_runtime_preferences();
-        }
-        {   /* Passo 6e */
-            int gb_volume_percent = (int)g_audio_gb_volume_percent.load(std::memory_order_relaxed);
-            if (ImGui::SliderInt("Game Boy Volume (%)", &gb_volume_percent, 0, 200)) {
-                g_audio_gb_volume_percent.store((uint32_t)gb_volume_percent, std::memory_order_relaxed);
-            }
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                save_runtime_preferences();
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("So o som do Game Boy (efeitos e musica do GB).\n"
-                                  "As trilhas .ogg tem o volume delas no menu Mods.");
-            }
-        }
-        if (ImGui::BeginCombo("Output Device", current_audio_output_device_label())) {
-            bool selected_default = g_audio_target_device_name.empty();
-            if (ImGui::Selectable("System Default", selected_default)) {
-                g_audio_target_device_name.clear();
-                save_runtime_preferences();
-                reopen_audio_output_device(true);
-            }
-            if (selected_default) {
-                ImGui::SetItemDefaultFocus();
-            }
-
-            for (size_t i = 0; i < g_audio_output_devices.size(); i++) {
-                const bool selected = g_audio_output_devices[i] == g_audio_target_device_name;
-                if (ImGui::Selectable(g_audio_output_devices[i].c_str(), selected)) {
-                    g_audio_target_device_name = g_audio_output_devices[i];
-                    save_runtime_preferences();
-                    reopen_audio_output_device(true);
-                }
-                if (selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            ImGui::EndCombo();
-        }
-        int audio_latency_ms = (int)g_audio_latency_ms;
-        if (ImGui::SliderInt("Target Audio Latency (ms)", &audio_latency_ms, 20, 250)) {
-            g_audio_latency_ms = (uint32_t)audio_latency_ms;
-            recompute_audio_targets();
-            reset_audio_output_buffer(true);
-            save_runtime_preferences();
-        }
-        if (ImGui::Button("Refresh Devices")) {
-            refresh_audio_output_devices();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Reconnect Audio")) {
-            reopen_audio_output_device(true);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Clear Audio Buffer")) {
-            reset_audio_output_buffer(true);
-        }
-        ImGui::Text("Requested Output: %s", current_audio_output_device_label());
-        ImGui::Text("Active Output: %s", g_audio_active_device_name.empty() ? "Unavailable" : g_audio_active_device_name.c_str());
-        if (!current_audio_output_device_available()) {
-            ImGui::TextDisabled("Requested device is unavailable. Using the default output when possible.");
-        }
-        ImGui::Text("Ring Buffer: %u / %u samples", current_audio_ring_fill_samples(), current_audio_ring_capacity());
-        ImGui::Text("Device: %u Hz, device buffer %u, start %u, low-water %u",
-                    g_audio_device_sample_rate,
-                    g_audio_device_buffer_samples,
-                    g_audio_start_threshold,
-                    g_audio_low_watermark);
-        if (effective_speed_percent() != 100) {
-            ImGui::TextDisabled("Audio output pauses while Speed %% is not 100.");
-        }
-        if (ImGui::Button("Reset Audio")) {
-            reset_runtime_audio_defaults();
-        }
-
-        ImGui::Separator();
-        ImGui::TextDisabled("Savestates");
-        int savestate_slot = g_savestate_slot + 1;
-        if (ImGui::SliderInt("Active Slot", &savestate_slot, 1, GB_SAVESTATE_SLOT_COUNT)) {
-            g_savestate_slot = savestate_slot - 1;
-            save_runtime_preferences();
-        }
-        if (ImGui::Button("Save State (F5)")) {
-            save_savestate_slot(g_registered_ctx, g_savestate_slot);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Load State (F8)")) {
-            load_savestate_slot(g_registered_ctx, g_savestate_slot);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Delete Slot")) {
-            delete_savestate_slot(g_registered_ctx, g_savestate_slot);
-        }
-        {
-            std::string savestate_path;
-            const bool slot_exists = savestate_slot_exists(g_registered_ctx, g_savestate_slot, &savestate_path);
-            ImGui::Text("Slot File: %s", savestate_path.empty() ? "(unavailable)" : savestate_path.c_str());
-            ImGui::Text("Slot Status: %s", slot_exists ? "Present" : "Empty");
-        }
-        if (!g_savestate_status.empty()) {
-            ImGui::TextWrapped("%s", g_savestate_status.c_str());
-        }
-
-        ImGui::Separator();
-        ImGui::TextDisabled("Controls");
-        if (!g_controller_name.empty()) {
-            ImGui::Text("Detected Controller: %s", g_controller_name.c_str());
-            ImGui::TextDisabled("Profile: %s", controller_type_name(g_controller_type));
-        } else {
-#if defined(__ANDROID__)
-            ImGui::TextDisabled("No controller detected. Controller mappings will apply when one is connected.");
-#else
-            ImGui::TextDisabled("No controller detected.");
-#endif
-        }
-        render_binding_editor("Keyboard Gameplay",
-                              GB_CAPTURE_DEVICE_KEYBOARD,
-                              g_keyboard_bindings,
-                              GB_INPUT_ACTION_RIGHT,
-                              GB_INPUT_ACTION_FAST_FORWARD);
-        ImGui::Spacing();
-        render_binding_editor("Controller Gameplay",
-                              GB_CAPTURE_DEVICE_CONTROLLER,
-                              g_controller_bindings,
-                              GB_INPUT_ACTION_RIGHT,
-                              GB_INPUT_ACTION_FAST_FORWARD);
-        ImGui::Spacing();
-        render_binding_editor("Keyboard Shortcuts",
-                              GB_CAPTURE_DEVICE_KEYBOARD,
-                              g_keyboard_bindings,
-                              GB_INPUT_ACTION_FAST_FORWARD,
-                              GB_INPUT_ACTION_COUNT);
-        ImGui::Spacing();
-        render_binding_editor("Controller Shortcuts",
-                              GB_CAPTURE_DEVICE_CONTROLLER,
-                              g_controller_bindings,
-                              GB_INPUT_ACTION_FAST_FORWARD,
-                              GB_INPUT_ACTION_COUNT);
-        if (g_binding_capture_active) {
-            ImGui::Separator();
-            ImGui::TextDisabled("Waiting for %s input for %s slot %d",
-                                g_binding_capture_device == GB_CAPTURE_DEVICE_KEYBOARD ? "keyboard" : "controller",
-                                g_input_action_names[g_binding_capture_action],
-                                g_binding_capture_slot + 1);
-            if (ImGui::Button("Cancel Capture")) {
-                cancel_binding_capture();
-            }
-        }
-        {   /* [android-port] */
-            bool touch_on = touch_controls::enabled();
-            if (ImGui::Checkbox("Touch Controls (on-screen gamepad)", &touch_on)) {
-                touch_controls::set_enabled(touch_on);
-                update_effective_joypad_state();
-                save_runtime_preferences();
-            }
-        }
-        if (ImGui::Button("Reset Controls")) {
-            reset_runtime_control_defaults();
-        }
-        ImGui::TextDisabled("Shortcut bindings can also control fast forward, max speed, savestates, overlay, mute, and the menu.");
-        ImGui::BulletText("%s", controller_menu_hint_text());
-#if defined(__ANDROID__)
-        ImGui::BulletText("Android Back / Escape: Settings Menu");
-#else
-        ImGui::BulletText("Escape: Settings Menu");
-#endif
-
-        if (has_interpreter_activity(g_registered_ctx)) {
-            const GBInterpreterHotspot* hotspot = &g_registered_ctx->interpreter_hotspots[0];
-            ImGui::Separator();
-            ImGui::TextDisabled("Interpreter Fallback");
-            ImGui::Text("Frame Fallbacks: %u", g_registered_ctx->frame_dispatch_fallbacks);
-            ImGui::Text("Interp Entries: %llu",
-                        (unsigned long long)g_registered_ctx->total_interpreter_entries);
-            ImGui::Text("Total Fallbacks: %llu",
-                        (unsigned long long)g_registered_ctx->total_dispatch_fallbacks);
-            ImGui::Text("Interp Instr: frame %llu total %llu",
-                        (unsigned long long)g_registered_ctx->frame_interpreter_instructions,
-                        (unsigned long long)g_registered_ctx->total_interpreter_instructions);
-            ImGui::Text("Interp Cycles: frame %llu total %llu",
-                        (unsigned long long)g_registered_ctx->frame_interpreter_cycles,
-                        (unsigned long long)g_registered_ctx->total_interpreter_cycles);
-            if (hotspot->valid && hotspot->entries > 0) {
-                ImGui::Text("Top Hotspot: %03X:%04X", hotspot->bank, hotspot->addr);
-                ImGui::Text("Hits %llu Instr %llu Cycles %llu",
-                            (unsigned long long)hotspot->entries,
-                            (unsigned long long)hotspot->instructions,
-                            (unsigned long long)hotspot->cycles);
-            }
-            if (g_registered_ctx->has_unimplemented_interpreter_opcode) {
-                ImGui::Text("Coverage Gap: %02X at %03X:%04X",
-                            g_registered_ctx->last_unimplemented_opcode,
-                            g_registered_ctx->last_unimplemented_bank,
-                            g_registered_ctx->last_unimplemented_addr);
-            }
-        }
-
+        ImGui::PopItemWidth();
         imgui_drag_to_scroll();   /* passo 14p */
         ImGui::EndChild();
         ImGui::Separator();
@@ -6039,14 +6100,14 @@ static void render_frame_internal(const uint32_t* framebuffer,
         const float footer_button_width =
             (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * (footer_button_count - 1)) /
             (float)footer_button_count;
-        if (ImGui::Button("Reset Display", ImVec2(footer_button_width, 0.0f))) {
+        if (ImGui::Button(TR("Reset display", "Restaurar video"), ImVec2(footer_button_width, 0.0f))) {
             reset_runtime_display_defaults();
             save_runtime_preferences();   /* passo 14p: os padrões ficam gravados */
         }
 
         if (g_launcher_return_enabled) {
             ImGui::SameLine();
-            if (ImGui::Button("Return to Launcher", ImVec2(footer_button_width, 0.0f))) {
+            if (ImGui::Button(TR("Return to launcher", "Voltar ao launcher"), ImVec2(footer_button_width, 0.0f))) {
                 g_exit_action = GB_PLATFORM_EXIT_RETURN_TO_LAUNCHER;
                 SDL_Event quit_event;
                 quit_event.type = SDL_QUIT;
@@ -6055,7 +6116,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Quit", ImVec2(footer_button_width, 0.0f))) {
+        if (ImGui::Button(TR("Quit", "Sair"), ImVec2(footer_button_width, 0.0f))) {
             g_exit_action = GB_PLATFORM_EXIT_QUIT;
             SDL_Event quit_event;
             quit_event.type = SDL_QUIT;
@@ -6070,7 +6131,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             update_audio_stats_from_ring();
             ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
             if (g_fps_mode == 1) {
-                ImGui::Text("Quadros do meio: %u/s", ip_mid_per_second());   /* passo 10a */
+                ImGui::Text(TR("In-between frames: %u/s", "Quadros do meio: %u/s"), ip_mid_per_second());   /* passo 10a */
                 char ip_why[256];
                 ip_skip_text(ip_why, sizeof(ip_why));
                 ImGui::TextUnformatted(ip_why);   /* passo 10b */
@@ -6078,31 +6139,31 @@ static void render_frame_internal(const uint32_t* framebuffer,
             {
                 const double budget_ms = 1000.0 * 70224.0 / 4194304.0; /* 16,74 ms */
                 ImGui::Separator();
-                ImGui::Text("Orcamento: %.2f ms/frame", budget_ms);
-                ImGui::Text("Emu:    med %.2f  pico %.2f ms",
+                ImGui::Text(TR("Budget: %.2f ms/frame", "Orcamento: %.2f ms/frame"), budget_ms);
+                ImGui::Text(TR("Emu:    avg %.2f  peak %.2f ms", "Emu:    med %.2f  pico %.2f ms"),
                             g_emu_window.shown_avg, g_emu_window.shown_max);
-                ImGui::Text("Render: med %.2f  pico %.2f ms",
+                ImGui::Text(TR("Render: avg %.2f  peak %.2f ms", "Render: med %.2f  pico %.2f ms"),
                             g_render_window.shown_avg, g_render_window.shown_max);
-                ImGui::Text("Textura: escala %dx (pedida %dx)",
+                ImGui::Text(TR("Texture: scale %dx (requested %dx)", "Textura: escala %dx (pedida %dx)"),
                             g_texture_scale, g_internal_res_scale);
                 ImGui::Text("Underruns: %u", current_audio_underruns());
                 if (g_audio_rate_control.load(std::memory_order_relaxed)) {
-                    ImGui::Text("Mixer: leitura %+.3f%%  ritmo %+.3f%%",
+                    ImGui::Text(TR("Mixer: read %+.3f%%  pace %+.3f%%", "Mixer: leitura %+.3f%%  ritmo %+.3f%%"),
                                 (double)g_audio_rate_ppm.load(std::memory_order_relaxed) / 10000.0,
                                 (double)g_audio_pace_ppm.load(std::memory_order_relaxed) / 10000.0);
-                    ImGui::Text("       nivel %u (alvo %u)",
+                    ImGui::Text(TR("       level %u (target %u)", "       nivel %u (alvo %u)"),
                                 current_audio_ring_fill_samples(),
                                 g_audio_target_fill.load(std::memory_order_relaxed));
                 } else {
-                    ImGui::Text("Mixer: copia direta");
+                    ImGui::Text("%s", TR("Mixer: direct copy", "Mixer: copia direta"));
                 }
                 if (g_music_current >= 0) {
-                    ImGui::Text("Musica: %02X  (ultimo pedido %02X)%s",
+                    ImGui::Text(TR("Music: %02X  (last request %02X)%s", "Musica: %02X  (ultimo pedido %02X)%s"),
                                 (unsigned)g_music_current,
                                 (unsigned)(g_music_request_seen < 0 ? 0 : g_music_request_seen),
                                 music_replace_active() ? "  [ogg]" : "");
                 } else {
-                    ImGui::Text("Musica: --");
+                    ImGui::Text("%s", TR("Music: --", "Musica: --"));
                 }
                 ImGui::Text("Renderer: %s", ppu_native_mode_name(ppu_native_get_mode()));
                 {
@@ -6111,28 +6172,28 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     int hd_m_scale = 0;
                     ppu_native_hd_margin_frame(&hd_m_scale);
                     ImGui::Text("HD: %dx%s%s", hd_scale,
-                                hd_m_scale > 1 ? " + laterais" : "",
-                                ppu_native_get_hd_check() ? " (conferindo)" : "");
+                                hd_m_scale > 1 ? TR(" + sides", " + laterais") : "",
+                                ppu_native_get_hd_check() ? TR(" (checking)", " (conferindo)") : "");
                     if (ppu_native_get_hd_check()) {
                         const PPUNativeHdStats* hs = ppu_native_hd_stats();
-                        ImGui::Text("HD cmp: %llu frames, %llu com diferenca",
+                        ImGui::Text(TR("HD cmp: %llu frames, %llu different", "HD cmp: %llu frames, %llu com diferenca"),
                                     (unsigned long long)hs->frames_checked,
                                     (unsigned long long)hs->frames_with_mismatch);
                     }
                 }
                 if (ppu_native_get_mode() == PPU_RENDERER_COMPARE) {
                     const PPUNativeCompareStats* cmp = ppu_native_compare_stats();
-                    ImGui::Text("Comparar: %llu frames, %llu com diferenca",
+                    ImGui::Text(TR("Compare: %llu frames, %llu different", "Comparar: %llu frames, %llu com diferenca"),
                                 (unsigned long long)cmp->frames_compared,
                                 (unsigned long long)cmp->frames_with_mismatch);
-                    ImGui::Text("Ultimo frame: %u px diferentes",
+                    ImGui::Text(TR("Last frame: %u px different", "Ultimo frame: %u px diferentes"),
                                 cmp->last_frame_mismatched_pixels);
                     if (cmp->frames_with_mismatch > 0) {
-                        ImGui::Text("Ultima dif.: frame %llu, x=%d y=%d",
+                        ImGui::Text(TR("Last diff.: frame %llu, x=%d y=%d", "Ultima dif.: frame %llu, x=%d y=%d"),
                                     (unsigned long long)cmp->first_mismatch_frame,
                                     cmp->first_mismatch_x, cmp->first_mismatch_y);
                     }
-                    ImGui::Text("VRAM sem hook: %llu tiles",
+                    ImGui::Text(TR("VRAM without hook: %llu tiles", "VRAM sem hook: %llu tiles"),
                                 (unsigned long long)cmp->unhooked_tile_writes);
                 }
                 ImGui::Separator();
@@ -6424,7 +6485,7 @@ static const char* current_audio_output_device_label(void) {
     if (!g_audio_target_device_name.empty()) {
         return g_audio_target_device_name.c_str();
     }
-    return "System Default";
+    return TR("System default", "Padrao do sistema");   /* 15a */
 }
 
 static bool current_audio_output_device_available(void) {
@@ -7007,7 +7068,7 @@ bool gb_platform_init(int scale) {
     }
     for (int attempt = want_gl ? 0 : 1; attempt < 2 && !g_window; ++attempt) {
         g_window = SDL_CreateWindow(
-            "Bigodão - GameBoy Recompiled",
+            "Bigodão - Wario Land: Super Mario Land 3",
             SDL_WINDOWPOS_CENTERED,
             SDL_WINDOWPOS_CENTERED,
             g_windowed_width,
@@ -7111,7 +7172,7 @@ bool gb_platform_init(int scale) {
      * jogo e protege o primeiro segundo contra abrir o menu */
     SDL_FlushEvents(SDL_KEYDOWN, SDL_KEYUP);
     SDL_FlushEvents(SDL_CONTROLLERBUTTONDOWN, SDL_CONTROLLERBUTTONUP);
-    g_show_menu = false;
+    g_show_menu = getenv("BIGODAO_TESTE_MENU") != NULL;   /* testes: abre com o menu na tela (passo 15a) */
     g_menu_guard_until = SDL_GetTicks() + 1000;
     if (g_menu_guard_until == 0) g_menu_guard_until = 1;
     
@@ -7506,13 +7567,13 @@ static uint16_t marks3d_context(const GBContext* ctx) {
 }
 static const char* marks3d_context_name(uint16_t c) {
     switch (c) {
-        case PPU_NATIVE_CTX_MODE | 0x80: return "sala do tesouro";
-        case PPU_NATIVE_CTX_MODE | 0x81: return "jogo das moedas";
-        case PPU_NATIVE_CTX_MODE | 0x82: return "jogo dos coracoes";
+        case PPU_NATIVE_CTX_MODE | 0x80: return TR("treasure room", "sala do tesouro");
+        case PPU_NATIVE_CTX_MODE | 0x81: return TR("coin game", "jogo das moedas");
+        case PPU_NATIVE_CTX_MODE | 0x82: return TR("heart game", "jogo dos coracoes");
         case PPU_NATIVE_CTX_MODE | 0x83: return "Course Clear";
-        case PPU_NATIVE_CTX_MODE | 0x84: return "tempo esgotado (TIME UP)";
-        case PPU_NATIVE_CTX_MODE | 0x85: return "sala do tesouro do game over (grupo da g80)";
-        case PPU_NATIVE_CTX_MODE | 0x00: return "titulo / slots";
+        case PPU_NATIVE_CTX_MODE | 0x84: return TR("time up", "tempo esgotado (TIME UP)");
+        case PPU_NATIVE_CTX_MODE | 0x85: return TR("game over treasure room (g80 group)", "sala do tesouro do game over (grupo da g80)");
+        case PPU_NATIVE_CTX_MODE | 0x00: return TR("title / save slots", "titulo / slots");
         default: return "";
     }
 }
@@ -7586,12 +7647,12 @@ static void marks3d_click(GBContext* ctx, int mx, int my, bool clear) {
     } else {
         g_3d_marks[{cx, h}] = (uint8_t)k;
     }
-    static const char* kNames[] = {"fundo", "chao", "agua", "porta/escada", "meio chao"};
+    const char* kNames[] = {TR("background", "fundo"), TR("floor", "chao"), TR("water", "agua"), TR("door/ladder", "porta/escada"), TR("half floor", "meio chao")};
     char sfx[8];
     ppu_native_hd_context_suffix(cx, sfx);
     char buf[128];
     const char* nm = marks3d_context_name(cx);
-    snprintf(buf, sizeof(buf), "tile %03X (banco %d) na tela %s%s%s%s: %s", tidx, bank, sfx[0] ? sfx : "(todas)",
+    snprintf(buf, sizeof(buf), TR("tile %03X (bank %d) on screen %s%s%s%s: %s", "tile %03X (banco %d) na tela %s%s%s%s: %s"), tidx, bank, sfx[0] ? sfx : TR("(all)", "(todas)"),
              nm[0] ? " (" : "", nm, nm[0] ? ")" : "", kNames[k]);
     g_3d_mark_info = buf;
     marks3d_save();
