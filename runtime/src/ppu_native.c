@@ -1112,14 +1112,14 @@ static void mark_drawn_empty(const GBContext* ctx) {
  * disassembly (GM_*, sSubMode $A8C4): 2/3 fase; 5 morte; $0A/$0C portas; 4
  * (saída) e 6 (saída especial) só até o fade (sub 0-2: depois vêm a tela de
  * Course Clear, a sala do tesouro/contador de moedas, ou a cena do mapa);
- * 7 (tempo esgotado) até o fade (sub 0-4). */
+ * 7 (tempo esgotado): nunca (3D-2n; antes até o fade, sub 0-4). */
 static bool level_on_screen(const GBContext* ctx) {
     if (!ctx || !ctx->eram || ctx->eram_size <= 0x08C4u) return false;
     const uint8_t mode = ctx->eram[0x08C3], sub = ctx->eram[0x08C4];
     switch (mode) {
         case 0x02: case 0x03: case 0x05: case 0x0A: case 0x0C: return true;
         case 0x04: case 0x06: return sub <= 2;
-        case 0x07: return sub <= 4;
+        case 0x07: return false;   /* 3D-2n: o tempo esgotado já começa com a tela própria (Mode_TimeUp_Init desliga o LCD e carrega a tela do TIME UP) */
         default: return false;
     }
 }

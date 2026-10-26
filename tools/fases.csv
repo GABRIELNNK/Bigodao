@@ -59,3 +59,9 @@ g08,08,,,,Game over,modo do jogo $A8C3
 g09,09,,,,Final (menos a parte no mapa),modo do jogo $A8C3
 g0b,0B,,,,Tesouro obtido,modo do jogo $A8C3
 g0d,0D,,,,Não usado (bônus de corações),modo do jogo $A8C3
+g80,80,,,,Sala do tesouro (TREASURE: letras A–O),"só nas marcas do 3D (mods/3d_marcas.txt, passo 3D-2j); no pacote HD continua o contexto da fase (fXX); modo $A8C3 4/6, submodo $A8C4 5–9"
+g81,81,,,,"Jogo das moedas (baldes, “1ST”)","só nas marcas do 3D (passo 3D-2j); no pacote HD continua a fase (fXX); modo 4/6, submodo 3–4, sCourseClrMode $A9AD = 06"
+g82,82,,,,"Jogo dos corações (A/B/C COURSE, POWER/BOMB/TIME)","só nas marcas do 3D (passo 3D-2j); no pacote HD continua a fase (fXX); modo 4/6, submodo 3–4, sCourseClrMode $A9AD = 0B"
+g83,83,,,,"Tela do Course Clear (CLEAR, GAME, GOAL)","só nas marcas do 3D (passo 3D-2j); no pacote HD continua a fase (fXX); modo 4/6, submodo 3–4, outras rotinas"
+g84,84,,,,Tempo esgotado (TIME UP),"só nas marcas do 3D (passo 3D-2n); no pacote HD continua a fase (fXX); modo $A8C3 = 7 (GM_TIMEUP); o Wario fica na janela"
+g85,85,,,,Sala do tesouro depois do game over (TREASURE: letras A–O),"só nas marcas do 3D (passo 3D-2p); grupo da g80: tile sem marca própria usa a da g80; modo $A8C3 = 8 (GM_GAMEOVER), submodo $A8C4 2–3; no pacote HD continua g08"

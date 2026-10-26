@@ -269,6 +269,8 @@ static const PPUNativeGpuFrame* g_frame_last = NULL;
 static std::string marks3d_path(void);
 static void marks3d_load(void);
 static void marks3d_table(const GBContext* ctx);
+static uint16_t marks3d_context(const GBContext* ctx);
+static const char* marks3d_context_name(uint16_t c);
 static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
 static int g_3d_follow = 1;        /* câmera 3D segue o Wario (pref display.follow3d, 3D-4q) */
@@ -4330,8 +4332,10 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
         marks3d_load();   /* passo 3D-2b */
         marks3d_table(g_registered_ctx);
         g_3d_wide = in3.wide;
-        /* passo 3D-2g: no g00 (título/slots) a janela são as ondas do mar, não o HUD */
-        gpu_ppu_set_window_floor(ppu_native_hd_context() == (PPU_NATIVE_CTX_MODE | 0x00));
+        /* passo 3D-2g: no g00 (título/slots) a janela são as ondas do mar, não o HUD;
+         * 3D-2o: no tempo esgotado (g84) a janela é o Wario: vai para o 3D, não fica fixa */
+        gpu_ppu_set_window_floor(ppu_native_hd_context() == (PPU_NATIVE_CTX_MODE | 0x00) ||
+                                 marks3d_context(g_registered_ctx) == (PPU_NATIVE_CTX_MODE | 0x84));
         g_3d_valid = g_frame3d && gpu_ppu_compose_3d(g_frame3d, &in3);
         g_frame3d = NULL;
         if (g_3d_valid) {
@@ -5233,12 +5237,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 ImGui::SameLine();   /* passo 3D-2c */
                 if (ImGui::Button(g_freeze ? "Descongelar o jogo" : "Congelar o jogo")) g_freeze = !g_freeze;
                 if (g_3d_mark) {
-                    ImGui::TextWrapped("Feche o menu e clique no jogo: esquerdo troca fundo > chao > agua > porta/escada; "
+                    ImGui::TextWrapped("Feche o menu e clique no jogo: esquerdo troca fundo > chao > meio chao > agua > porta/escada; "
                                        "direito volta a fundo. Vale para o mesmo desenho de tile so nesta tela (g00, m44...), "
                                        "tambem na janela (ondas, faixas). "
                                        "Enquanto marca, a vista fica reta e com as classes pintadas.");
                     marks3d_load();
                     ImGui::TextDisabled("%u tiles marcados - %s", (unsigned)g_3d_marks.size(), marks3d_path().c_str());
+                    {   /* passo 3D-2j: a tela onde as marcas valem agora */
+                        const uint16_t cx = marks3d_context(g_registered_ctx);
+                        char sfx[8];
+                        ppu_native_hd_context_suffix(cx, sfx);
+                        const char* nm = marks3d_context_name(cx);
+                        ImGui::TextDisabled("Tela atual: %s%s%s%s", sfx[0] ? sfx : "(nenhuma)", nm[0] ? " - " : "", nm, "");
+                    }
                     if (!g_3d_mark_info.empty()) ImGui::TextDisabled("Ultimo: %s", g_3d_mark_info.c_str());
                 }
             }
@@ -5255,7 +5266,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
             if (g_3d_debug) {
                 ImGui::TextWrapped("cinza fundo, azul agua, ciano faixa das ondas, azul-claro ceu dentro da agua, "
-                                   "marrom chao, laranja porta/escada/moeda, magenta sprite, branco HUD, preto longe");
+                                   "marrom chao, amarelo meio chao, laranja porta/escada/moeda, magenta sprite, branco HUD, preto longe");
             }
             /* Passo 14b-1: centro pela GPU x CPU. */
             if (ImGui::TreeNode("Comparar GPU (14b)")) {
@@ -7427,7 +7438,7 @@ static void marks3d_load(void) {
         unsigned k = 0;
         char cx[16] = "";
         const int n = sscanf(line, "%llx %u %15s", &h, &k, cx);
-        if (n < 2 || k > 3) continue;
+        if (n < 2 || k > 4) continue;   /* 3D-2k: 4 = meio chão */
         uint16_t c = 0;   /* 3D-2f: contexto "f07"/"m44"/"g00" (sem = todas as telas) */
         if (n == 3) {
             const unsigned v = (unsigned)strtoul(cx + 1, NULL, 16) & 0xFFu;
@@ -7446,7 +7457,7 @@ static void marks3d_save(void) {
     std::filesystem::create_directories(std::filesystem::path(p).parent_path(), ec);
     FILE* f = fopen(p.c_str(), "w");
     if (!f) { g_3d_mark_info = "nao consegui gravar " + p; return; }
-    fprintf(f, "# Bigodao 3D-2b/2f: hash do tile (FNV-1a dos 16 bytes), tipo (0 fundo, 1 chao, 2 agua, 3 porta/escada) e tela (g00, m44...; sem = todas)\n");
+    fprintf(f, "# Bigodao 3D-2b/2f: hash do tile (FNV-1a dos 16 bytes), tipo (0 fundo, 1 chao, 2 agua, 3 porta/escada, 4 meio chao) e tela (g00, m44...; sem = todas)\n");
     for (const auto& e : g_3d_marks) {
         char cx[8];
         ppu_native_hd_context_suffix(e.first.first, cx);
@@ -7459,18 +7470,65 @@ static uint64_t marks3d_hash(const uint8_t* src) {
     for (int i = 0; i < 16; ++i) { h ^= src[i]; h *= 1099511628211ull; }
     return h;
 }
+/* Passo 3D-2j: tela das marcas. Igual ao contexto do pacote HD, menos as telas
+ * depois da fase, que lá contam como a fase (f07...) e aqui ficam separadas (disassembly:
+ * sGameMode $A8C3 = 4/6, sSubMode $A8C4, sCourseClrMode $A9AD):
+ *   g80 sala do tesouro (submodo 5-9), g81 jogo das moedas (baldes, rotina 6),
+ *   g82 jogo dos corações (A/B/C, rotina $0B), g83 tela do Course Clear;
+ *   3D-2n: g84 tempo esgotado (modo 7, a tela do TIME UP);
+ *   3D-2p: g85 sala do tesouro depois do game over (modo 8, submodo 2-3: GM_GAMEOVER_INITTRROOM/TRROOM),
+ *   do grupo da g80: sem marca própria num tile, vale a marca da g80 */
+static uint16_t marks3d_context(const GBContext* ctx) {
+    const uint16_t c = ppu_native_hd_context();
+    if (!ctx || !ctx->eram || ctx->eram_size <= 0x09AD) return c;
+    const uint8_t mode = ctx->eram[0x08C3], sub = ctx->eram[0x08C4];
+    if (mode == 0x07) return (uint16_t)(PPU_NATIVE_CTX_MODE | 0x84);   /* 3D-2n */
+    if (mode == 0x08 && sub >= 2) return (uint16_t)(PPU_NATIVE_CTX_MODE | 0x85);   /* 3D-2p */
+    if ((mode == 0x04 || mode == 0x06) && sub >= 3) {
+        if (sub >= 5) return (uint16_t)(PPU_NATIVE_CTX_MODE | 0x80);
+        const uint8_t rtn = ctx->eram[0x09AD];
+        if (rtn == 0x06) return (uint16_t)(PPU_NATIVE_CTX_MODE | 0x81);
+        if (rtn == 0x0B) return (uint16_t)(PPU_NATIVE_CTX_MODE | 0x82);
+        return (uint16_t)(PPU_NATIVE_CTX_MODE | 0x83);
+    }
+    return c;
+}
+static const char* marks3d_context_name(uint16_t c) {
+    switch (c) {
+        case PPU_NATIVE_CTX_MODE | 0x80: return "sala do tesouro";
+        case PPU_NATIVE_CTX_MODE | 0x81: return "jogo das moedas";
+        case PPU_NATIVE_CTX_MODE | 0x82: return "jogo dos coracoes";
+        case PPU_NATIVE_CTX_MODE | 0x83: return "Course Clear";
+        case PPU_NATIVE_CTX_MODE | 0x84: return "tempo esgotado (TIME UP)";
+        case PPU_NATIVE_CTX_MODE | 0x85: return "sala do tesouro do game over (grupo da g80)";
+        case PPU_NATIVE_CTX_MODE | 0x00: return "titulo / slots";
+        default: return "";
+    }
+}
+
+/* 3D-2p: marca de um tile numa tela: a da tela, a do grupo (g85 -> g80) ou a geral */
+static uint16_t marks3d_parent(uint16_t c) {
+    return c == (uint16_t)(PPU_NATIVE_CTX_MODE | 0x85) ? (uint16_t)(PPU_NATIVE_CTX_MODE | 0x80) : (uint16_t)0;
+}
+static std::map<std::pair<uint16_t, uint64_t>, uint8_t>::iterator marks3d_find(uint16_t cx, uint64_t h) {
+    auto it = g_3d_marks.find({cx, h});
+    const uint16_t par = marks3d_parent(cx);
+    if (it == g_3d_marks.end() && par != 0) it = g_3d_marks.find({par, h});
+    if (it == g_3d_marks.end()) it = g_3d_marks.find({(uint16_t)0, h});
+    return it;
+}
+
 /* tabela por tile da VRAM (banco * 384 + tile) para a GPU */
 static void marks3d_table(const GBContext* ctx) {
     static uint8_t tab[768];
     bool any = false;
     memset(tab, 0, sizeof(tab));
     if (ctx && ctx->vram && !g_3d_marks.empty()) {
-        const uint16_t cx = ppu_native_hd_context();   /* 3D-2f: a tela atual */
+        const uint16_t cx = marks3d_context(ctx);   /* 3D-2f: a tela atual; 3D-2j: telas depois da fase separadas */
         for (int b = 0; b < 2; ++b) {
             for (int t = 0; t < 384; ++t) {
                 const uint64_t h = marks3d_hash(ctx->vram + b * 0x2000 + t * 16);
-                auto it = g_3d_marks.find({cx, h});
-                if (it == g_3d_marks.end()) it = g_3d_marks.find({(uint16_t)0, h});
+                auto it = marks3d_find(cx, h);   /* 3D-2p */
                 if (it != g_3d_marks.end() && it->second != 0) { tab[b * 384 + t] = it->second; any = true; }
             }
         }
@@ -7501,13 +7559,15 @@ static void marks3d_click(GBContext* ctx, int mx, int my, bool clear) {
     const uint64_t h = marks3d_hash(ctx->vram + bank * 0x2000 + tidx * 16);
     marks3d_load();
     /* 3D-2f: a marca vale só para esta tela */
-    const uint16_t cx = ppu_native_hd_context();
+    const uint16_t cx = marks3d_context(ctx);   /* 3D-2j */
     int cur = 0;
-    auto it = g_3d_marks.find({cx, h});
-    if (it == g_3d_marks.end()) it = g_3d_marks.find({(uint16_t)0, h});
+    auto it = marks3d_find(cx, h);   /* 3D-2p */
     if (it != g_3d_marks.end()) cur = it->second;
-    const int k = clear ? 0 : (cur + 1) % 4;
-    const bool general = g_3d_marks.count({(uint16_t)0, h}) != 0;
+    /* 3D-2k: ordem fundo -> chão -> meio chão -> água -> porta/escada -> fundo */
+    static const int kNext[5] = {1, 4, 3, 0, 2};
+    const int k = clear ? 0 : kNext[cur < 0 || cur > 4 ? 0 : cur];
+    const bool general = g_3d_marks.count({(uint16_t)0, h}) != 0 ||
+                         (marks3d_parent(cx) != 0 && g_3d_marks.count({marks3d_parent(cx), h}) != 0);   /* 3D-2p */
     if (cx == 0) {
         if (k == 0) g_3d_marks.erase({(uint16_t)0, h}); else g_3d_marks[{(uint16_t)0, h}] = (uint8_t)k;
     } else if (k == 0 && !general) {
@@ -7515,11 +7575,13 @@ static void marks3d_click(GBContext* ctx, int mx, int my, bool clear) {
     } else {
         g_3d_marks[{cx, h}] = (uint8_t)k;
     }
-    static const char* kNames[] = {"fundo", "chao", "agua", "porta/escada"};
+    static const char* kNames[] = {"fundo", "chao", "agua", "porta/escada", "meio chao"};
     char sfx[8];
     ppu_native_hd_context_suffix(cx, sfx);
     char buf[128];
-    snprintf(buf, sizeof(buf), "tile %03X (banco %d) na tela %s: %s", tidx, bank, sfx[0] ? sfx : "(todas)", kNames[k]);
+    const char* nm = marks3d_context_name(cx);
+    snprintf(buf, sizeof(buf), "tile %03X (banco %d) na tela %s%s%s%s: %s", tidx, bank, sfx[0] ? sfx : "(todas)",
+             nm[0] ? " (" : "", nm, nm[0] ? ")" : "", kNames[k]);
     g_3d_mark_info = buf;
     marks3d_save();
 }
