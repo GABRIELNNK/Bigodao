@@ -5139,8 +5139,8 @@ static void render_frame_internal(const uint32_t* framebuffer,
         ImGui::Separator();
         /* Passo 15a: menu com a lista de categorias à esquerda (opção B escolhida
          * pelo usuário) e a página da categoria à direita */
-        static const char* const kMenuCatsEn[] = {"Display", "3D", "Audio", "Controls", "Emulation", "Mods", "Developer"};
-        static const char* const kMenuCatsPt[] = {"Video", "3D", "Som", "Controles", "Emulacao", "Mods", "Desenvolvedor"};
+        static const char* const kMenuCatsEn[] = {"Display", "3D", "Audio", "Controls", "Game", "Mods", "Developer"};
+        static const char* const kMenuCatsPt[] = {"Video", "3D", "Som", "Controles", "Game", "Mods", "Desenvolvedor"};
         const float side_w = 210.0f * ui_scale;
         ImGui::BeginChild("Categorias", ImVec2(side_w, -footer_height), true);
         for (int c = 0; c < 7; ++c) {
@@ -5592,7 +5592,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             ImGui::BulletText(TR("Escape: settings menu", "Escape: menu de configuracoes"));
     #endif
 
-        } else if (g_menu_page == 4) {   /* Emulation */
+        } else if (g_menu_page == 4) {   /* Game */
             ImGui::SeparatorText(TR("Speed", "Velocidade"));
             ImGui::Checkbox(TR("Show overlay", "Mostrar overlay"), &g_show_overlay);
             ImGui::Checkbox(TR("Smooth slow frames", "Suavizar quadros lentos"), &g_smooth_lcd_transitions);
