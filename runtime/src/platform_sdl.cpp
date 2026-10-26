@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <string>
 #include <map>   /* passo 3D-2b/2f */
+#include "marcas3d_padrao.h"   /* passo 3D-2q */
 #if defined(_WIN32)
 #include <io.h>
 #include <windows.h>
@@ -255,6 +256,7 @@ static bool g_3d_mark = false;
  * das marcas antigas): a marca da tela vale antes da geral; tipo 0 na tela = fundo
  * ali mesmo que a geral diga outra coisa */
 static std::map<std::pair<uint16_t, uint64_t>, uint8_t> g_3d_marks;
+static std::map<std::pair<uint16_t, uint64_t>, uint8_t> g_3d_marks_def;   /* 3D-2q: as padrão (no programa) */
 static bool g_3d_marks_loaded = false;
 static std::string g_3d_mark_info;
 static bool g_3d_wide = true;   /* a imagem 3D tem as laterais (256 de largura) */
@@ -7427,18 +7429,14 @@ static std::string marks3d_path(void) {
     const size_t c = d.find_last_of("/\\");
     return (c == std::string::npos ? std::string("mods") : d.substr(0, c)) + "/3d_marcas.txt";
 }
-static void marks3d_load(void) {
-    if (g_3d_marks_loaded) return;
-    g_3d_marks_loaded = true;
-    FILE* f = fopen(marks3d_path().c_str(), "r");
-    if (!f) return;
-    char line[128];
-    while (fgets(line, sizeof(line), f)) {
+/* uma linha "hash tipo [tela]" do arquivo de marcas */
+static void marks3d_parse(const char* line, std::map<std::pair<uint16_t, uint64_t>, uint8_t>& out) {
+    {
         unsigned long long h = 0;
         unsigned k = 0;
         char cx[16] = "";
         const int n = sscanf(line, "%llx %u %15s", &h, &k, cx);
-        if (n < 2 || k > 4) continue;   /* 3D-2k: 4 = meio chão */
+        if (n < 2 || k > 4) return;   /* 3D-2k: 4 = meio chão */
         uint16_t c = 0;   /* 3D-2f: contexto "f07"/"m44"/"g00" (sem = todas as telas) */
         if (n == 3) {
             const unsigned v = (unsigned)strtoul(cx + 1, NULL, 16) & 0xFFu;
@@ -7446,9 +7444,20 @@ static void marks3d_load(void) {
             else if (cx[0] == 'm') c = (uint16_t)(PPU_NATIVE_CTX_MAP | v);
             else if (cx[0] == 'g') c = (uint16_t)(PPU_NATIVE_CTX_MODE | v);
         }
-        if (c == 0 && k == 0) continue;
-        g_3d_marks[{c, (uint64_t)h}] = (uint8_t)k;
+        if (c == 0 && k == 0) return;
+        out[{c, (uint64_t)h}] = (uint8_t)k;
     }
+}
+static void marks3d_load(void) {
+    if (g_3d_marks_loaded) return;
+    g_3d_marks_loaded = true;
+    /* 3D-2q: primeiro as padrão; o arquivo do usuário vale por cima */
+    for (const char* l : k_marcas3d_padrao) marks3d_parse(l, g_3d_marks_def);
+    g_3d_marks = g_3d_marks_def;
+    FILE* f = fopen(marks3d_path().c_str(), "r");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) marks3d_parse(line, g_3d_marks);
     fclose(f);
 }
 static void marks3d_save(void) {
@@ -7459,6 +7468,8 @@ static void marks3d_save(void) {
     if (!f) { g_3d_mark_info = "nao consegui gravar " + p; return; }
     fprintf(f, "# Bigodao 3D-2b/2f: hash do tile (FNV-1a dos 16 bytes), tipo (0 fundo, 1 chao, 2 agua, 3 porta/escada, 4 meio chao) e tela (g00, m44...; sem = todas)\n");
     for (const auto& e : g_3d_marks) {
+        const auto d = g_3d_marks_def.find(e.first);   /* 3D-2q: só o que difere das padrão */
+        if (d != g_3d_marks_def.end() && d->second == e.second) continue;
         char cx[8];
         ppu_native_hd_context_suffix(e.first.first, cx);
         fprintf(f, "%016llx %u%s%s\n", (unsigned long long)e.first.second, (unsigned)e.second, cx[0] ? " " : "", cx);
@@ -7566,7 +7577,7 @@ static void marks3d_click(GBContext* ctx, int mx, int my, bool clear) {
     /* 3D-2k: ordem fundo -> chão -> meio chão -> água -> porta/escada -> fundo */
     static const int kNext[5] = {1, 4, 3, 0, 2};
     const int k = clear ? 0 : kNext[cur < 0 || cur > 4 ? 0 : cur];
-    const bool general = g_3d_marks.count({(uint16_t)0, h}) != 0 ||
+    const bool general = g_3d_marks.count({(uint16_t)0, h}) != 0 || g_3d_marks_def.count({cx, h}) != 0 ||   /* 3D-2q */
                          (marks3d_parent(cx) != 0 && g_3d_marks.count({marks3d_parent(cx), h}) != 0);   /* 3D-2p */
     if (cx == 0) {
         if (k == 0) g_3d_marks.erase({(uint16_t)0, h}); else g_3d_marks[{(uint16_t)0, h}] = (uint8_t)k;
