@@ -4,7 +4,7 @@
 
 #  Bigodão: WL SM3
 
-> **A static recompilation study and native port of *Wario Land: Super Mario Land 3* with native widescreen support, mods support for HD tile and remastered music.**
+> **A static recompilation study and native port of *Wario Land: Super Mario Land 3* with native widescreen, a GPU renderer with an optional 3D mode, and mods support for HD tiles and remastered music.**
 
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20Android-blue)](https://github.com)
 [![License](https://img.shields.io/badge/Status-Research%20%2F%20Study-orange)](#-about-the-project)
@@ -20,10 +20,13 @@ By extracting and recompiling game code into modern C/C++, this project enables 
 ### ✨ Features
 
 * 🖥️ **Native widescreen** (16:9), enabled by default.
+* ⚡ **GPU renderer (OpenGL)**: the screen, HD tiles and post-processing filters are composed on the GPU, with an optional **120 fps** mode (in-between frames).
+* 🧊 **3D mode**: the levels get real depth — extruded blocks and sprites, water volume, a front layer, and a camera that follows Wario (also on the right analog stick). Screens outside the levels can be given depth by marking tiles.
 * 🎨 **HD tile mods**: replace backgrounds and sprites with high-resolution PNGs packed in `.o2r` files.
 * 🎵 **Music mods**: replace the Game Boy soundtrack with `.ogg` tracks, while sound effects keep playing from the original audio.
 * 📱 **Android port** with an on-screen gamepad, physical controller support and the system file picker.
 * 📦 **Single executable** on Windows: no extra DLLs required.
+* ⚙️ **Settings menu** in **English or Portuguese**, organized by category, with menu themes in Wario's colors.
 
 ---
 
@@ -132,6 +135,40 @@ To cross-compile for Windows from a Linux environment:
 3. **Install** it on your device (copy the APK to the phone, or use `adb install -r <apk>`).
 
 > 📱 *On first launch, the app asks for "All files access" to create the `Bigodao/` folder (with `mods/` and `log/`) in the device storage. If denied, mods and logs stay inside the app's private folder.*
+
+---
+
+## ⚙️ Settings Menu
+
+Open it with **Esc**, or **Guide / Home** on a controller (on Android also **Back**, **L3** or **R3**). The categories are on the left:
+
+| Category | What's there |
+| :--- | :--- |
+| **Display** | Menu theme, fullscreen, window size, V-Sync, internal resolution, scale and post-processing filters, widescreen options, video backend, screen composition (CPU/GPU) and frame rate (60/120). |
+| **3D** | 3D mode, camera (tilt, turn, right stick, follow Wario), depth, sprite thickness, front layer and the tile marking tools. |
+| **Audio** | Volume, output device and latency. |
+| **Controls** | Keyboard and controller bindings, shortcuts and touch controls. |
+| **Emulation** | Speed and save states. |
+| **Mods** | HD tile packs and `.ogg` music tracks. |
+| **Developer** | Diagnostics (GPU comparison, audio lab, reference frames, sprite pose recorder). |
+
+The language (**English** by default, or **Portuguese**) is chosen at the top of the menu. All settings are saved in `runtime_prefs.ini`.
+
+---
+
+## 🧊 3D Mode
+
+Turn it on in **Settings > 3D > 3D mode: Layers**. It needs the **OpenGL** video and **Screen composition: GPU** (OpenGL 3.3, or OpenGL ES 3.0 on Android).
+
+* **In the levels** the depth is automatic: the level layout tells floor, water, doors and ladders apart.
+* **Camera:** tilt (negative values look from below), turn and depth. The **right analog stick** moves the camera and springs back when released, and the camera can follow Wario, turning to the side he walks to.
+* **Volume:** sprite thickness and the front layer (a copy of the terrain blocks in front of everything) are adjustable.
+* **Outside the levels** (title, save slots, maps, Course Clear, bonus games, Time Up…) the depth comes from tiles marked by hand:
+  1. Turn on **3D > Tools > Mark tiles (outside levels)** and close the menu.
+  2. **Left click** a tile to cycle background → floor → half floor → water → door/ladder; **right click** sets it back to background.
+  3. Use **Freeze the game** for scenes that can't be paused.
+
+  Marks are kept per screen (`g00`, `m44`, `g80`–`g85`…, listed in [`tools/fases.csv`](tools/fases.csv)) in `mods/3d_marcas.txt`. A default set of marks is built into the game; the file only stores your changes on top of it.
 
 ---
 
