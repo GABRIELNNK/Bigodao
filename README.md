@@ -28,6 +28,8 @@ By extracting and recompiling game code into modern C/C++, this project enables 
 * 📦 **Single executable** on Windows: no extra DLLs required.
 * ⚙️ **Settings menu** in **English or Portuguese**, organized by category, with menu themes in Wario's colors.
 
+> 📰 See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for what's new.
+
 ---
 
 ## 🔑 Requirements & Hashes
@@ -148,7 +150,7 @@ Open it with **Esc**, or **Guide / Home** on a controller (on Android also **Bac
 | **3D** | 3D mode, camera (tilt, turn, right stick, follow Wario), depth, sprite thickness, front layer and the tile marking tools. |
 | **Audio** | Volume, output device and latency. |
 | **Controls** | Keyboard and controller bindings, shortcuts and touch controls. |
-| **Emulation** | Speed and save states. |
+| **Game** | Speed and save states. |
 | **Mods** | HD tile packs and `.ogg` music tracks. |
 | **Developer** | Diagnostics (GPU comparison, audio lab, reference frames, sprite pose recorder). |
 
