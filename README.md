@@ -203,3 +203,10 @@ Without the work of these incredible projects and individuals, this project woul
    * Sources:
       * [Wario Land: Super Mario Land 3 – RAM map (Data Crystal)](https://datacrystal.tcrf.net/wiki/Wario_Land:_Super_Mario_Land_3/RAM_map)
       * [Multimedia: Wario Land: Super Mario Land 3 (MarioWiki)](https://www.mariowiki.com/Multimedia:Wario_Land:_Super_Mario_Land_3)
+
+
+## 🛣️ Tracking progress
+
+* [Sample video Bigodao 0.1.1](https://youtu.be/BxGafWfLy7I)
+* [Sample video Bigodao 1.1.1](https://youtu.be/YcMUqV-PSeg)
+* [Sample video Bigodao 1.5.0](https://youtu.be/UBhrsbrR7UM)
