@@ -705,6 +705,15 @@ bool gb_context_load_state_file(GBContext* ctx, const char* path);
  */
 uint8_t gb_read8(GBContext* ctx, uint16_t addr);
 
+/* Passo 16a: X verdadeiro (9 bits) dos sprites dos atores, para a tela larga.
+ * gbrt_oam_true_screen_x: true se o sprite oam_index (0-39) foi escrito pela
+ * rotina dos atores; screen_x = X da tela (pode ser < 0 ou >= 160).
+ * gbrt_ws_actor_draw_cp: chamada pelo código gerado em $321a (ActS_CheckOffScreen). */
+bool gbrt_oam_true_screen_x(const GBContext* ctx, int oam_index, int* screen_x);
+void gbrt_ws_actor_draw_cp(GBContext* ctx);
+bool gbrt_oam_hidden_in_center(const GBContext* ctx, int oam_index);
+void gbrt_ws_true_x_reset(void);
+
 /**
  * @brief Resolve a CPU ROM address to the physical 16 KiB ROM bank.
  * @param ctx CPU context

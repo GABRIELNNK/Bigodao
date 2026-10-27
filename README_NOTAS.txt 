@@ -133,5 +133,7 @@ static bool gb_mode_is_side_scrolling(uint8_t game_mode) {
 
 
 
-
-
+retirados do json do fov
+"/* 3218 */     gb_add8(ctx, 0x1e);": "/* 3218 */     gb_add8(ctx, 0x10);",
+"/* 321a */     gb_cp8(ctx, 0xded);": "/* 321a */     gbrt_ws_actor_draw_cp(ctx);",
+"/* 31fd */     ctx->bc = 0x00d1;": "/* 31fd */     ctx->bc = 0x00f8;",

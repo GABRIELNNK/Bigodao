@@ -408,6 +408,9 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
         if (sprite_x <= -8 || sprite_x >= GB_SCREEN_WIDTH) {
             continue;
         }
+        if (gbrt_oam_hidden_in_center(ctx, index)) {   /* passo 16a */
+            continue;
+        }
         const uint8_t flags = oam[3];
 
         int line = y - sprite_y;
@@ -611,6 +614,9 @@ static void scene_fill_sprite_boxes(const GBContext* ctx, bool cgb,
         if (sprite_x <= -8 || sprite_x >= GB_SCREEN_WIDTH) {
             continue;
         }
+        if (gbrt_oam_hidden_in_center(ctx, index)) {   /* passo 16a */
+            continue;
+        }
         const uint8_t flags = oam[3];
         int line = y - sprite_y;
         if (flags & OAM_FLIP_Y) {
@@ -812,6 +818,9 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             }
         }
         memcpy(g_gpu.oam[y], ctx->oam, 160);
+        for (int i = 0; i < 40; ++i) {   /* passo 16a: some do centro na GPU também */
+            if (gbrt_oam_hidden_in_center(ctx, i)) g_gpu.oam[y][i * 4] = 0;
+        }
     }
 
     const bool bg_on = cgb || (st->lcdc & LCDC_BG_ENABLE) != 0;

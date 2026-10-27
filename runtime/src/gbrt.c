@@ -420,6 +420,106 @@ static void gbrt_log_oam_write(GBContext* ctx,
             reason ? reason : "-");
 }
 
+/* ============================================================================
+ * Passo 16a: X verdadeiro (9 bits) dos sprites dos atores
+ *
+ * O X do OAM tem 8 bits e a tela larga tem 256 pontos (48 + 160 + 48): o fim
+ * da lateral direita tem o mesmo X do começo da esquerda. A rotina do jogo que
+ * escreve os sprites dos atores (ActS_WriteSprMap, $3728; o X é gravado em
+ * $3772 na cópia do OAM em $AF00) só recebe o byte baixo do X relativo
+ * (sActSetRelX $A10B): quando ela vem de ActS_LoadAndWriteSprMap o byte alto
+ * ($A301) é de outro ator. Por isso o X relativo em 16 bits de cada ator é
+ * guardado aqui quando o jogo faz o teste de tela dele (ActS_CheckOffScreen,
+ * $321a, slot = sActNumProc $A300), e na escrita do sprite o byte baixo é
+ * casado com esse valor. A cópia para o OAM (DMA da página $AF) leva o X
+ * verdadeiro junto, e as laterais usam esse X no lugar do palpite.
+ * ========================================================================== */
+#define WS_ACT_WRITE_X_PC   0x3772u
+#define WS_ACT_REL_X_LOW    0xA10Bu
+#define WS_ACT_REL_X_HIGH   0xA301u
+#define WS_WORK_OAM_PAGE    0xAFu
+#define WS_ACT_NUM_PROC     0xA300u
+
+typedef struct {
+    int16_t x;      /* X da tela (OAM X - 8) */
+    uint8_t byte;   /* X gravado (para conferir na cópia) */
+    uint8_t ok;
+} WsTrueX;
+
+static WsTrueX s_ws_work_x[40];
+static WsTrueX s_ws_oam_x[40];
+static int s_ws_slot_rel[8];          /* X relativo em 16 bits do ator de cada slot */
+static uint64_t s_ws_slot_frame[8];   /* quadro + 1 em que foi guardado (0 = nada) */
+
+static uint8_t ws_eram_peek(const GBContext* ctx, uint16_t addr) {
+    if (!ctx->eram) return 0;
+    const uint32_t a = ((uint32_t)ctx->ram_bank * 0x2000u) + (uint32_t)(addr - 0xA000u);
+    return a < ctx->eram_size ? ctx->eram[a] : 0;
+}
+
+static int ws_actor_rel_x(const GBContext* ctx) {
+    return (int)(int16_t)(((uint16_t)ws_eram_peek(ctx, WS_ACT_REL_X_HIGH) << 8) |
+                          ws_eram_peek(ctx, WS_ACT_REL_X_LOW));
+}
+
+void gbrt_ws_true_x_reset(void) {
+    memset(s_ws_work_x, 0, sizeof(s_ws_work_x));
+    memset(s_ws_oam_x, 0, sizeof(s_ws_oam_x));
+    memset(s_ws_slot_rel, 0, sizeof(s_ws_slot_rel));
+    memset(s_ws_slot_frame, 0, sizeof(s_ws_slot_frame));
+}
+
+/* escrita na cópia do OAM ($AF00-$AF9F): byte 1 de cada sprite é o X */
+static void ws_note_work_oam_write(const GBContext* ctx, uint16_t addr, uint8_t value) {
+    if (addr < 0xAF00u || addr >= 0xAFA0u) return;
+    const unsigned off = addr - 0xAF00u;
+    if ((off & 3u) != 1u) return;
+    WsTrueX* w = &s_ws_work_x[off >> 2];
+    w->ok = 0;
+    if (ctx->pc != WS_ACT_WRITE_X_PC) return;          /* outro escritor: sem X verdadeiro */
+    const unsigned slot = ws_eram_peek(ctx, WS_ACT_NUM_PROC) & 7u;
+    const uint64_t now = ctx->completed_frames + 1u;
+    if (!s_ws_slot_frame[slot] || now - s_ws_slot_frame[slot] > 2u) return;   /* sem teste de tela recente */
+    const int base = s_ws_slot_rel[slot];
+    const int rel = base + (int)(int8_t)(uint8_t)(ctx->c - (uint8_t)base);  /* byte baixo casado */
+    const int piece = (int)(int8_t)(uint8_t)(value - ctx->c);    /* deslocamento do pedaço */
+    const int oam_x = rel + piece;
+    if (((oam_x) & 0xFF) != value) return;
+    w->x = (int16_t)(oam_x - 8);
+    w->byte = value;
+    w->ok = 1;
+}
+
+bool gbrt_oam_true_screen_x(const GBContext* ctx, int oam_index, int* screen_x) {
+    if (oam_index < 0 || oam_index >= 40) return false;
+    const WsTrueX* t = &s_ws_oam_x[oam_index];
+    if (!t->ok || ctx->oam[oam_index * 4 + 1] != t->byte) return false;
+    if (screen_x) *screen_x = t->x;
+    return true;
+}
+
+/* Passo 16a: o X verdadeiro não é o X do hardware (deu a volta nos 8 bits):
+ * o sprite está numa lateral ou fora da tela e não pode aparecer no centro. */
+bool gbrt_oam_hidden_in_center(const GBContext* ctx, int oam_index) {
+    int tx = 0;
+    if (!gbrt_oam_true_screen_x(ctx, oam_index, &tx)) return false;
+    return tx != (int)ctx->oam[oam_index * 4 + 1] - 8;
+}
+
+/* Passo 16a: troca o "add $10 / cp $D0" (8 bits) de ActS_CheckOffScreen ($321a):
+ * o ator é desenhado se o X relativo em 16 bits estiver em [-64, 240)
+ * (laterais de 48 pontos + a largura dos pedaços); carry = desenhar. */
+void gbrt_ws_actor_draw_cp(GBContext* ctx) {
+    const int rel = ws_actor_rel_x(ctx);
+    const unsigned slot = ws_eram_peek(ctx, WS_ACT_NUM_PROC) & 7u;
+    s_ws_slot_rel[slot] = rel;
+    s_ws_slot_frame[slot] = ctx->completed_frames + 1u;
+    ctx->f_z = 0;
+    ctx->f_n = 1;
+    ctx->f_h = 0;
+    ctx->f_c = (rel >= -64 && rel < 240) ? 1 : 0;
+}
+
 static void gbrt_log_dma_start(GBContext* ctx, uint8_t source_high) {
     uint64_t frame_index = ctx ? (ctx->completed_frames + 1) : 0;
     if (!gbrt_ppu_trace_enabled_for_frame(ctx, frame_index)) {
@@ -1176,6 +1276,7 @@ void gb_context_destroy(GBContext* ctx) {
 }
 
 void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
+    gbrt_ws_true_x_reset();   /* passo 16a */
     if (!ctx) {
         return;
     }
@@ -1839,6 +1940,7 @@ bool gb_context_load_state_file(GBContext* ctx, const char* path) {
     }
     gbrt_restore_core_state(ctx, &core_state);
     ppu_reset_widescreen_heuristics(ctx);   /* passo 12a */
+    gbrt_ws_true_x_reset();                 /* passo 16a */
     ctx->audio_pending_cpu_cycles = 0u;
     ctx->audio_cycles_until_event = 0u;
     ctx->audio_pending_old_div = ctx->div_counter;
@@ -2978,6 +3080,7 @@ static void gbrt_write8_impl(GBContext* ctx,
                 */
 
                 ctx->eram[eram_addr] = value;
+                ws_note_work_oam_write(ctx, addr, value);   /* passo 16a */
             }
         }
         return;
@@ -5013,6 +5116,14 @@ static void gb_dma_advance_active(GBContext* ctx, uint32_t cycles) {
              * retaining mapper/bank/bounds behavior. */
             uint8_t byte = gb_direct_read_oam_dma_source(ctx, src_addr);
             ctx->oam[ctx->dma.progress] = byte;
+            if ((ctx->dma.progress & 3u) == 1u) {   /* passo 16a: X verdadeiro junto */
+                WsTrueX* o = &s_ws_oam_x[ctx->dma.progress >> 2];
+                const WsTrueX* w = &s_ws_work_x[ctx->dma.progress >> 2];
+                o->ok = (uint8_t)(ctx->dma.active_source_high == WS_WORK_OAM_PAGE &&
+                                  w->ok && w->byte == byte);
+                o->x = w->x;
+                o->byte = byte;
+            }
             ctx->dma.progress++;
         }
         

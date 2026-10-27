@@ -1,5 +1,13 @@
 {
-  "/* 3218 */     gb_add8(ctx, 0x10);": "/* 3218 */     gb_add8(ctx, 0x1e);",
-  "/* 321a */     gb_cp8(ctx, 0xd0);": "/* 321a */     gb_cp8(ctx, 0xded);",
-  "/* 31fd */     ctx->bc = 0x00d0;": "/* 31fd */     ctx->bc = 0x00d1;"
+  "/* 321a */     gb_cp8(ctx, 0xd0);": "/* 321a */     gbrt_ws_actor_draw_cp(ctx);",
+  "/* 31fd */     ctx->bc = 0x00d0;": "/* 31fd */     ctx->bc = 0x00f8;",
+  "/* 3209 */     ctx->bc = 0x0030;": "/* 3209 */     ctx->bc = 0x0048;",
+  "/* 02:4476 */     gb_sub8(ctx, 0x07);": "/* 02:4476 */     gb_sub8(ctx, 0x08);",
+  "/* 02:4485 */     ctx->e = 0x0e;": "/* 02:4485 */     ctx->e = 0x10;",
+  "/* 02:449f */     gb_add8(ctx, 0x06);": "/* 02:449f */     gb_add8(ctx, 0x08);",
+  "/* 02:44bf */     gb_sub8(ctx, 0x07);": "/* 02:44bf */     gb_sub8(ctx, 0x09);",
+  "/* 02:44df */     gb_sub8(ctx, 0x07);": "/* 02:44df */     gb_sub8(ctx, 0x08);",
+  "/* 02:44ec */     ctx->e = 0x0e;": "/* 02:44ec */     ctx->e = 0x10;",
+  "/* 02:44ff */     gb_sub8(ctx, 0x07);": "/* 02:44ff */     gb_sub8(ctx, 0x08);",
+  "/* 02:450c */     ctx->e = 0x0e;": "/* 02:450c */     ctx->e = 0x10;"
 }

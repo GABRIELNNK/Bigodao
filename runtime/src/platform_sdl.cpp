@@ -3487,6 +3487,10 @@ static int g_ip_xmin = 0;
 static int g_ip_xmax = GB_SCREEN_WIDTH;
 static uint8_t g_ip_oam_cur[OAM_SIZE];
 static uint8_t g_ip_oam_prev[OAM_SIZE];
+/* Passo 16a: X verdadeiro dos sprites dos atores (IP_NO_TRUE_X = não sabe) */
+#define IP_NO_TRUE_X (-32768)
+static int g_ip_tx_cur[40];
+static int g_ip_tx_prev[40];
 static PPUNativeLineState g_ip_lines_cur[GB_SCREEN_HEIGHT];
 static PPUNativeLineState g_ip_lines_prev[GB_SCREEN_HEIGHT];
 static bool g_ip_lines_ok_cur = false;
@@ -3667,9 +3671,14 @@ static inline int ip_wrap(int d) {
 }
 
 /* Posicao do sprite na tela (x ajustado como nas laterais do widescreen). */
-static bool ip_oam_pos(const uint8_t* o, int* out_x, int* out_y) {
+static bool ip_oam_pos(const uint8_t* o, int* out_x, int* out_y, int true_x = IP_NO_TRUE_X) {
     if (o[0] == 0 || o[0] >= 160 || o[1] == 0) {
         return false;
+    }
+    if (true_x != IP_NO_TRUE_X) {   /* passo 16a */
+        *out_x = true_x;
+        *out_y = (int)o[0] - 16;
+        return true;
     }
     const int center = GB_SCREEN_WIDTH / 2;
     int sx = (int)o[1] - 8;
@@ -3696,7 +3705,7 @@ static void ip_build_sprites(const GBContext* ctx) {
     for (int i = 39; i >= 0; --i) {
         const uint8_t* o = &g_ip_oam_cur[i * 4];
         int sx = 0, sy = 0;
-        if (!ip_oam_pos(o, &sx, &sy)) continue;
+        if (!ip_oam_pos(o, &sx, &sy, g_ip_tx_cur[i])) continue;
         if (o[3] & OAM_PRIORITY) continue;   /* atras do cenario: anda junto com ele */
         const int ly0 = sy < 0 ? 0 : (sy > GB_SCREEN_HEIGHT - 1 ? GB_SCREEN_HEIGHT - 1 : sy);
         const uint8_t lcdc = g_ip_lines_ok_cur ? g_ip_lines_cur[ly0].lcdc : ctx->io[0x40];
@@ -3739,7 +3748,7 @@ static void ip_build_sprites(const GBContext* ctx) {
         bool found = false;
         int px = 0, py = 0;
         const uint8_t* p = &g_ip_oam_prev[i * 4];
-        if (ip_oam_pos(p, &px, &py) && p[2] == o[2] && (p[3] & 0x60) == (o[3] & 0x60) &&
+        if (ip_oam_pos(p, &px, &py, g_ip_tx_prev[i]) && p[2] == o[2] && (p[3] & 0x60) == (o[3] & 0x60) &&
             abs(sx - px) <= IP_MAX_SHIFT && abs(sy - py) <= IP_MAX_SHIFT) {
             bvx = sx - px; bvy = sy - py; found = true;
         }
@@ -3747,14 +3756,14 @@ static void ip_build_sprites(const GBContext* ctx) {
             for (int j = 0; j < 40; j++) {
                 const uint8_t* q = &g_ip_oam_prev[j * 4];
                 if (q[2] != o[2] || (q[3] & 0x60) != (o[3] & 0x60)) continue;
-                if (!ip_oam_pos(q, &px, &py)) continue;
+                if (!ip_oam_pos(q, &px, &py, g_ip_tx_prev[j])) continue;
                 const int dx = sx - px, dy = sy - py;
                 if (abs(dx) > IP_MAX_SHIFT || abs(dy) > IP_MAX_SHIFT) continue;
                 const int d = dx * dx + dy * dy;
                 if (d < best_d) { best_d = d; bvx = dx; bvy = dy; found = true; }
             }
         }
-        if (!found && ip_oam_pos(p, &px, &py) &&
+        if (!found && ip_oam_pos(p, &px, &py, g_ip_tx_prev[i]) &&
             abs(sx - px) <= IP_MAX_SHIFT && abs(sy - py) <= IP_MAX_SHIFT) {
             bvx = sx - px; bvy = sy - py; found = true;
         }
@@ -3856,6 +3865,7 @@ static void ip_build_runs(int base_w) {
 static void ip_capture_state(int scale, int base_w, bool black_fill) {
     /* O quadro atual vira o anterior. */
     memcpy(g_ip_oam_prev, g_ip_oam_cur, sizeof(g_ip_oam_prev));
+    memcpy(g_ip_tx_prev, g_ip_tx_cur, sizeof(g_ip_tx_prev));
     memcpy(g_ip_lines_prev, g_ip_lines_cur, sizeof(g_ip_lines_prev));
     g_ip_lines_ok_prev = g_ip_lines_ok_cur;
     g_ip_have_prev = g_ip_prev_valid && base_w == g_ip_base_w && scale == g_ip_scale &&
@@ -3866,6 +3876,10 @@ static void ip_capture_state(int scale, int base_w, bool black_fill) {
         memcpy(g_ip_oam_cur, ctx->oam, sizeof(g_ip_oam_cur));
     } else {
         memset(g_ip_oam_cur, 0, sizeof(g_ip_oam_cur));
+    }
+    for (int i = 0; i < 40; ++i) {   /* passo 16a */
+        int tx = 0;
+        g_ip_tx_cur[i] = (ctx && ctx->oam && gbrt_oam_true_screen_x(ctx, i, &tx)) ? tx : IP_NO_TRUE_X;
     }
     const PPUNativeLineState* ls =
         (ppu_native_get_mode() != PPU_RENDERER_EMULATED) ? ppu_native_line_states() : NULL;

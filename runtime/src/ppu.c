@@ -2245,7 +2245,11 @@ static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
 
         const int screen_y = (int)current_y - 16;
         int screen_x = (int)current_x - 8;
-        {
+        int true_x = 0;
+        if (gbrt_oam_true_screen_x(ctx, oam_index, &true_x)) {
+            /* passo 16a: sprite de ator com o X verdadeiro (9 bits) */
+            screen_x = true_x;
+        } else {
             const int center = (GB_SCREEN_WIDTH / 2);
             int best = screen_x;
             const int alt_low = screen_x - 256;
