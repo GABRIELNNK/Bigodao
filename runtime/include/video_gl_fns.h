@@ -92,7 +92,7 @@ struct Fns {
     VGL_FN(void, Uniform1i, (GLint, GLint))
     VGL_FN(void, Uniform2i, (GLint, GLint, GLint))   /* passo 14e-1 */
     VGL_FN(void, Uniform3i, (GLint, GLint, GLint, GLint))   /* passo 3D-4a */
-    VGL_FN(void, Uniform1iv, (GLint, GLsizei, const GLint*))   /* passo 16d */
+    VGL_FN(void, Uniform4iv, (GLint, GLsizei, const GLint*))   /* passo 16d */
     VGL_FN(void, Uniform4i, (GLint, GLint, GLint, GLint, GLint))
     VGL_FN(void, Uniform1f, (GLint, GLfloat))        /* passo 3D-1 */
     VGL_FN(void, Uniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat))

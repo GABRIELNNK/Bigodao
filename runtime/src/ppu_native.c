@@ -1338,6 +1338,7 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
                 int tx = 0;
                 g_gpu.spr_tx[i] = gbrt_oam_true_screen_x(ctx, i, &tx) ? (int16_t)tx : (int16_t)-32768;
             }
+            memcpy(g_gpu.spr_oam, ctx->oam, sizeof(g_gpu.spr_oam));
             g_gpu.ext_on = true;
         }
         g_gpu.cpu_hd_margin = g_hd_m_valid_scale > 1 ? g_hd_m : NULL;

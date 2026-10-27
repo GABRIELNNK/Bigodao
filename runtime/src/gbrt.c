@@ -507,24 +507,24 @@ bool gbrt_oam_hidden_in_center(const GBContext* ctx, int oam_index) {
 }
 
 /* Passo 16c: faixas dos atores. No 2D: a tela larga (48 pontos de cada lado).
- * Com o 3D ligado ("largo"): a imagem além da tela do 3D (96 pontos de cada
- * lado do centro). Os números no código gerado viraram chamadas a estas funções
+ * Com o 3D ligado ("largo"): até o fim da imagem além da tela do 3D (96
+ * pontos além de cada lateral; 16e: antes eram só 48). Os números no código gerado viraram chamadas a estas funções
  * (tools/widescreen_hack_fov_30_patch.json).
- *   coluna da direita ao rolar (02:449f, S + n): 2D 208..224, 3D 256..272
- *   coluna da esquerda (02:44bf, S - n): 2D -64..-48, 3D -112..-96
+ *   coluna da direita ao rolar (02:449f, S + n): 2D 208..224, 3D 304..320
+ *   coluna da esquerda (02:44bf, S - n): 2D -64..-48, 3D -160..-144
  *   carga da sala e fileiras (02:4476/44df/44ff começo, 4485/44ec/450c colunas):
- *     2D -48..208, 3D -96..256
+ *     2D -48..208, 3D -144..304
  *   some à direita (31fd) / à esquerda (3209), em X relativo (tela + 8)
- *   desenha (321a): 2D [-64, 240), 3D [-112, 288) */
+ *   desenha (321a): 2D [-64, 240), 3D [-160, 336) */
 static int s_ws_wide = 0;
 
 void gbrt_ws_set_wide_actors(bool on) { s_ws_wide = on ? 1 : 0; }
-uint16_t gbrt_ws_despawn_right(void) { return s_ws_wide ? 0x0130u : 0x00F8u; }
-uint16_t gbrt_ws_despawn_left(void) { return s_ws_wide ? 0x0080u : 0x0048u; }
-uint8_t gbrt_ws_load_left(void) { return s_ws_wide ? 0x0Bu : 0x08u; }
-uint8_t gbrt_ws_load_count(void) { return s_ws_wide ? 0x16u : 0x10u; }
-uint8_t gbrt_ws_col_right(void) { return s_ws_wide ? 0x0Bu : 0x08u; }
-uint8_t gbrt_ws_col_left(void) { return s_ws_wide ? 0x0Cu : 0x09u; }
+uint16_t gbrt_ws_despawn_right(void) { return s_ws_wide ? 0x0170u : 0x00F8u; }
+uint16_t gbrt_ws_despawn_left(void) { return s_ws_wide ? 0x00B0u : 0x0048u; }
+uint8_t gbrt_ws_load_left(void) { return s_ws_wide ? 0x0Eu : 0x08u; }
+uint8_t gbrt_ws_load_count(void) { return s_ws_wide ? 0x1Cu : 0x10u; }
+uint8_t gbrt_ws_col_right(void) { return s_ws_wide ? 0x0Eu : 0x08u; }
+uint8_t gbrt_ws_col_left(void) { return s_ws_wide ? 0x0Fu : 0x09u; }
 
 /* Passo 16c: "cp $02" do status do ator nas colisões (Wario x ator, 0d:6168;
  * ator segurado/jogado x ator, 02:4af0). A colisão usa só 8 bits do X: com o
@@ -551,7 +551,7 @@ void gbrt_ws_actor_draw_cp(GBContext* ctx) {
     ctx->f_z = 0;
     ctx->f_n = 1;
     ctx->f_h = 0;
-    ctx->f_c = s_ws_wide ? ((rel >= -112 && rel < 288) ? 1 : 0)
+    ctx->f_c = s_ws_wide ? ((rel >= -160 && rel < 336) ? 1 : 0)
                          : ((rel >= -64 && rel < 240) ? 1 : 0);
 }
 

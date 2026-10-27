@@ -302,8 +302,11 @@ typedef struct {
     int16_t ext_tx0, ext_ty0;
     uint16_t ext[PPU_NATIVE_GPU_EXT_TW * PPU_NATIVE_GPU_EXT_TH];
     /* Passo 16d: X verdadeiro de cada sprite do OAM (gbrt_oam_true_screen_x),
-     * -32768 = não sabe; os sprites dos atores além da tela vão para o 3D. */
+     * -32768 = não sabe; os sprites dos atores além da tela vão para o 3D.
+     * spr_oam = o OAM do fim do quadro (o oam[] das linhas zera o Y dos sprites
+     * que deram a volta, para não aparecerem no centro). */
     int16_t spr_tx[40];
+    uint8_t spr_oam[160];
     bool margin_on;
     uint32_t margin[144][PPU_NATIVE_GPU_MARGIN_W * 2][4];
     uint8_t fade_lut[PPU_NATIVE_GPU_MARGIN_W][256];

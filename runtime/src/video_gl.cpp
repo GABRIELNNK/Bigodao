@@ -40,7 +40,7 @@ bool load_fns(std::string& missing) {
     L(CheckFramebufferStatus) L(TexImage3D) L(TexSubImage3D) L(GetIntegerv) L(Uniform2i) L(Uniform1f) L(Uniform4f) L(UniformMatrix4fv) L(Uniform2f)
     L(GenRenderbuffers) L(DeleteRenderbuffers) L(BindRenderbuffer) L(RenderbufferStorage)
     L(FramebufferRenderbuffer) L(DepthFunc) L(DepthMask) L(DrawArraysInstanced)
-    L(Uniform3i) L(Uniform4i) L(Uniform1iv)
+    L(Uniform3i) L(Uniform4i) L(Uniform4iv)
 #undef L
     return ok;
 }

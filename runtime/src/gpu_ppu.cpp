@@ -984,7 +984,7 @@ const char* kFragment =
     "uniform int u_ext;\n"   /* passo 3D-4a: desenha a fase além da tela (tiles do mundo da CPU) */
     "uniform usampler2D u_extt;\n"   /* R16UI: tile | atributo << 8 (bit 12 = há tile) */
     "uniform ivec4 u_extg;\n"   /* tile do mundo do canto (x, y), largura, altura em tiles */
-    "uniform int u_tx[40];\n"   /* passo 16d: X verdadeiro dos sprites (-32768 = não sabe) */
+    "uniform ivec4 u_spr[40];\n"   /* passo 16d: por sprite: X verdadeiro (-32768 = não sabe), Y, tile, atributos do OAM */
     "uniform ivec3 u_exto;\n"   /* EX, EY (pontos além da tela), lateral (48 com widescreen) */
     "out vec4 o_color;\n"
     "int g_y;\n"
@@ -1292,17 +1292,17 @@ const char* kFragment =
     "        int oraw = 0, opal = 0, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
     "        bool obehind = false;\n"
     "        for (int i = 0; i < 40; ++i) {\n"
-    "            int tx = u_tx[i];\n"
+    "            int tx = u_spr[i].x;\n"
     "            if (tx == -32768) continue;\n"
     "            int p = scr - tx;\n"
     "            if (p < 0 || p >= 8) continue;\n"
-    "            uvec4 o = texelFetch(u_oam, ivec2(i, sy), 0);\n"
-    "            int spy = int(o.r) - 16;\n"
+    "            int spy = u_spr[i].y - 16;\n"
     "            if (sy < spy || sy >= spy + h) continue;\n"
-    "            int fl = int(o.a);\n"
+    "            int fl = u_spr[i].w;\n"
     "            int line = sy - spy;\n"
     "            if ((fl & 0x40) != 0) line = h - 1 - line;\n"
-    "            int t = h == 16 ? ((int(o.b) & 0xFE) + (line >> 3)) : int(o.b);\n"
+    "            int t0 = u_spr[i].z;\n"
+    "            int t = h == 16 ? ((t0 & 0xFE) + (line >> 3)) : t0;\n"
     "            int bank = (fl & 0x08) != 0 ? 1 : 0;\n"
     "            int r = tpix(bank, t, (fl & 0x20) != 0 ? 7 - p : p, line & 7);\n"
     "            if (r == 0) continue;\n"
@@ -1720,9 +1720,14 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
     gl.Uniform4i(g_loc_extg, f->ext_tx0, f->ext_ty0, PPU_NATIVE_GPU_EXT_TW, PPU_NATIVE_GPU_EXT_TH);
     gl.Uniform3i(g_loc_exto, ex, ey, side);
     {   /* passo 16d: X verdadeiro dos sprites */
-        GLint tx[40];
-        for (int i = 0; i < 40; ++i) tx[i] = f->spr_tx[i];
-        gl.Uniform1iv(g_loc_tx, 40, tx);
+        GLint spr[160];
+        for (int i = 0; i < 40; ++i) {
+            spr[i * 4] = f->spr_tx[i];
+            spr[i * 4 + 1] = f->spr_oam[i * 4];
+            spr[i * 4 + 2] = f->spr_oam[i * 4 + 2];
+            spr[i * 4 + 3] = f->spr_oam[i * 4 + 3];
+        }
+        gl.Uniform4iv(g_loc_tx, 40, spr);
     }
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
@@ -1792,7 +1797,7 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     g_loc_ext = gl.GetUniformLocation(g_prog, "u_ext");
     g_loc_extg = gl.GetUniformLocation(g_prog, "u_extg");
     g_loc_exto = gl.GetUniformLocation(g_prog, "u_exto");
-    g_loc_tx = gl.GetUniformLocation(g_prog, "u_tx");   /* passo 16d */
+    g_loc_tx = gl.GetUniformLocation(g_prog, "u_spr");   /* passo 16d */
     gl.GenVertexArrays(1, &g_vao);
     gl.PixelStorei(kUnpackAlignment, 1);
     gl.PixelStorei(kUnpackRowLength, 0);
