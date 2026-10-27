@@ -7887,6 +7887,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         }
         ppu_native_set_cpu_hd(!gpu_scr || g_gpu_compare);   /* a comparação precisa do HD da CPU */
         ppu_native_set_world_ext(gpu_scr && g3d_active());   /* passo 3D-4a */
+        gbrt_ws_set_wide_actors(gpu_scr && g3d_active());   /* passo 16c: atores até o fim da imagem 3D */
     }
     if ((g_gpu_compare || gpu_scr) && g_use_gl) {   /* passo 14b-1 / 14c-2 */
         gpu_compare_frame();

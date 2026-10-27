@@ -91,7 +91,7 @@ Target3 g_3e;
 Target3* g_cv = &g_3s;
 int g_cw = 0, g_ch = 0, g_ex = 0, g_ey = 0;
 GLuint g_tex_ext = 0;
-GLint g_loc_ext = -1, g_loc_extg = -1, g_loc_exto = -1;
+GLint g_loc_ext = -1, g_loc_extg = -1, g_loc_exto = -1, g_loc_tx = -1;
 GLuint g_cprog = 0;   /* cópia de uma textura para um pedaço do alvo */
 GLint g_cloc_off = -1;
 bool g_3d_ok = false;
@@ -984,6 +984,7 @@ const char* kFragment =
     "uniform int u_ext;\n"   /* passo 3D-4a: desenha a fase além da tela (tiles do mundo da CPU) */
     "uniform usampler2D u_extt;\n"   /* R16UI: tile | atributo << 8 (bit 12 = há tile) */
     "uniform ivec4 u_extg;\n"   /* tile do mundo do canto (x, y), largura, altura em tiles */
+    "uniform int u_tx[40];\n"   /* passo 16d: X verdadeiro dos sprites (-32768 = não sabe) */
     "uniform ivec3 u_exto;\n"   /* EX, EY (pontos além da tela), lateral (48 com widescreen) */
     "out vec4 o_color;\n"
     "int g_y;\n"
@@ -1281,6 +1282,46 @@ const char* kFragment =
     "        if (g_kind == 0 && id >= 0x60 && wave_over(bx, by)) g_kind = 2;\n"
     "        g_kind = plat_split_w(g_kind, id, wy);\n"
     "        if (lay_gone(bx, by)) g_kind = 6;\n"
+    "    }\n"
+    /* Passo 16d: sprites dos atores além da tela (o jogo agora desenha os atores
+     * até o fim da imagem 3D; o X verdadeiro vem do 16a). Só fora da tela larga
+     * (dentro dela vale a cópia da tela). */
+    "    int scr = cx - u_exto.x - u_exto.z;\n"
+    "    if (sy >= 0 && sy < 144 && (scr < -u_exto.z || scr >= 160 + u_exto.z) && (lcdc & 0x02) != 0) {\n"
+    "        int h = (lcdc & 0x04) != 0 ? 16 : 8;\n"
+    "        int oraw = 0, opal = 0, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
+    "        bool obehind = false;\n"
+    "        for (int i = 0; i < 40; ++i) {\n"
+    "            int tx = u_tx[i];\n"
+    "            if (tx == -32768) continue;\n"
+    "            int p = scr - tx;\n"
+    "            if (p < 0 || p >= 8) continue;\n"
+    "            uvec4 o = texelFetch(u_oam, ivec2(i, sy), 0);\n"
+    "            int spy = int(o.r) - 16;\n"
+    "            if (sy < spy || sy >= spy + h) continue;\n"
+    "            int fl = int(o.a);\n"
+    "            int line = sy - spy;\n"
+    "            if ((fl & 0x40) != 0) line = h - 1 - line;\n"
+    "            int t = h == 16 ? ((int(o.b) & 0xFE) + (line >> 3)) : int(o.b);\n"
+    "            int bank = (fl & 0x08) != 0 ? 1 : 0;\n"
+    "            int r = tpix(bank, t, (fl & 0x20) != 0 ? 7 - p : p, line & 7);\n"
+    "            if (r == 0) continue;\n"
+    "            oraw = r; opal = fl & 7; obehind = (fl & 0x80) != 0;\n"
+    "            ou = p; ov = (sy - spy) & 7; ofl = fl & 0x60; ogi = bank * 384 + t;\n"
+    "            break;\n"   /* o de índice menor fica por cima */
+    "        }\n"
+    "        if (oraw != 0 && !(raw != 0 && (lcdc & 0x01) != 0 && ((attr & 0x80) != 0 || obehind))) {\n"
+    "            uvec3 oc = pal(32 + opal * 4 + oraw, ly);\n"
+    "            bool show = true;\n"
+    "            if (u_hd != 0) {\n"
+    "                uint os = slot_of(1, opal, ogi);\n"
+    "                if (os != 0u) {\n"
+    "                    uvec4 ho = hd_texel(os, ou, ov, ofl, X - cx * n, Y - cy * n, n);\n"
+    "                    if (ho.a >= 128u) oc = rc_apply(rc_setup(os, oraw, oc), ho); else show = false;\n"
+    "                }\n"
+    "            }\n"
+    "            if (show) { emit(oc, c, 3); return; }\n"
+    "        }\n"
     "    }\n"
     "    emit(c, c, 1);\n"
     "}\n"
@@ -1678,6 +1719,11 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
     gl.Uniform1i(g_loc_ext, 1);
     gl.Uniform4i(g_loc_extg, f->ext_tx0, f->ext_ty0, PPU_NATIVE_GPU_EXT_TW, PPU_NATIVE_GPU_EXT_TH);
     gl.Uniform3i(g_loc_exto, ex, ey, side);
+    {   /* passo 16d: X verdadeiro dos sprites */
+        GLint tx[40];
+        for (int i = 0; i < 40; ++i) tx[i] = f->spr_tx[i];
+        gl.Uniform1iv(g_loc_tx, 40, tx);
+    }
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
     gl.Uniform1i(g_loc_ext, 0);
@@ -1746,6 +1792,7 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     g_loc_ext = gl.GetUniformLocation(g_prog, "u_ext");
     g_loc_extg = gl.GetUniformLocation(g_prog, "u_extg");
     g_loc_exto = gl.GetUniformLocation(g_prog, "u_exto");
+    g_loc_tx = gl.GetUniformLocation(g_prog, "u_tx");   /* passo 16d */
     gl.GenVertexArrays(1, &g_vao);
     gl.PixelStorei(kUnpackAlignment, 1);
     gl.PixelStorei(kUnpackRowLength, 0);

@@ -1334,6 +1334,10 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
             g_gpu.ext_ty0 = (int16_t)((top >= 0 ? top / 8 : -((7 - top) / 8)) - 2);
             ppu_world_tiles(ppu, ctx, g_gpu.ext_tx0, g_gpu.ext_ty0,
                             PPU_NATIVE_GPU_EXT_TW, PPU_NATIVE_GPU_EXT_TH, g_gpu.ext);
+            for (int i = 0; i < 40; ++i) {   /* passo 16d */
+                int tx = 0;
+                g_gpu.spr_tx[i] = gbrt_oam_true_screen_x(ctx, i, &tx) ? (int16_t)tx : (int16_t)-32768;
+            }
             g_gpu.ext_on = true;
         }
         g_gpu.cpu_hd_margin = g_hd_m_valid_scale > 1 ? g_hd_m : NULL;

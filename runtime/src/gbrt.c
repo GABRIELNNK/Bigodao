@@ -506,9 +506,43 @@ bool gbrt_oam_hidden_in_center(const GBContext* ctx, int oam_index) {
     return tx != (int)ctx->oam[oam_index * 4 + 1] - 8;
 }
 
+/* Passo 16c: faixas dos atores. No 2D: a tela larga (48 pontos de cada lado).
+ * Com o 3D ligado ("largo"): a imagem além da tela do 3D (96 pontos de cada
+ * lado do centro). Os números no código gerado viraram chamadas a estas funções
+ * (tools/widescreen_hack_fov_30_patch.json).
+ *   coluna da direita ao rolar (02:449f, S + n): 2D 208..224, 3D 256..272
+ *   coluna da esquerda (02:44bf, S - n): 2D -64..-48, 3D -112..-96
+ *   carga da sala e fileiras (02:4476/44df/44ff começo, 4485/44ec/450c colunas):
+ *     2D -48..208, 3D -96..256
+ *   some à direita (31fd) / à esquerda (3209), em X relativo (tela + 8)
+ *   desenha (321a): 2D [-64, 240), 3D [-112, 288) */
+static int s_ws_wide = 0;
+
+void gbrt_ws_set_wide_actors(bool on) { s_ws_wide = on ? 1 : 0; }
+uint16_t gbrt_ws_despawn_right(void) { return s_ws_wide ? 0x0130u : 0x00F8u; }
+uint16_t gbrt_ws_despawn_left(void) { return s_ws_wide ? 0x0080u : 0x0048u; }
+uint8_t gbrt_ws_load_left(void) { return s_ws_wide ? 0x0Bu : 0x08u; }
+uint8_t gbrt_ws_load_count(void) { return s_ws_wide ? 0x16u : 0x10u; }
+uint8_t gbrt_ws_col_right(void) { return s_ws_wide ? 0x0Bu : 0x08u; }
+uint8_t gbrt_ws_col_left(void) { return s_ws_wide ? 0x0Cu : 0x09u; }
+
+/* Passo 16c: "cp $02" do status do ator nas colisões (Wario x ator, 0d:6168;
+ * ator segurado/jogado x ator, 02:4af0). A colisão usa só 8 bits do X: com o
+ * 3D, um ator a 270 pontos tem o mesmo byte de um a 14. Com HL no slot do ator
+ * ($A200 + n*$20), um ator fora da tela de verdade não conta. No 2D é o cp. */
+void gbrt_ws_actor_status_cp(GBContext* ctx) {
+    gb_cp8(ctx, 0x02);
+    if (!s_ws_wide || !ctx->f_z || ctx->h != 0xA2u) return;
+    const unsigned slot = (ctx->l >> 5) & 7u;
+    const uint64_t now = ctx->completed_frames + 1u;
+    if (!s_ws_slot_frame[slot] || now - s_ws_slot_frame[slot] > 2u) return;
+    const int rel = s_ws_slot_rel[slot];
+    if (rel < -56 || rel >= 232) ctx->f_z = 0;
+}
+
 /* Passo 16a: troca o "add $10 / cp $D0" (8 bits) de ActS_CheckOffScreen ($321a):
- * o ator é desenhado se o X relativo em 16 bits estiver em [-64, 240)
- * (laterais de 48 pontos + a largura dos pedaços); carry = desenhar. */
+ * o ator é desenhado se o X relativo em 16 bits estiver na faixa (16c: 2D ou 3D);
+ * carry = desenhar. */
 void gbrt_ws_actor_draw_cp(GBContext* ctx) {
     const int rel = ws_actor_rel_x(ctx);
     const unsigned slot = ws_eram_peek(ctx, WS_ACT_NUM_PROC) & 7u;
@@ -517,7 +551,8 @@ void gbrt_ws_actor_draw_cp(GBContext* ctx) {
     ctx->f_z = 0;
     ctx->f_n = 1;
     ctx->f_h = 0;
-    ctx->f_c = (rel >= -64 && rel < 240) ? 1 : 0;
+    ctx->f_c = s_ws_wide ? ((rel >= -112 && rel < 288) ? 1 : 0)
+                         : ((rel >= -64 && rel < 240) ? 1 : 0);
 }
 
 static void gbrt_log_dma_start(GBContext* ctx, uint8_t source_high) {

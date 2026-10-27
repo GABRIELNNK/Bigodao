@@ -713,6 +713,15 @@ bool gbrt_oam_true_screen_x(const GBContext* ctx, int oam_index, int* screen_x);
 void gbrt_ws_actor_draw_cp(GBContext* ctx);
 bool gbrt_oam_hidden_in_center(const GBContext* ctx, int oam_index);
 void gbrt_ws_true_x_reset(void);
+/* Passo 16c: faixas dos atores ligadas ao 3D (código gerado chama estas) */
+void gbrt_ws_set_wide_actors(bool on);
+uint16_t gbrt_ws_despawn_right(void);
+uint16_t gbrt_ws_despawn_left(void);
+uint8_t gbrt_ws_load_left(void);
+uint8_t gbrt_ws_load_count(void);
+uint8_t gbrt_ws_col_right(void);
+uint8_t gbrt_ws_col_left(void);
+void gbrt_ws_actor_status_cp(GBContext* ctx);
 
 /**
  * @brief Resolve a CPU ROM address to the physical 16 KiB ROM bank.
