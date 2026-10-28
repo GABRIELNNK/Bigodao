@@ -229,3 +229,7 @@
 - Motivo: no Android o pacing pelo relógio perdia quadros (~56 fps no 3D 1x); com V-Sync ficava 59,8.
 - Resolução interna padrão passou de 4x para 1x em todas as plataformas (e no Reset Display). Quem já tem `runtime_prefs.ini` mantém o valor salvo. Pacotes HD continuam pedindo 2x+ (o menu avisa).
 - README: seção Controls (teclado e controle) depois de Requirements & Hashes, e o giroscópio nas Features, no menu 3D e na seção 3D Mode.
+
+## Passo 20b — versão 1.6
+- RELEASE_NOTES.md: seção v.1.6 no topo (inimigos além da borda no widescreen/3D, morcegos, giroscópio, V-Sync no Android, 1x padrão, README de controles, Steam Deck como problema conhecido). A v.1.5 continua logo abaixo.
+- android/app/build.gradle: versionName '1.6', versionCode 3 (antes '1.1' / 2).
