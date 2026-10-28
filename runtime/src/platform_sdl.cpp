@@ -275,6 +275,13 @@ static uint16_t marks3d_context(const GBContext* ctx);
 static const char* marks3d_context_name(uint16_t c);
 static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito (pref display.stick3d) */
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
+/* Passo 19a: câmera 3D no giroscópio (do controle ou do aparelho), somada ao
+ * analógico direito; soltando (parando de girar) ela volta ao padrão. */
+static int g_3d_gyro = 1;          /* pref display.gyro3d */
+static int g_3d_gyro_sens = 100;   /* % (pref display.gyro3d_sens) */
+static int g_3d_gyro_invx = 0, g_3d_gyro_invy = 0;   /* prefs display.gyro3d_invx / _invy */
+static float g_3d_gyro_yaw = 0.0f, g_3d_gyro_tilt = 0.0f;
+static int g_gyro_source = 0;      /* 0 nenhum, 1 controle, 2 aparelho, 3 teste */
 static int g_3d_follow = 1;        /* câmera 3D segue o Wario (pref display.follow3d, 3D-4q) */
 static int g_3d_front = 90;        /* % de um bloco à frente do chão; 0 = sem (pref display.front3d, 3D-6a) */
 static int g_3d_far_enemies = 1;   /* passo 18a: inimigos além da tela no 3D (pref display.enemies3d) */
@@ -2279,6 +2286,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_follow = (strtol(value, NULL, 10) != 0) ? 1 : 0;
                     continue;
                 }
+                if (strcmp(key, "display.gyro3d") == 0) { g_3d_gyro = (strtol(value, NULL, 10) != 0) ? 1 : 0; continue; }   /* passo 19a */
+                if (strcmp(key, "display.gyro3d_sens") == 0) { long v = strtol(value, NULL, 10); g_3d_gyro_sens = (int)(v < 25 ? 25 : (v > 300 ? 300 : v)); continue; }
+                if (strcmp(key, "display.gyro3d_invx") == 0) { g_3d_gyro_invx = (strtol(value, NULL, 10) != 0) ? 1 : 0; continue; }
+                if (strcmp(key, "display.gyro3d_invy") == 0) { g_3d_gyro_invy = (strtol(value, NULL, 10) != 0) ? 1 : 0; continue; }
                 if (strcmp(key, "display.stick3d") == 0) {   /* passo 3D-5a */
                     g_3d_stick = (strtol(value, NULL, 10) != 0) ? 1 : 0;
                     continue;
@@ -2483,6 +2494,10 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.front3d=%d\n", g_3d_front);
     fprintf(file, "display.enemies3d=%d\n", g_3d_far_enemies);   /* passo 18a */
     fprintf(file, "display.stick3d=%d\n", g_3d_stick);
+    fprintf(file, "display.gyro3d=%d\n", g_3d_gyro);              /* passo 19a */
+    fprintf(file, "display.gyro3d_sens=%d\n", g_3d_gyro_sens);
+    fprintf(file, "display.gyro3d_invx=%d\n", g_3d_gyro_invx);
+    fprintf(file, "display.gyro3d_invy=%d\n", g_3d_gyro_invy);
     fprintf(file, "display.follow3d=%d\n", g_3d_follow);
     fprintf(file, "ui.language=%d\n", g_ui_lang);     /* passo 15a */
     fprintf(file, "ui.menu_page=%d\n", g_menu_page);
@@ -3257,6 +3272,10 @@ static void reset_runtime_display_defaults(void) {
     g_3d_far_enemies = 1;   /* passo 18a */
     g_3d_spr = 90;
     g_3d_stick = 1;
+    g_3d_gyro = 1;   /* passo 19a */
+    g_3d_gyro_sens = 100;
+    g_3d_gyro_invx = 0;
+    g_3d_gyro_invy = 0;
     g_gpu_screen_error.clear();
     g_renderer_reset_pending = true;
     update_render_filter();
@@ -4369,6 +4388,50 @@ static const char* g3d_blocker(void) {
     return NULL;
 }
 
+/* Passo 19a: lê o giroscópio em rad/s no referencial de um controle (x para a
+ * direita, y para cima, z para o jogador): out[0] = em volta de x (inclinar),
+ * out[1] = em volta de y (girar). Primeiro o do controle (DualShock/DualSense,
+ * Switch Pro, Steam Deck sem o Steam Input...), senão o do aparelho (celular
+ * na horizontal: o eixo x do aparelho aponta para cima). */
+static bool gyro_read(float out[2]) {
+    static const char* fake = getenv("BIGODAO_TESTE_GIRO");   /* testes: "inclinar,girar" em rad/s */
+    if (fake) {
+        float a = 0.0f, b = 0.0f;
+        if (sscanf(fake, "%f,%f", &a, &b) == 2) { out[0] = a; out[1] = b; g_gyro_source = 3; return true; }
+    }
+    float d[3] = {0.0f, 0.0f, 0.0f};
+    if (g_controller && SDL_GameControllerHasSensor(g_controller, SDL_SENSOR_GYRO)) {
+        if (!SDL_GameControllerIsSensorEnabled(g_controller, SDL_SENSOR_GYRO)) {
+            SDL_GameControllerSetSensorEnabled(g_controller, SDL_SENSOR_GYRO, SDL_TRUE);
+        }
+        if (SDL_GameControllerGetSensorData(g_controller, SDL_SENSOR_GYRO, d, 3) == 0) {
+            out[0] = d[0]; out[1] = d[1]; g_gyro_source = 1;
+            return true;
+        }
+    }
+    static SDL_Sensor* s_dev = NULL;
+    static bool s_tried = false;
+    if (!s_dev && !s_tried) {
+        s_tried = true;
+        if (SDL_WasInit(SDL_INIT_SENSOR) || SDL_InitSubSystem(SDL_INIT_SENSOR) == 0) {
+            for (int i = 0; i < SDL_NumSensors(); ++i) {
+                if (SDL_SensorGetDeviceType(i) == SDL_SENSOR_GYRO) { s_dev = SDL_SensorOpen(i); break; }
+            }
+        }
+        fprintf(stderr, "[GIRO] giroscopio do aparelho: %s\n", s_dev ? "sim" : "nao");
+    }
+    if (s_dev && SDL_SensorGetData(s_dev, d, 3) == 0) {
+        /* paisagem: x do aparelho = cima, y = esquerda (invertido de cabeça para baixo) */
+        const bool flip = SDL_GetDisplayOrientation(0) == SDL_ORIENTATION_LANDSCAPE_FLIPPED;
+        out[0] = flip ? d[1] : -d[1];
+        out[1] = flip ? -d[0] : d[0];
+        g_gyro_source = 2;
+        return true;
+    }
+    g_gyro_source = 0;
+    return false;
+}
+
 static bool g3d_active(void) {
     return g_3d_mode == 1 && !g_benchmark_mode && g3d_blocker() == NULL;
 }
@@ -4973,8 +5036,30 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 if (std::fabs(g_3d_cam_yaw) < 0.01f) g_3d_cam_yaw = 0.0f;
                 if (std::fabs(g_3d_cam_tilt) < 0.01f) g_3d_cam_tilt = 0.0f;
             }
-            v.tilt_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_tilt + g_3d_cam_tilt));   /* 3D-4t */
-            v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw + g_3d_cam_yaw));
+            {   /* passo 19a: giroscópio: girar o controle/aparelho gira a câmera; parado,
+                 * ela volta aos poucos ao padrão (como o analógico solto) */
+                static Uint64 s_last = 0;
+                const Uint64 now = SDL_GetPerformanceCounter();
+                float dt = s_last ? (float)((double)(now - s_last) / (double)SDL_GetPerformanceFrequency()) : 0.0f;
+                s_last = now;
+                if (dt > 0.1f) dt = 0.1f;
+                float g[2] = {0.0f, 0.0f};
+                if (g_3d_gyro && !g_show_menu && gyro_read(g)) {
+                    const float dz = 0.03f, k = 57.29578f * (float)g_3d_gyro_sens / 100.0f;
+                    for (float& r : g) r = std::fabs(r) < dz ? 0.0f : r;
+                    /* girar para a direita (y negativo) = como o analógico para a direita;
+                     * inclinar o topo para longe (x negativo) = como o analógico para cima */
+                    g_3d_gyro_yaw += -g[1] * k * dt * (g_3d_gyro_invx ? -1.0f : 1.0f);
+                    g_3d_gyro_tilt += -g[0] * k * dt * (g_3d_gyro_invy ? -1.0f : 1.0f);
+                } else if (!g_3d_gyro) {
+                    g_gyro_source = 0;
+                }
+                const float back = std::exp(-1.5f * dt);   /* volta ao padrão (~1,5 s) */
+                g_3d_gyro_yaw = std::min(40.0f, std::max(-40.0f, g_3d_gyro_yaw * back));
+                g_3d_gyro_tilt = std::min(30.0f, std::max(-30.0f, g_3d_gyro_tilt * back));
+            }
+            v.tilt_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_tilt + g_3d_cam_tilt + g_3d_gyro_tilt));   /* 3D-4t; 19a */
+            v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw + g_3d_cam_yaw + g_3d_gyro_yaw));
             v.depth = (float)g_3d_depth / 100.0f;
             v.spr_depth = (float)g_3d_spr / 100.0f;   /* 3D-5e */
             v.front = (float)g_3d_front / 100.0f;      /* 3D-6a */
@@ -5036,7 +5121,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     s_goal = 1.0f;   /* fora da fase: o giro do menu como está */
                 }
                 s_dir += (s_goal - s_dir) * 0.04f;
-                v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw * s_dir + g_3d_cam_yaw));
+                v.yaw_deg = std::min(60.0f, std::max(-60.0f, (float)g_3d_yaw * s_dir + g_3d_cam_yaw + g_3d_gyro_yaw));   /* 19a */
             }
             v.linear = false;   /* 3D-6a: no 3D sempre Nearest (o Linear dava artefatos) */
             v.debug = g_3d_debug || g_3d_mark || getenv("BIGODAO_3D_CLASSES") != NULL;   /* env: testes; 3D-2b: marcando */
@@ -5409,6 +5494,20 @@ static void render_frame_internal(const uint32_t* framebuffer,
                         bool st = g_3d_stick != 0;
                         if (ImGui::Checkbox(TR("Right stick moves the camera", "Analogico direito mexe a camera"), &st)) { g_3d_stick = st ? 1 : 0; save_runtime_preferences(); }
                         if (g_3d_stick) ImGui::TextDisabled("%s", TR("Right stick: tilts and turns; let go and it comes back.", "Analogico direito: inclina e gira; soltando, volta ao padrao."));
+                        {   /* passo 19a */
+                            bool gy = g_3d_gyro != 0;
+                            if (ImGui::Checkbox(TR("Gyro moves the camera", "Giroscopio mexe a camera"), &gy)) { g_3d_gyro = gy ? 1 : 0; save_runtime_preferences(); }
+                            if (g_3d_gyro) {
+                                if (ImGui::SliderInt(TR("Gyro sensitivity (%)", "Sensibilidade do giroscopio (%)"), &g_3d_gyro_sens, 25, 300)) save_runtime_preferences();
+                                bool ix = g_3d_gyro_invx != 0, iy = g_3d_gyro_invy != 0;
+                                if (ImGui::Checkbox(TR("Invert turn", "Inverter giro"), &ix)) { g_3d_gyro_invx = ix ? 1 : 0; save_runtime_preferences(); }
+                                ImGui::SameLine();
+                                if (ImGui::Checkbox(TR("Invert tilt", "Inverter inclinacao"), &iy)) { g_3d_gyro_invy = iy ? 1 : 0; save_runtime_preferences(); }
+                                const char* src = g_gyro_source == 1 ? TR("controller", "controle") : g_gyro_source == 2 ? TR("this device", "este aparelho")
+                                                : g_gyro_source == 3 ? "teste" : TR("not found", "nao encontrado");
+                                ImGui::TextDisabled(TR("Gyro: %s. Works together with the right stick.", "Giroscopio: %s. Funciona junto com o analogico direito."), src);
+                            }
+                        }
                         bool fw = g_3d_follow != 0;
                         if (ImGui::Checkbox(TR("Camera follows Wario", "Camera segue o Wario"), &fw)) { g_3d_follow = fw ? 1 : 0; save_runtime_preferences(); }
                         if (g_3d_follow) ImGui::TextDisabled("%s", TR("In levels the turn faces the side Wario is walking to.", "Nas fases o giro vira para o lado em que o Wario anda."));
