@@ -450,10 +450,50 @@ typedef struct {
     int16_t y;      /* passo 17a: Y da tela (OAM Y - 16) */
     uint8_t ybyte;
     uint8_t yok;
+    uint8_t slot;   /* passo 18b: slot do ator que escreveu o sprite */
 } WsTrueX;
 
 static WsTrueX s_ws_work_x[40];
 static WsTrueX s_ws_oam_x[40];
+
+/* ============================================================================
+ * Passo 18b: inimigos além da tela no 3D só como imagem ("fantasmas")
+ *
+ * O jogo continua simulando os atores só na faixa do 2D (7 vagas, 40 sprites,
+ * lógica em 8 bits: o teste do 18a mostrou que é o limite do motor). O 3D
+ * mostra além disso, sem o jogo saber:
+ *  - aparência: a cada quadro, os sprites que a rotina dos atores escreveu
+ *    (X/Y verdadeiros do 16a/17a, slot) são agrupados por ator e guardados por
+ *    tipo (id do slot, $A210 + n*$20): deslocamento de cada pedaço até a origem
+ *    do ator, tile e atributos (a última pose vista). Zera quando a sala muda
+ *    (LCD desligado: portas, entrada na fase).
+ *  - onde: o layout da fase (WRAM $C000, 256 x 32 blocos) marca com o bit 7 os
+ *    blocos com ator esperando (ainda não nasceu, ou já saiu e foi guardado de
+ *    volta); o tipo vem de sActLayout ($B000, meio byte por bloco). A origem do
+ *    ator é o bloco * 16 + (8, 16).
+ *  - só fora da janela de blocos em que o jogo cria atores no 2D (colunas
+ *    S-9..S+8, fileiras T-6..T+6): ali quem decide é o jogo.
+ * ========================================================================== */
+#define WS_GHOST_MAX_PIECES 16
+#define WS_ACT_ID_OFF       0x10u
+#define WS_ACT_LAYOUT       0xB000u
+
+typedef struct {
+    uint8_t n;
+    int8_t dx[WS_GHOST_MAX_PIECES];
+    int8_t dy[WS_GHOST_MAX_PIECES];
+    uint8_t tile[WS_GHOST_MAX_PIECES];
+    uint8_t flags[WS_GHOST_MAX_PIECES];
+} WsGhostLook;
+
+static WsGhostLook s_ws_look[16];      /* por tipo (id 0-15 do layout) */
+static uint64_t s_ws_look_room = ~0ull;
+static int s_ws_ghosts_on = 0;
+
+void gbrt_ws_set_ghosts(bool on) { s_ws_ghosts_on = on ? 1 : 0; }
+
+static void ws_ghost_capture(const GBContext* ctx);   /* depois do DMA */
+
 static int s_ws_rescan = 0;   /* passo 17b: reler a área toda (ActS_InitScreenActors) */
 static int s_ws_slot_rel[8];          /* X relativo em 16 bits do ator de cada slot */
 static int s_ws_slot_rely[8];         /* passo 17a: Y relativo em 16 bits (tela + 16) */
@@ -529,6 +569,7 @@ static void ws_note_work_oam_write(const GBContext* ctx, uint16_t addr, uint8_t 
     w->x = (int16_t)(oam_x - 8);
     w->byte = value;
     w->ok = 1;
+    w->slot = (uint8_t)slot;   /* passo 18b */
 }
 
 bool gbrt_oam_true_screen_x(const GBContext* ctx, int oam_index, int* screen_x) {
@@ -682,6 +723,73 @@ void gbrt_ws_actor_draw_cp(GBContext* ctx) {
     ctx->f_h = 0;
     ctx->f_c = s_ws_wide ? ((rel >= -160 && rel < 336) ? 1 : 0)
                          : ((rel >= -64 && rel < 240) ? 1 : 0);
+}
+
+/* Passo 18b: guarda a aparência de cada tipo de ator visto neste quadro */
+static void ws_ghost_capture(const GBContext* ctx) {
+    if (ctx->total_lcd_off_span_count != s_ws_look_room) {   /* sala nova */
+        memset(s_ws_look, 0, sizeof(s_ws_look));
+        s_ws_look_room = ctx->total_lcd_off_span_count;
+    }
+    if (!s_ws_ghosts_on || !ctx->eram) return;
+    WsGhostLook now[8];
+    memset(now, 0, sizeof(now));
+    const uint64_t frame = ctx->completed_frames + 1u;
+    for (int i = 0; i < 40; ++i) {
+        const WsTrueX* t = &s_ws_oam_x[i];
+        if (!t->ok || !t->yok) continue;
+        const unsigned slot = t->slot & 7u;
+        if (!s_ws_slot_frame[slot] || frame - s_ws_slot_frame[slot] > 2u) continue;
+        const int ox = s_ws_slot_rel[slot] - 8, oy = s_ws_slot_rely[slot] - 16;
+        const int dx = t->x - ox, dy = t->y - oy;
+        if (dx < -127 || dx > 127 || dy < -127 || dy > 127) continue;
+        WsGhostLook* g = &now[slot];
+        if (g->n >= WS_GHOST_MAX_PIECES) continue;
+        g->dx[g->n] = (int8_t)dx;
+        g->dy[g->n] = (int8_t)dy;
+        g->tile[g->n] = ctx->oam[i * 4 + 2];
+        g->flags[g->n] = ctx->oam[i * 4 + 3];
+        g->n++;
+    }
+    for (unsigned slot = 0; slot < 7; ++slot) {
+        if (!now[slot].n) continue;
+        const unsigned id = ws_eram_peek(ctx, (uint16_t)(0xA200u + slot * 0x20u + WS_ACT_ID_OFF)) & 0x0Fu;
+        if (id) s_ws_look[id] = now[slot];
+    }
+}
+
+/* Passo 18b: pedaços dos fantasmas deste quadro, em coordenadas da tela
+ * (x, y do canto do sprite; tile; atributos). Devolve quantos. */
+int gbrt_ws_ghosts(const GBContext* ctx, int16_t (*out)[4], int max) {
+    if (!s_ws_ghosts_on || !ctx || !ctx->wram || !ctx->eram || max <= 0) return 0;
+    if (ctx->total_lcd_off_span_count != s_ws_look_room) return 0;   /* sala nova, nada visto */
+    const int sx = (ws_eram_peek(ctx, 0xA902) << 8) | ws_eram_peek(ctx, 0xA903);
+    const int sy = (ws_eram_peek(ctx, WS_LVL_SCROLL_Y_HI) << 8) | ws_eram_peek(ctx, WS_LVL_SCROLL_Y_HI + 1u);
+    const int S = sx >> 4, T = sy >> 4;
+    /* imagem 3D: x da tela -144..304, y -64..208, com folga para os pedaços */
+    const int bx0 = (sx - 80 - 144 - 32) >> 4, bx1 = (sx - 80 + 304 + 32) >> 4;
+    const int by0 = (sy - 72 - 64 - 32) >> 4, by1 = (sy - 72 + 208 + 32) >> 4;
+    int n = 0;
+    for (int by = by0 < 0 ? 0 : by0; by <= by1 && by < 32; ++by) {
+        for (int bx = bx0 < 0 ? 0 : bx0; bx <= bx1 && bx < 256; ++bx) {
+            const unsigned off = (unsigned)(by * 256 + bx);
+            if (!(ctx->wram[off] & 0x80u)) continue;
+            if (bx >= S - 9 && bx <= S + 8 && by >= T - 6 && by <= T + 6) continue;   /* janela do jogo */
+            const uint8_t pair = ws_eram_peek(ctx, (uint16_t)(WS_ACT_LAYOUT + (off >> 1)));
+            const unsigned id = (off & 1u) ? (pair & 0x0Fu) : (pair >> 4);
+            const WsGhostLook* g = &s_ws_look[id];
+            if (!id || !g->n) continue;
+            const int ox = bx * 16 + 8 - sx + 80, oy = by * 16 + 16 - sy + 72;
+            for (int k = 0; k < g->n && n < max; ++k) {
+                out[n][0] = (int16_t)(ox + g->dx[k]);
+                out[n][1] = (int16_t)(oy + g->dy[k]);
+                out[n][2] = g->tile[k];
+                out[n][3] = g->flags[k];
+                ++n;
+            }
+        }
+    }
+    return n;
 }
 
 static void gbrt_log_dma_start(GBContext* ctx, uint8_t source_high) {
@@ -5295,8 +5403,12 @@ static void gb_dma_advance_active(GBContext* ctx, uint32_t cycles) {
                                   w->ok && w->byte == byte);
                 o->x = w->x;
                 o->byte = byte;
+                o->slot = w->slot;   /* passo 18b */
             }
             ctx->dma.progress++;
+            if (ctx->dma.progress == 160 && ctx->dma.active_source_high == WS_WORK_OAM_PAGE) {
+                ws_ghost_capture(ctx);   /* passo 18b */
+            }
         }
         
         /* Check if DMA is complete */

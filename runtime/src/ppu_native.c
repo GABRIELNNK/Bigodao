@@ -1339,6 +1339,7 @@ void ppu_native_end_frame(GBPPU* ppu, const GBContext* ctx) {
                 g_gpu.spr_tx[i] = gbrt_oam_true_screen_x(ctx, i, &tx) ? (int16_t)tx : (int16_t)-32768;
             }
             memcpy(g_gpu.spr_oam, ctx->oam, sizeof(g_gpu.spr_oam));
+            g_gpu.ghost_n = gbrt_ws_ghosts(ctx, g_gpu.ghost, 48);   /* passo 18b */
             for (int i = 0; i < 40; ++i) {   /* passo 17a: Y verdadeiro (tela) */
                 int ty = 0;
                 g_gpu.spr_ty[i] = gbrt_oam_true_screen_y(ctx, i, &ty) ? (int16_t)ty

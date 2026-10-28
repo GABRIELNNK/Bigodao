@@ -91,7 +91,7 @@ Target3 g_3e;
 Target3* g_cv = &g_3s;
 int g_cw = 0, g_ch = 0, g_ex = 0, g_ey = 0;
 GLuint g_tex_ext = 0;
-GLint g_loc_ext = -1, g_loc_extg = -1, g_loc_exto = -1, g_loc_tx = -1;
+GLint g_loc_ext = -1, g_loc_extg = -1, g_loc_exto = -1, g_loc_tx = -1, g_loc_gh = -1, g_loc_ngh = -1;
 GLuint g_cprog = 0;   /* cópia de uma textura para um pedaço do alvo */
 GLint g_cloc_off = -1;
 bool g_3d_ok = false;
@@ -984,6 +984,8 @@ const char* kFragment =
     "uniform int u_ext;\n"   /* passo 3D-4a: desenha a fase além da tela (tiles do mundo da CPU) */
     "uniform usampler2D u_extt;\n"   /* R16UI: tile | atributo << 8 (bit 12 = há tile) */
     "uniform ivec4 u_extg;\n"   /* tile do mundo do canto (x, y), largura, altura em tiles */
+    "uniform ivec4 u_gh[48];\n"   /* passo 18b: inimigos além da tela só como imagem (x, y, tile, atributos) */
+    "uniform int u_ngh;\n"
     "uniform ivec4 u_spr[40];\n"   /* passo 16d: por sprite: X verdadeiro (-32768 = não sabe), Y da tela (17a: verdadeiro), tile, atributos do OAM */
     "uniform ivec3 u_exto;\n"   /* EX, EY (pontos além da tela), lateral (48 com widescreen) */
     "out vec4 o_color;\n"
@@ -1310,6 +1312,23 @@ const char* kFragment =
     "            oraw = r; opal = fl & 7; obehind = (fl & 0x80) != 0;\n"
     "            ou = p; ov = (sy - spy) & 7; ofl = fl & 0x60; ogi = bank * 384 + t;\n"
     "            break;\n"   /* o de índice menor fica por cima */
+    "        }\n"
+    /* 18b: sem sprite do jogo, os fantasmas (atrás dos de verdade) */
+    "        for (int i = 0; i < 48 && oraw == 0; ++i) {\n"
+    "            if (i >= u_ngh) break;\n"
+    "            ivec4 g = u_gh[i];\n"
+    "            int p = scr - g.x;\n"
+    "            if (p < 0 || p >= 8) continue;\n"
+    "            if (sy < g.y || sy >= g.y + h) continue;\n"
+    "            int fl = g.w;\n"
+    "            int line = sy - g.y;\n"
+    "            if ((fl & 0x40) != 0) line = h - 1 - line;\n"
+    "            int t = h == 16 ? ((g.z & 0xFE) + (line >> 3)) : g.z;\n"
+    "            int bank = (fl & 0x08) != 0 ? 1 : 0;\n"
+    "            int r = tpix(bank, t, (fl & 0x20) != 0 ? 7 - p : p, line & 7);\n"
+    "            if (r == 0) continue;\n"
+    "            oraw = r; opal = fl & 7; obehind = (fl & 0x80) != 0;\n"
+    "            ou = p; ov = (sy - g.y) & 7; ofl = fl & 0x60; ogi = bank * 384 + t;\n"
     "        }\n"
     "        if (oraw != 0 && !(raw != 0 && (lcdc & 0x01) != 0 && ((attr & 0x80) != 0 || obehind))) {\n"
     "            uvec3 oc = pal(32 + opal * 4 + oraw, ly);\n"
@@ -1729,6 +1748,11 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
             spr[i * 4 + 3] = f->spr_oam[i * 4 + 3];
         }
         gl.Uniform4iv(g_loc_tx, 40, spr);
+        GLint gh[48 * 4];   /* passo 18b */
+        const int ngh = f->ghost_n < 0 ? 0 : (f->ghost_n > 48 ? 48 : f->ghost_n);
+        for (int i = 0; i < 48 * 4; ++i) gh[i] = i < ngh * 4 ? f->ghost[i / 4][i % 4] : 0;
+        gl.Uniform4iv(g_loc_gh, 48, gh);
+        gl.Uniform1i(g_loc_ngh, ngh);
     }
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
@@ -1799,6 +1823,8 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     g_loc_extg = gl.GetUniformLocation(g_prog, "u_extg");
     g_loc_exto = gl.GetUniformLocation(g_prog, "u_exto");
     g_loc_tx = gl.GetUniformLocation(g_prog, "u_spr");   /* passo 16d */
+    g_loc_gh = gl.GetUniformLocation(g_prog, "u_gh");     /* passo 18b */
+    g_loc_ngh = gl.GetUniformLocation(g_prog, "u_ngh");
     gl.GenVertexArrays(1, &g_vao);
     gl.PixelStorei(kUnpackAlignment, 1);
     gl.PixelStorei(kUnpackRowLength, 0);

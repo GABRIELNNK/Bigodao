@@ -308,6 +308,10 @@ typedef struct {
     int16_t spr_tx[40];
     uint8_t spr_oam[160];
     int16_t spr_ty[40];   /* passo 17a: Y verdadeiro da tela (sem o Y verdadeiro: OAM Y - 16) */
+    /* Passo 18b: inimigos além da tela só como imagem (gbrt_ws_ghosts): x, y da
+     * tela, tile, atributos de cada pedaço */
+    int ghost_n;
+    int16_t ghost[48][4];
     bool margin_on;
     uint32_t margin[144][PPU_NATIVE_GPU_MARGIN_W * 2][4];
     uint8_t fade_lut[PPU_NATIVE_GPU_MARGIN_W][256];

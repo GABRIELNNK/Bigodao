@@ -733,6 +733,9 @@ uint16_t gbrt_ws_despawn_down(void);
 uint16_t gbrt_ws_despawn_up(void);
 void gbrt_ws_actor_draw_cpy(GBContext* ctx);
 bool gbrt_ws_take_rescan(void);   /* passo 17b */
+/* Passo 18b: inimigos além da tela no 3D só como imagem */
+void gbrt_ws_set_ghosts(bool on);
+int gbrt_ws_ghosts(const GBContext* ctx, int16_t (*out)[4], int max);
 
 /**
  * @brief Resolve a CPU ROM address to the physical 16 KiB ROM bank.

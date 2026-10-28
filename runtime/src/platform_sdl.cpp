@@ -5420,8 +5420,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     {   /* passo 18a: teste — inimigos além da tela (faixas maiores do jogo) */
                         bool fe = g_3d_far_enemies != 0;
                         if (ImGui::Checkbox(TR("Enemies beyond the screen", "Inimigos alem da tela"), &fe)) { g_3d_far_enemies = fe ? 1 : 0; save_runtime_preferences(); }
-                        ImGui::TextDisabled("%s", fe ? TR("The game keeps enemies alive up to the end of the 3D image.", "O jogo mantem os inimigos ate o fim da imagem 3D.")
-                                                     : TR("Off: the game uses the same enemy ranges as in 2D.", "Desligado: o jogo usa as mesmas faixas de inimigos do 2D."));
+                        ImGui::TextDisabled("%s", TR("Shown standing where they wait; they come alive as in 2D.", "Mostrados parados onde esperam; ganham vida como no 2D."));
                     }
                 }
             }
@@ -7903,7 +7902,11 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         }
         ppu_native_set_cpu_hd(!gpu_scr || g_gpu_compare);   /* a comparação precisa do HD da CPU */
         ppu_native_set_world_ext(gpu_scr && g3d_active());   /* passo 3D-4a */
-        gbrt_ws_set_wide_actors(gpu_scr && g3d_active() && g_3d_far_enemies);   /* passo 16c; 18a: opção no menu */
+        /* passo 18b: o jogo simula só na faixa do 2D (o teste do 18a mostrou que as
+         * faixas maiores estouram o motor); os inimigos além da tela vão para o 3D
+         * só como imagem (gbrt_ws_ghosts). As faixas largas do 16c-17b ficam sem uso. */
+        gbrt_ws_set_wide_actors(false);
+        gbrt_ws_set_ghosts(gpu_scr && g3d_active() && g_3d_far_enemies);
     }
     if ((g_gpu_compare || gpu_scr) && g_use_gl) {   /* passo 14b-1 / 14c-2 */
         gpu_compare_frame();
