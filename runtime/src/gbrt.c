@@ -480,6 +480,7 @@ static WsTrueX s_ws_oam_x[40];
 
 typedef struct {
     uint8_t n;
+    uint8_t first;   /* passo 18c: pose dos primeiros quadros depois de nascer */
     int8_t dx[WS_GHOST_MAX_PIECES];
     int8_t dy[WS_GHOST_MAX_PIECES];
     uint8_t tile[WS_GHOST_MAX_PIECES];
@@ -488,6 +489,10 @@ typedef struct {
 
 static WsGhostLook s_ws_look[16];      /* por tipo (id 0-15 do layout) */
 static uint64_t s_ws_look_room = ~0ull;
+static uint8_t s_ws_born_id[8];        /* passo 18c: id do ator em cada slot */
+static uint64_t s_ws_born_frame[8];    /* quadro em que o ator do slot nasceu */
+#define WS_GHOST_FIRST_FRAMES 8u
+static int s_ws_born_ready = 0;        /* 0 depois de carregar estado: quem já está lá não é "novo" */
 static int s_ws_ghosts_on = 0;
 
 void gbrt_ws_set_ghosts(bool on) { s_ws_ghosts_on = on ? 1 : 0; }
@@ -512,6 +517,7 @@ static int ws_actor_rel_x(const GBContext* ctx) {
 }
 
 void gbrt_ws_true_x_reset(void) {
+    s_ws_born_ready = 0;   /* passo 18c */
     s_ws_rescan = 1;   /* passo 17b: estado carregado / reinício */
     memset(s_ws_work_x, 0, sizeof(s_ws_work_x));
     memset(s_ws_oam_x, 0, sizeof(s_ws_oam_x));
@@ -725,10 +731,27 @@ void gbrt_ws_actor_draw_cp(GBContext* ctx) {
                          : ((rel >= -64 && rel < 240) ? 1 : 0);
 }
 
+/* Passo 18c: direção inicial do ator ao nascer (ActS_InitToSlot, $35b4 e
+ * $35be: "sActSetRelX + $20 < $50" -> vira para a direita). Com 8 bits, um ator
+ * que nasce além de 224 (a coluna de nascer do widescreen, 208-224) dá a volta
+ * e parece estar à esquerda do Wario: nascia virado para o lado errado (os
+ * morcegos). Aqui o X relativo vem dos 16 bits (sActSetX - sLvlScrollX + $58);
+ * carry = virar para a direita, como no jogo. */
+void gbrt_ws_init_dir_cp(GBContext* ctx) {
+    const int x = (int)(uint16_t)(ws_eram_peek(ctx, 0xA101u) | (ws_eram_peek(ctx, 0xA102u) << 8));
+    const int sx = (int)(uint16_t)((ws_eram_peek(ctx, 0xA902u) << 8) | ws_eram_peek(ctx, 0xA903u));
+    const int rel = (int)(int16_t)(uint16_t)(x - sx + 0x58);
+    ctx->f_z = 0;
+    ctx->f_n = 1;
+    ctx->f_h = 0;
+    ctx->f_c = rel < 0x30 ? 1 : 0;
+}
+
 /* Passo 18b: guarda a aparência de cada tipo de ator visto neste quadro */
 static void ws_ghost_capture(const GBContext* ctx) {
     if (ctx->total_lcd_off_span_count != s_ws_look_room) {   /* sala nova */
         memset(s_ws_look, 0, sizeof(s_ws_look));
+        memset(s_ws_born_id, 0, sizeof(s_ws_born_id));
         s_ws_look_room = ctx->total_lcd_off_span_count;
     }
     if (!s_ws_ghosts_on || !ctx->eram) return;
@@ -751,10 +774,28 @@ static void ws_ghost_capture(const GBContext* ctx) {
         g->flags[g->n] = ctx->oam[i * 4 + 3];
         g->n++;
     }
+    const int ready_before = s_ws_born_ready;
+    s_ws_born_ready = 1;
+    /* Passo 18c: a pose guardada é a dos primeiros quadros depois que o ator
+     * nasce (como ele fica esperando: o morcego virado para a esquerda); poses
+     * de depois (voando para a direita...) só valem enquanto não houver essa. */
     for (unsigned slot = 0; slot < 7; ++slot) {
+        const uint16_t base = (uint16_t)(0xA200u + slot * 0x20u);
+        const uint8_t status = ws_eram_peek(ctx, base);
+        const uint8_t idb = ws_eram_peek(ctx, (uint16_t)(base + WS_ACT_ID_OFF));
+        if (!status) { s_ws_born_id[slot] = 0; continue; }
+        if (s_ws_born_id[slot] != (uint8_t)(idb | 0x80u)) {   /* ator novo neste slot */
+            s_ws_born_id[slot] = (uint8_t)(idb | 0x80u);
+            s_ws_born_frame[slot] = ready_before ? frame : 0u;
+        }
         if (!now[slot].n) continue;
-        const unsigned id = ws_eram_peek(ctx, (uint16_t)(0xA200u + slot * 0x20u + WS_ACT_ID_OFF)) & 0x0Fu;
-        if (id) s_ws_look[id] = now[slot];
+        const unsigned id = idb & 0x0Fu;
+        if (!id) continue;
+        const bool young = frame - s_ws_born_frame[slot] < WS_GHOST_FIRST_FRAMES;
+        if (young || !s_ws_look[id].first) {
+            s_ws_look[id] = now[slot];
+            s_ws_look[id].first = young ? 1 : 0;
+        }
     }
 }
 

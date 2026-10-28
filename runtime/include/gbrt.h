@@ -736,6 +736,7 @@ bool gbrt_ws_take_rescan(void);   /* passo 17b */
 /* Passo 18b: inimigos além da tela no 3D só como imagem */
 void gbrt_ws_set_ghosts(bool on);
 int gbrt_ws_ghosts(const GBContext* ctx, int16_t (*out)[4], int max);
+void gbrt_ws_init_dir_cp(GBContext* ctx);   /* passo 18c */
 
 /**
  * @brief Resolve a CPU ROM address to the physical 16 KiB ROM bank.

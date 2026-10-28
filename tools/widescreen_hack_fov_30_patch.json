@@ -23,5 +23,7 @@
   "/* 02:44cc */     ctx->e = 0x0d;": "/* 02:44cc */     ctx->e = gbrt_ws_col_rows();",
   "/* 02:44e5 */     gb_sub8(ctx, 0x06);": "/* 02:44e5 */     gb_sub8(ctx, gbrt_ws_rows_up());",
   "/* 02:4505 */     gb_add8(ctx, 0x06);": "/* 02:4505 */     gb_add8(ctx, gbrt_ws_row_down());",
-  "/* 02:43ee */     gb_tick(ctx, 15);": "/* 02:43ee */     if (gbrt_ws_take_rescan()) { gbrt_timed_call(ctx, 0x444d, 0x43ee); if (gbrt_generated_safepoint(ctx)) return; if (ctx->single_step_mode) return; if (gb_resolve_rom_bank(ctx, 0x444d) == 2) func_02_444d(ctx); return; }   /* passo 17b */\n    gb_tick(ctx, 15);"
+  "/* 02:43ee */     gb_tick(ctx, 15);": "/* 02:43ee */     if (gbrt_ws_take_rescan()) { gbrt_timed_call(ctx, 0x444d, 0x43ee); if (gbrt_generated_safepoint(ctx)) return; if (ctx->single_step_mode) return; if (gb_resolve_rom_bank(ctx, 0x444d) == 2) func_02_444d(ctx); return; }   /* passo 17b */\n    gb_tick(ctx, 15);",
+  "/* 35b4 */     gb_cp8(ctx, 0x50);": "/* 35b4 */     gbrt_ws_init_dir_cp(ctx);",
+  "/* 35be */     gb_cp8(ctx, 0x50);": "/* 35be */     gbrt_ws_init_dir_cp(ctx);"
 }
