@@ -224,3 +224,8 @@
 - Opção futura: fundo por posição no mundo; otimizar amostragem HD; limpar campos mortos do GBPPU; GPU só se necessário.
 - **3D lento no Steam Deck (anotado 2026-10-26, atuar mais pra frente):** com 3D + Internal Resolution 4x o jogo dá lag no Deck. No 3D a imagem final sai na resolução da tela; o internal resolution só muda a textura pintada nas faces (sem pacote HD, 4x = o mesmo ponto repetido 4×4). `effective_internal_scale` olha o filtro do menu (Linear = escala 4x) e não o Nearest forçado do 3D, então monta a imagem estendida em 4x à toa. Ideias: (1) no 3D, escala 1x sem pacote HD e no máximo a do pacote com HD; (2) menos geometria (~96 mil caixas de 24 vértices desenhadas 5–6 vezes por quadro): juntar pontos vizinhos iguais, só as faces viradas para a câmera, não desenhar fora da visão; (3) não refazer mapa de classes/imagem estendida quando nada mudou; (4) opção "resolução do 3D"; (5) medir antes (tempo da GPU por etapa no overlay).
 - Regra de trabalho: uma mudança por vez, teste e commit entre elas; entregas como script Python com `--conferir`.
+## Passo 20a — padrões: V-Sync no Android e 1x
+- V-Sync vem ligado no Android (`BIGODAO_VSYNC_PADRAO`), também no Reset Display e no backend SDL_Renderer (aplicado ao iniciar). No PC continua desligado (ritmo pelo relógio, 59,7 fps).
+- Motivo: no Android o pacing pelo relógio perdia quadros (~56 fps no 3D 1x); com V-Sync ficava 59,8.
+- Resolução interna padrão passou de 4x para 1x em todas as plataformas (e no Reset Display). Quem já tem `runtime_prefs.ini` mantém o valor salvo. Pacotes HD continuam pedindo 2x+ (o menu avisa).
+- README: seção Controls (teclado e controle) depois de Requirements & Hashes, e o giroscópio nas Features, no menu 3D e na seção 3D Mode.

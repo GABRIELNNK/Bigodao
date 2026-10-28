@@ -534,7 +534,15 @@ static SDL_Rect g_game_viewport = {0, 0, GB_SCREEN_WIDTH * 5, GB_SCREEN_HEIGHT *
 static uint32_t g_last_frame_time = 0;
 static SDL_AudioDeviceID g_audio_device = 0;
 static SDL_GameController* g_controller = NULL;
-static bool g_vsync = false;  /* VSync OFF - we pace with wall clock for 59.7 FPS */
+/* Passo 20a: no Android o V-Sync vem ligado (a tela do aparelho dita o ritmo e o
+ * pacing pelo relogio perdia quadros: ~56 fps no 3D). No PC continua desligado:
+ * o ritmo pelo relogio mantem os 59,7 fps do Game Boy em monitores de 75/144 Hz. */
+#if defined(__ANDROID__)
+#define BIGODAO_VSYNC_PADRAO true
+#else
+#define BIGODAO_VSYNC_PADRAO false
+#endif
+static bool g_vsync = BIGODAO_VSYNC_PADRAO;
 static bool g_audio_started = false;
 static uint32_t g_audio_start_threshold = 0;
 
@@ -571,7 +579,7 @@ static double g_last_vsync_end_ms = 0.0;
 static int g_texture_scale = 1;          /* escala com que a textura foi criada */
 
 // Supersampling
-static int g_internal_res_scale = 4; // 1x (Nativo), 2x, 3x, 4x — 4x padrão (passo 14p)
+static int g_internal_res_scale = 1; // 1x (Nativo), 2x, 3x, 4x — 1x padrão (passo 20a)
 static const char* g_internal_res_names[] = {
     "1x (Nativo GB - 160x144)",
     "2x Internal (320x288)",
@@ -3255,12 +3263,12 @@ static void reset_runtime_display_defaults(void) {
     g_speed_percent = 100;
     //g_palette_idx = 0;
     g_smooth_lcd_transitions = true;
-    g_vsync = false;
+    g_vsync = BIGODAO_VSYNC_PADRAO;   /* passo 20a */
     g_show_overlay = false;
     g_max_speed_mode = false;
     g_render_scaling_mode = GB_RENDER_SCALING_PIXEL_PERFECT;
     g_render_filter_mode = GB_RENDER_FILTER_LINEAR;   /* passo 14p */
-    g_internal_res_scale = 4;                         /* passo 14p */
+    g_internal_res_scale = 1;                         /* passo 20a: 1x padrao */
     g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
     g_gpu_screen_pref = 1;                            /* passo 14c-3: a GPU monta a tela */
     g_3d_mode = 0;                                    /* passo 3D-1 */
@@ -3280,7 +3288,7 @@ static void reset_runtime_display_defaults(void) {
     g_renderer_reset_pending = true;
     update_render_filter();
 
-    vid_set_vsync(false);   /* passo 14a */
+    vid_set_vsync(g_vsync);   /* passo 14a / 20a */
 
     const bool want_fullscreen = platform_default_fullscreen();
     if (g_window) {
@@ -7358,6 +7366,7 @@ bool gb_platform_init(int scale) {
     } else {
         ImGui_ImplSDL2_InitForSDLRenderer(g_window, g_renderer);
         ImGui_ImplSDLRenderer2_Init(g_renderer);
+        SDL_RenderSetVSync(g_renderer, g_vsync ? 1 : 0);   /* passo 20a */
     }
 
     if (!recreate_streaming_texture()) {

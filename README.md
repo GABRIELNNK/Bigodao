@@ -21,7 +21,7 @@ By extracting and recompiling game code into modern C/C++, this project enables 
 
 * 🖥️ **Native widescreen** (16:9), enabled by default.
 * ⚡ **GPU renderer (OpenGL)**: the screen, HD tiles and post-processing filters are composed on the GPU, with an optional **120 fps** mode (in-between frames).
-* 🧊 **3D mode**: the levels get real depth — extruded blocks and sprites, water volume, a front layer, and a camera that follows Wario (also on the right analog stick). Screens outside the levels can be given depth by marking tiles.
+* 🧊 **3D mode**: the levels get real depth — extruded blocks and sprites, water volume, a front layer, and a camera that follows Wario (also on the right analog stick and, with a gyroscope, by tilting the device or controller). Screens outside the levels can be given depth by marking tiles.
 * 🎨 **HD tile mods**: replace backgrounds and sprites with high-resolution PNGs packed in `.o2r` files.
 * 🎵 **Music mods**: replace the Game Boy soundtrack with `.ogg` tracks, while sound effects keep playing from the original audio.
 * 📱 **Android port** with an on-screen gamepad, physical controller support and the system file picker.
@@ -47,6 +47,34 @@ To build and run this port, you must provide your own legally acquired Game Boy 
 > The executable validates the base ROM via its SHA-256 hash and applies the IPS patch (defined in `tools/wl_sm3_dx_v12_patch.json`) directly **in memory**. Your original ROM on disk remains untouched.  
 > 
 > *When packaging binary releases for Linux and Windows, keep the executable and `tools/wl_sm3_dx_v12_patch.json` together in the same folder. On Android, the manifest is bundled inside the APK.*
+
+---
+
+## 🎮 Controls
+
+Default bindings. Everything can be remapped in **Settings > Controls**.
+
+| Action | Keyboard | Controller |
+| :--- | :--- | :--- |
+| Move | Arrow keys or **W A S D** | D-pad or left stick |
+| **A** (jump / confirm) | **Z** or **J** | **B** (◯), the right face button, or **RB** (**R1**) |
+| **B** (dash attack / cancel) | **X** or **K** | **A** (✕), the bottom face button, or **LB** (**L1**) |
+| Start | **Enter** | **Start** (**Options**) |
+| Select | **Backspace** or **Right Shift** | **Back** (**Share**) |
+| Settings menu | **Esc** or **F10** | **Guide / Home** or **L3** |
+| Game panel | **F2** | **R3** |
+| 3D camera | — | Right stick, gyroscope |
+| Fast forward (hold) | **Tab** | **RT** (**R2**) |
+| Toggle max speed | **`** (grave) | **LT** (**L2**) |
+| Save / load state | **F5** / **F8** | **X** (▢) / **Y** (△) |
+| Previous / next state slot | **F6** / **F7** | — |
+| Performance overlay | **F1** | — |
+| Mute | **M** | — |
+| Fullscreen | **F11** | — |
+| Capture scene (for HD mods) | **F9** | — |
+
+> Controller names follow the Xbox layout (PlayStation in parentheses where it differs). Just like on the Game Boy, **A** is the right button and **B** the left one, so they sit in the same place on the pad.  
+> On **Android**, an on-screen gamepad is shown (it hides while a physical controller is in use), and **Back** also opens the menu.
 
 ---
 
@@ -147,7 +175,7 @@ Open it with **Esc**, or **Guide / Home** on a controller (on Android also **Bac
 | Category | What's there |
 | :--- | :--- |
 | **Display** | Menu theme, fullscreen, window size, V-Sync, internal resolution, scale and post-processing filters, widescreen options, video backend, screen composition (CPU/GPU) and frame rate (60/120). |
-| **3D** | 3D mode, camera (tilt, turn, right stick, follow Wario), depth, sprite thickness, front layer and the tile marking tools. |
+| **3D** | 3D mode, camera (tilt, turn, right stick, gyroscope, follow Wario), depth, sprite thickness, front layer and the tile marking tools. |
 | **Audio** | Volume, output device and latency. |
 | **Controls** | Keyboard and controller bindings, shortcuts and touch controls. |
 | **Game** | Speed and save states. |
@@ -164,6 +192,7 @@ Turn it on in **Settings > 3D > 3D mode: Layers**. It needs the **OpenGL** video
 
 * **In the levels** the depth is automatic: the level layout tells floor, water, doors and ladders apart.
 * **Camera:** tilt (negative values look from below), turn and depth. The **right analog stick** moves the camera and springs back when released, and the camera can follow Wario, turning to the side he walks to.
+* **Gyroscope:** on Android phones and controllers with a motion sensor (DualShock 4, DualSense, Switch Pro…), tilting the device turns and tilts the camera, which eases back to center when held still. It works together with the right stick. Adjust it in **3D > Camera**: on/off (on by default), sensitivity, and invert turn / tilt. The menu shows which sensor was found (controller or this device).
 * **Volume:** sprite thickness and the front layer (a copy of the terrain blocks in front of everything) are adjustable.
 * **Outside the levels** (title, save slots, maps, Course Clear, bonus games, Time Up…) the depth comes from tiles marked by hand:
   1. Turn on **3D > Tools > Mark tiles (outside levels)** and close the menu.
