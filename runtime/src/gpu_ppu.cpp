@@ -984,7 +984,7 @@ const char* kFragment =
     "uniform int u_ext;\n"   /* passo 3D-4a: desenha a fase além da tela (tiles do mundo da CPU) */
     "uniform usampler2D u_extt;\n"   /* R16UI: tile | atributo << 8 (bit 12 = há tile) */
     "uniform ivec4 u_extg;\n"   /* tile do mundo do canto (x, y), largura, altura em tiles */
-    "uniform ivec4 u_spr[40];\n"   /* passo 16d: por sprite: X verdadeiro (-32768 = não sabe), Y, tile, atributos do OAM */
+    "uniform ivec4 u_spr[40];\n"   /* passo 16d: por sprite: X verdadeiro (-32768 = não sabe), Y da tela (17a: verdadeiro), tile, atributos do OAM */
     "uniform ivec3 u_exto;\n"   /* EX, EY (pontos além da tela), lateral (48 com widescreen) */
     "out vec4 o_color;\n"
     "int g_y;\n"
@@ -1287,7 +1287,8 @@ const char* kFragment =
      * até o fim da imagem 3D; o X verdadeiro vem do 16a). Só fora da tela larga
      * (dentro dela vale a cópia da tela). */
     "    int scr = cx - u_exto.x - u_exto.z;\n"
-    "    if (sy >= 0 && sy < 144 && (scr < -u_exto.z || scr >= 160 + u_exto.z) && (lcdc & 0x02) != 0) {\n"
+    "    bool outscr = sy < 0 || sy >= 144 || scr < -u_exto.z || scr >= 160 + u_exto.z;\n"   /* 17a: também acima/abaixo */
+    "    if (outscr && (lcdc & 0x02) != 0) {\n"
     "        int h = (lcdc & 0x04) != 0 ? 16 : 8;\n"
     "        int oraw = 0, opal = 0, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
     "        bool obehind = false;\n"
@@ -1296,7 +1297,7 @@ const char* kFragment =
     "            if (tx == -32768) continue;\n"
     "            int p = scr - tx;\n"
     "            if (p < 0 || p >= 8) continue;\n"
-    "            int spy = u_spr[i].y - 16;\n"
+    "            int spy = u_spr[i].y;\n"
     "            if (sy < spy || sy >= spy + h) continue;\n"
     "            int fl = u_spr[i].w;\n"
     "            int line = sy - spy;\n"
@@ -1723,7 +1724,7 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
         GLint spr[160];
         for (int i = 0; i < 40; ++i) {
             spr[i * 4] = f->spr_tx[i];
-            spr[i * 4 + 1] = f->spr_oam[i * 4];
+            spr[i * 4 + 1] = f->spr_ty[i];   /* 17a: Y verdadeiro da tela */
             spr[i * 4 + 2] = f->spr_oam[i * 4 + 2];
             spr[i * 4 + 3] = f->spr_oam[i * 4 + 3];
         }

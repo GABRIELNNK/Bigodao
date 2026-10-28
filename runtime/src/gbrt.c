@@ -439,16 +439,25 @@ static void gbrt_log_oam_write(GBContext* ctx,
 #define WS_ACT_REL_X_HIGH   0xA301u
 #define WS_WORK_OAM_PAGE    0xAFu
 #define WS_ACT_NUM_PROC     0xA300u
+#define WS_ACT_WRITE_Y_PC   0x376Eu   /* passo 17a: o Y do sprite é gravado aqui */
+#define WS_ACT_Y_LOW        0xA103u   /* sActSetY (16 bits) */
+#define WS_LVL_SCROLL_Y_HI  0xA900u   /* sLvlScrollY (16 bits, alto primeiro) */
 
 typedef struct {
     int16_t x;      /* X da tela (OAM X - 8) */
     uint8_t byte;   /* X gravado (para conferir na cópia) */
     uint8_t ok;
+    int16_t y;      /* passo 17a: Y da tela (OAM Y - 16) */
+    uint8_t ybyte;
+    uint8_t yok;
 } WsTrueX;
 
 static WsTrueX s_ws_work_x[40];
 static WsTrueX s_ws_oam_x[40];
+static int s_ws_rescan = 0;   /* passo 17b: reler a área toda (ActS_InitScreenActors) */
 static int s_ws_slot_rel[8];          /* X relativo em 16 bits do ator de cada slot */
+static int s_ws_slot_rely[8];         /* passo 17a: Y relativo em 16 bits (tela + 16) */
+static uint8_t s_ws_slot_clamp[8];    /* passo 17b: bit 0 = X preso, bit 1 = Y preso */
 static uint64_t s_ws_slot_frame[8];   /* quadro + 1 em que foi guardado (0 = nada) */
 
 static uint8_t ws_eram_peek(const GBContext* ctx, uint16_t addr) {
@@ -463,16 +472,47 @@ static int ws_actor_rel_x(const GBContext* ctx) {
 }
 
 void gbrt_ws_true_x_reset(void) {
+    s_ws_rescan = 1;   /* passo 17b: estado carregado / reinício */
     memset(s_ws_work_x, 0, sizeof(s_ws_work_x));
     memset(s_ws_oam_x, 0, sizeof(s_ws_oam_x));
     memset(s_ws_slot_rel, 0, sizeof(s_ws_slot_rel));
+    memset(s_ws_slot_rely, 0, sizeof(s_ws_slot_rely));
+    memset(s_ws_slot_clamp, 0, sizeof(s_ws_slot_clamp));
     memset(s_ws_slot_frame, 0, sizeof(s_ws_slot_frame));
 }
 
 /* escrita na cópia do OAM ($AF00-$AF9F): byte 1 de cada sprite é o X */
+/* passo 17a: Y relativo do ator em 16 bits = sActSetY - sLvlScrollY + $58
+ * (a mesma conta de ActS_CheckOffScreen, que guarda só o byte baixo) */
+static int ws_actor_rel_y(const GBContext* ctx) {
+    const int y = (int)(uint16_t)(ws_eram_peek(ctx, WS_ACT_Y_LOW) | (ws_eram_peek(ctx, WS_ACT_Y_LOW + 1u) << 8));
+    const int sy = (int)(uint16_t)((ws_eram_peek(ctx, WS_LVL_SCROLL_Y_HI) << 8) | ws_eram_peek(ctx, WS_LVL_SCROLL_Y_HI + 1u));
+    return (int)(int16_t)(uint16_t)(y - sy + 0x58);
+}
+
+/* passo 17a: byte 0 de cada sprite é o Y (gravado em $376e, base em B) */
+static void ws_note_work_oam_y(const GBContext* ctx, unsigned off, uint8_t value) {
+    WsTrueX* w = &s_ws_work_x[off >> 2];
+    w->yok = 0;
+    if (ctx->pc != WS_ACT_WRITE_Y_PC) return;
+    const unsigned slot = ws_eram_peek(ctx, WS_ACT_NUM_PROC) & 7u;
+    const uint64_t now = ctx->completed_frames + 1u;
+    if (!s_ws_slot_frame[slot] || now - s_ws_slot_frame[slot] > 2u) return;
+    const int base = s_ws_slot_rely[slot];
+    const int rel = (s_ws_slot_clamp[slot] & 2u) ? base   /* 17b: byte do jogo preso */
+                  : base + (int)(int8_t)(uint8_t)(ctx->b - (uint8_t)base);
+    const int piece = (int)(int8_t)(uint8_t)(value - ctx->b);
+    const int oam_y = rel + piece;
+    if (!(s_ws_slot_clamp[slot] & 2u) && (oam_y & 0xFF) != value) return;
+    w->y = (int16_t)(oam_y - 16);
+    w->ybyte = value;
+    w->yok = 1;
+}
+
 static void ws_note_work_oam_write(const GBContext* ctx, uint16_t addr, uint8_t value) {
     if (addr < 0xAF00u || addr >= 0xAFA0u) return;
     const unsigned off = addr - 0xAF00u;
+    if ((off & 3u) == 0u) { ws_note_work_oam_y(ctx, off, value); return; }
     if ((off & 3u) != 1u) return;
     WsTrueX* w = &s_ws_work_x[off >> 2];
     w->ok = 0;
@@ -481,10 +521,11 @@ static void ws_note_work_oam_write(const GBContext* ctx, uint16_t addr, uint8_t 
     const uint64_t now = ctx->completed_frames + 1u;
     if (!s_ws_slot_frame[slot] || now - s_ws_slot_frame[slot] > 2u) return;   /* sem teste de tela recente */
     const int base = s_ws_slot_rel[slot];
-    const int rel = base + (int)(int8_t)(uint8_t)(ctx->c - (uint8_t)base);  /* byte baixo casado */
+    const int rel = (s_ws_slot_clamp[slot] & 1u) ? base   /* 17b: byte do jogo preso */
+                  : base + (int)(int8_t)(uint8_t)(ctx->c - (uint8_t)base);  /* byte baixo casado */
     const int piece = (int)(int8_t)(uint8_t)(value - ctx->c);    /* deslocamento do pedaço */
     const int oam_x = rel + piece;
-    if (((oam_x) & 0xFF) != value) return;
+    if (!(s_ws_slot_clamp[slot] & 1u) && (oam_x & 0xFF) != value) return;
     w->x = (int16_t)(oam_x - 8);
     w->byte = value;
     w->ok = 1;
@@ -500,7 +541,24 @@ bool gbrt_oam_true_screen_x(const GBContext* ctx, int oam_index, int* screen_x) 
 
 /* Passo 16a: o X verdadeiro não é o X do hardware (deu a volta nos 8 bits):
  * o sprite está numa lateral ou fora da tela e não pode aparecer no centro. */
+bool gbrt_oam_true_screen_y(const GBContext* ctx, int oam_index, int* screen_y) {
+    if (oam_index < 0 || oam_index >= 40) return false;
+    const WsTrueX* t = &s_ws_oam_x[oam_index];
+    if (!t->yok || ctx->oam[oam_index * 4] != t->ybyte) return false;
+    if (screen_y) *screen_y = t->y;
+    return true;
+}
+
+/* passo 17a: o Y verdadeiro deu a volta nos 8 bits (o sprite está acima ou
+ * abaixo da tela, mas o Y do hardware cairia dentro dela) */
+bool gbrt_oam_y_wrapped(const GBContext* ctx, int oam_index) {
+    int ty = 0;
+    if (!gbrt_oam_true_screen_y(ctx, oam_index, &ty)) return false;
+    return ty != (int)ctx->oam[oam_index * 4] - 16;
+}
+
 bool gbrt_oam_hidden_in_center(const GBContext* ctx, int oam_index) {
+    if (gbrt_oam_y_wrapped(ctx, oam_index)) return true;   /* passo 17a */
     int tx = 0;
     if (!gbrt_oam_true_screen_x(ctx, oam_index, &tx)) return false;
     return tx != (int)ctx->oam[oam_index * 4 + 1] - 8;
@@ -521,13 +579,57 @@ bool gbrt_oam_hidden_in_center(const GBContext* ctx, int oam_index) {
  *   desenha (321a): 2D [-64, 240), 3D [-160, 336) */
 static int s_ws_wide = 0;
 
-void gbrt_ws_set_wide_actors(bool on) { s_ws_wide = on ? 1 : 0; }
+void gbrt_ws_set_wide_actors(bool on) {
+    if (on && !s_ws_wide) s_ws_rescan = 1;   /* 17b: 2D -> 3D no meio da sala */
+    s_ws_wide = on ? 1 : 0;
+}
+
+/* Passo 17b: os inimigos só nascem quando a coluna/fileira deles entra pela
+ * borda da faixa. Ao trocar 2D -> 3D no meio da sala ou carregar um estado, o
+ * que ficou entre a faixa antiga e a nova nunca é lido. No começo de
+ * ActS_InitByScroll (02:43ee, todo quadro na fase) o código gerado pergunta
+ * aqui e, uma vez, chama ActS_InitScreenActors (02:444d, a leitura da entrada
+ * da sala, com a faixa do 3D); quem já nasceu não nasce de novo (o bit do
+ * layout já foi limpo). */
+bool gbrt_ws_take_rescan(void) {
+    if (!s_ws_rescan || !s_ws_wide) return false;
+    s_ws_rescan = 0;
+    return true;
+}
 uint16_t gbrt_ws_despawn_right(void) { return s_ws_wide ? 0x0170u : 0x00F8u; }
 uint16_t gbrt_ws_despawn_left(void) { return s_ws_wide ? 0x00B0u : 0x0048u; }
 uint8_t gbrt_ws_load_left(void) { return s_ws_wide ? 0x0Fu : 0x09u; }
 uint8_t gbrt_ws_load_count(void) { return s_ws_wide ? 0x1Eu : 0x12u; }
 uint8_t gbrt_ws_col_right(void) { return s_ws_wide ? 0x0Eu : 0x08u; }
 uint8_t gbrt_ws_col_left(void) { return s_ws_wide ? 0x0Fu : 0x09u; }
+
+/* Passo 17a: o mesmo na vertical. T = sLvlScrollY / 16; a tela começa ~4,5
+ * blocos acima de T. No 2D os números do jogo original; no 3D até o fim da
+ * imagem além da tela (64 pontos acima e abaixo):
+ *   fileira de cima ao subir (02:44e5, T - n): 2D T-6 (~-24), 3D T-10 (~-88)
+ *   fileira de baixo ao descer (02:4505, T + n): 2D T+6 (~168), 3D T+10 (~232)
+ *   colunas ao rolar de lado (02:44a5/44c5 começo, 44ac/44cc fileiras):
+ *     2D T-6..T+6, 3D T-10..T+10
+ *   carga da sala (02:447c começo, 4483 fileiras): 2D T-6..T+4 (como no
+ *     original), 3D T-10..T+10
+ *   some embaixo (31de) / em cima (31ea), em Y relativo (tela + 16)
+ *   desenha (3222): 2D o teste de 8 bits do jogo, 3D [-64, 256) */
+uint8_t gbrt_ws_rows_up(void) { return s_ws_wide ? 0x0Au : 0x06u; }
+uint8_t gbrt_ws_row_down(void) { return s_ws_wide ? 0x0Au : 0x06u; }
+uint8_t gbrt_ws_col_rows(void) { return s_ws_wide ? 0x15u : 0x0Du; }
+uint8_t gbrt_ws_load_rows(void) { return s_ws_wide ? 0x15u : 0x0Bu; }
+uint16_t gbrt_ws_despawn_down(void) { return s_ws_wide ? 0x0120u : 0x00D0u; }
+uint16_t gbrt_ws_despawn_up(void) { return s_ws_wide ? 0x0068u : 0x0040u; }
+
+/* troca o "cp $C0" de $3222 (A = Y relativo + $10, 8 bits) */
+void gbrt_ws_actor_draw_cpy(GBContext* ctx) {
+    if (!s_ws_wide) { gb_cp8(ctx, 0xC0); return; }
+    const int rel = ws_actor_rel_y(ctx);
+    ctx->f_z = 0;
+    ctx->f_n = 1;
+    ctx->f_h = 0;
+    ctx->f_c = (rel >= -64 && rel < 256) ? 1 : 0;
+}
 
 /* Passo 16c: "cp $02" do status do ator nas colisões (Wario x ator, 0d:6168;
  * ator segurado/jogado x ator, 02:4af0). A colisão usa só 8 bits do X: com o
@@ -541,6 +643,8 @@ void gbrt_ws_actor_status_cp(GBContext* ctx) {
     if (!s_ws_slot_frame[slot] || now - s_ws_slot_frame[slot] > 2u) return;
     const int rel = s_ws_slot_rel[slot];
     if (rel < -56 || rel >= 232) ctx->f_z = 0;
+    const int rely = s_ws_slot_rely[slot];   /* passo 17a: também na vertical */
+    if (rely < -40 || rely >= 200) ctx->f_z = 0;
 }
 
 /* Passo 16a: troca o "add $10 / cp $D0" (8 bits) de ActS_CheckOffScreen ($321a):
@@ -550,6 +654,28 @@ void gbrt_ws_actor_draw_cp(GBContext* ctx) {
     const int rel = ws_actor_rel_x(ctx);
     const unsigned slot = ws_eram_peek(ctx, WS_ACT_NUM_PROC) & 7u;
     s_ws_slot_rel[slot] = rel;
+    const int rely = ws_actor_rel_y(ctx);
+    s_ws_slot_rely[slot] = rely;   /* passo 17a */
+    /* Passo 17b: com o 3D, os atores vivem bem além da tela, mas a lógica deles
+     * (cair quando o Wario passa embaixo, virar para ele...) usa só o byte baixo
+     * do X/Y relativo: um espinho a 300 pontos parecia estar a 44. Fora da faixa
+     * em que 8 bits não são ambíguos (a do jogo original: X/Y em [-48, 208)), o
+     * byte que o jogo vê fica preso na borda; o desenho usa o valor de 16 bits
+     * guardado aqui. */
+    s_ws_slot_clamp[slot] = 0;
+    if (s_ws_wide && ctx->eram) {
+        const uint32_t bank = (uint32_t)ctx->ram_bank * 0x2000u;
+        if (rel < -48 || rel >= 208) {
+            const uint32_t a = bank + (WS_ACT_REL_X_LOW - 0xA000u);
+            if (a < ctx->eram_size) ctx->eram[a] = rel < 0 ? 0xD0u : 0xCFu;
+            s_ws_slot_clamp[slot] |= 1u;
+        }
+        if (rely < -48 || rely >= 208) {
+            const uint32_t a = bank + (0xA10Au - 0xA000u);   /* sActSetRelY */
+            if (a < ctx->eram_size) ctx->eram[a] = rely < 0 ? 0xD0u : 0xCFu;
+            s_ws_slot_clamp[slot] |= 2u;
+        }
+    }
     s_ws_slot_frame[slot] = ctx->completed_frames + 1u;
     ctx->f_z = 0;
     ctx->f_n = 1;
@@ -5154,6 +5280,14 @@ static void gb_dma_advance_active(GBContext* ctx, uint32_t cycles) {
              * retaining mapper/bank/bounds behavior. */
             uint8_t byte = gb_direct_read_oam_dma_source(ctx, src_addr);
             ctx->oam[ctx->dma.progress] = byte;
+            if ((ctx->dma.progress & 3u) == 0u) {   /* passo 17a: Y verdadeiro junto */
+                WsTrueX* o = &s_ws_oam_x[ctx->dma.progress >> 2];
+                const WsTrueX* w = &s_ws_work_x[ctx->dma.progress >> 2];
+                o->yok = (uint8_t)(ctx->dma.active_source_high == WS_WORK_OAM_PAGE &&
+                                   w->yok && w->ybyte == byte);
+                o->y = w->y;
+                o->ybyte = byte;
+            }
             if ((ctx->dma.progress & 3u) == 1u) {   /* passo 16a: X verdadeiro junto */
                 WsTrueX* o = &s_ws_oam_x[ctx->dma.progress >> 2];
                 const WsTrueX* w = &s_ws_work_x[ctx->dma.progress >> 2];

@@ -2242,6 +2242,9 @@ static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
         if (current_y == 0 /*|| current_x == 0 */|| current_y >= 160) {
             continue;
         }
+        if (gbrt_oam_y_wrapped(ctx, oam_index)) {   /* passo 17a: acima/abaixo da tela de verdade */
+            continue;
+        }
 
         const int screen_y = (int)current_y - 16;
         int screen_x = (int)current_x - 8;

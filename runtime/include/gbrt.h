@@ -722,6 +722,17 @@ uint8_t gbrt_ws_load_count(void);
 uint8_t gbrt_ws_col_right(void);
 uint8_t gbrt_ws_col_left(void);
 void gbrt_ws_actor_status_cp(GBContext* ctx);
+/* Passo 17a: o mesmo na vertical */
+bool gbrt_oam_true_screen_y(const GBContext* ctx, int oam_index, int* screen_y);
+bool gbrt_oam_y_wrapped(const GBContext* ctx, int oam_index);
+uint8_t gbrt_ws_rows_up(void);
+uint8_t gbrt_ws_row_down(void);
+uint8_t gbrt_ws_col_rows(void);
+uint8_t gbrt_ws_load_rows(void);
+uint16_t gbrt_ws_despawn_down(void);
+uint16_t gbrt_ws_despawn_up(void);
+void gbrt_ws_actor_draw_cpy(GBContext* ctx);
+bool gbrt_ws_take_rescan(void);   /* passo 17b */
 
 /**
  * @brief Resolve a CPU ROM address to the physical 16 KiB ROM bank.

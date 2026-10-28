@@ -277,6 +277,7 @@ static int g_3d_stick = 1;         /* passo 3D-5a: câmera no analógico direito
 static float g_3d_cam_tilt = 0.0f, g_3d_cam_yaw = 0.0f;   /* deslocamento atual pelo analógico (suavizado) */
 static int g_3d_follow = 1;        /* câmera 3D segue o Wario (pref display.follow3d, 3D-4q) */
 static int g_3d_front = 90;        /* % de um bloco à frente do chão; 0 = sem (pref display.front3d, 3D-6a) */
+static int g_3d_far_enemies = 1;   /* passo 18a: inimigos além da tela no 3D (pref display.enemies3d) */
 static int g_3d_spr = 90;          /* % espessura dos sprites (pref display.spr3d, 3D-5e) */
 static int g_3d_yaw = -5;          /* graus, câmera girada para o lado (pref display.yaw3d, 3D-3e) */
 static const PPUNativeGpuFrame* g_frame3d = NULL;   /* quadro capturado neste vsync */
@@ -2282,6 +2283,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_3d_stick = (strtol(value, NULL, 10) != 0) ? 1 : 0;
                     continue;
                 }
+                if (strcmp(key, "display.enemies3d") == 0) {   /* passo 18a */
+                    g_3d_far_enemies = (strtol(value, NULL, 10) != 0) ? 1 : 0;
+                    continue;
+                }
                 if (strcmp(key, "display.front3d") == 0) {   /* passo 3D-6a */
                     long v = strtol(value, NULL, 10);
                     g_3d_front = (int)(v < 0 ? 0 : (v > 300 ? 300 : v));
@@ -2476,6 +2481,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.yaw3d=%d\n", g_3d_yaw);
     fprintf(file, "display.spr3d=%d\n", g_3d_spr);
     fprintf(file, "display.front3d=%d\n", g_3d_front);
+    fprintf(file, "display.enemies3d=%d\n", g_3d_far_enemies);   /* passo 18a */
     fprintf(file, "display.stick3d=%d\n", g_3d_stick);
     fprintf(file, "display.follow3d=%d\n", g_3d_follow);
     fprintf(file, "ui.language=%d\n", g_ui_lang);     /* passo 15a */
@@ -3248,6 +3254,7 @@ static void reset_runtime_display_defaults(void) {
     g_3d_yaw = -5;
     g_3d_follow = 1;
     g_3d_front = 90;
+    g_3d_far_enemies = 1;   /* passo 18a */
     g_3d_spr = 90;
     g_3d_stick = 1;
     g_gpu_screen_error.clear();
@@ -3489,6 +3496,7 @@ static uint8_t g_ip_oam_cur[OAM_SIZE];
 static uint8_t g_ip_oam_prev[OAM_SIZE];
 /* Passo 16a: X verdadeiro dos sprites dos atores (IP_NO_TRUE_X = não sabe) */
 #define IP_NO_TRUE_X (-32768)
+#define IP_HIDDEN (-32767)   /* passo 17a: Y deu a volta (fora da tela de verdade) */
 static int g_ip_tx_cur[40];
 static int g_ip_tx_prev[40];
 static PPUNativeLineState g_ip_lines_cur[GB_SCREEN_HEIGHT];
@@ -3675,6 +3683,7 @@ static bool ip_oam_pos(const uint8_t* o, int* out_x, int* out_y, int true_x = IP
     if (o[0] == 0 || o[0] >= 160 || o[1] == 0) {
         return false;
     }
+    if (true_x == IP_HIDDEN) return false;   /* passo 17a */
     if (true_x != IP_NO_TRUE_X) {   /* passo 16a */
         *out_x = true_x;
         *out_y = (int)o[0] - 16;
@@ -3880,6 +3889,7 @@ static void ip_capture_state(int scale, int base_w, bool black_fill) {
     for (int i = 0; i < 40; ++i) {   /* passo 16a */
         int tx = 0;
         g_ip_tx_cur[i] = (ctx && ctx->oam && gbrt_oam_true_screen_x(ctx, i, &tx)) ? tx : IP_NO_TRUE_X;
+        if (ctx && ctx->oam && gbrt_oam_y_wrapped(ctx, i)) g_ip_tx_cur[i] = IP_HIDDEN;   /* passo 17a */
     }
     const PPUNativeLineState* ls =
         (ppu_native_get_mode() != PPU_RENDERER_EMULATED) ? ppu_native_line_states() : NULL;
@@ -5407,6 +5417,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
                     if (ImGui::SliderInt(TR("Depth (%)", "Profundidade (%)"), &g_3d_depth, 0, 200)) save_runtime_preferences();
                     if (ImGui::SliderInt(TR("Sprite thickness (%)", "Espessura dos sprites (%)"), &g_3d_spr, 5, 100)) save_runtime_preferences();   /* 3D-5e */
                     if (ImGui::SliderInt(TR("Front layer (% of a block, 0 = off)", "Plano da frente (% de bloco, 0 = sem)"), &g_3d_front, 0, 300)) save_runtime_preferences();   /* 3D-6a */
+                    {   /* passo 18a: teste — inimigos além da tela (faixas maiores do jogo) */
+                        bool fe = g_3d_far_enemies != 0;
+                        if (ImGui::Checkbox(TR("Enemies beyond the screen", "Inimigos alem da tela"), &fe)) { g_3d_far_enemies = fe ? 1 : 0; save_runtime_preferences(); }
+                        ImGui::TextDisabled("%s", fe ? TR("The game keeps enemies alive up to the end of the 3D image.", "O jogo mantem os inimigos ate o fim da imagem 3D.")
+                                                     : TR("Off: the game uses the same enemy ranges as in 2D.", "Desligado: o jogo usa as mesmas faixas de inimigos do 2D."));
+                    }
                 }
             }
 
@@ -7887,7 +7903,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         }
         ppu_native_set_cpu_hd(!gpu_scr || g_gpu_compare);   /* a comparação precisa do HD da CPU */
         ppu_native_set_world_ext(gpu_scr && g3d_active());   /* passo 3D-4a */
-        gbrt_ws_set_wide_actors(gpu_scr && g3d_active());   /* passo 16c: atores até o fim da imagem 3D */
+        gbrt_ws_set_wide_actors(gpu_scr && g3d_active() && g_3d_far_enemies);   /* passo 16c; 18a: opção no menu */
     }
     if ((g_gpu_compare || gpu_scr) && g_use_gl) {   /* passo 14b-1 / 14c-2 */
         gpu_compare_frame();
