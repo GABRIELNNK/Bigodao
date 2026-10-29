@@ -19,6 +19,7 @@ teste/
 
 # Bloqueia o arquivo empacotado de assets gerado pelo assistente
 wario.o2r
+*.o2r
 
 # Bloqueia traces e mapeamentos gerados pelo PyBoy/gbrecomp
 *.trace
