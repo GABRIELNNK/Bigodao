@@ -2227,6 +2227,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     }
                     continue;
                 }
+                if (strcmp(key, "display.color_mode") == 0) {   /* DX ou original (P&B) */
+                    ppu_set_color_mode((int)strtol(value, NULL, 10));
+                    continue;
+                }
                 if (strcmp(key, "display.post_filter") == 0) {
                     long parsed = strtol(value, NULL, 10);
                     if (parsed >= 0 && parsed < GB_POST_FILTER_COUNT) {
@@ -2491,6 +2495,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.internal_scale=%d\n", g_internal_res_scale);
     fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
+    fprintf(file, "display.color_mode=%d\n", ppu_get_color_mode());
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
     fprintf(file, "display.fps_mode=%d\n", g_fps_mode);   /* passo 10a */
     fprintf(file, "display.gpu_screen=%d\n", g_gpu_screen_pref);   /* passo 14c-2 */
@@ -5338,6 +5343,23 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (ImGui::Combo(TR("Post-processing filter", "Filtro de pos-processamento"), &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
                 g_post_filter_mode = (GBPostFilterMode)current_post_filter;
                 save_runtime_preferences();
+            }
+
+            /* Cores do DX ou o visual original do Game Boy (BGP/OBP0/OBP1) */
+            int color_mode = ppu_get_color_mode();
+            const char* color_names[] = {TR("DX (color)", "DX (colorido)"),
+                                         TR("Original (black and white)", "Original (preto e branco)"),
+                                         TR("Original (DMG green)", "Original (verde do DMG)")};
+            if (ImGui::Combo(TR("Colors", "Cores"), &color_mode, color_names, IM_ARRAYSIZE(color_names))) {
+                ppu_set_color_mode(color_mode);
+                save_runtime_preferences();
+            }
+            if (color_mode != PPU_COLOR_DX) {
+                if (const GBPPU* ppu = active_ppu()) {
+                    /* Diagnóstico: se ficarem em FC/FF/FF, o patch não escreve
+                     * mais esses registradores e o P&B sai errado. */
+                    ImGui::TextDisabled("BGP %02X  OBP0 %02X  OBP1 %02X", ppu->bgp, ppu->obp0, ppu->obp1);
+                }
             }
 
             ImGui::SeparatorText("Widescreen");

@@ -33,6 +33,7 @@ GLint g_loc_level = -1;
 /* Passo 14b-2: escritas no meio do quadro, organizadas por endereço */
 GLuint g_tex_dirty = 0, g_tex_log = 0;
 GLint g_loc_haslog = -1, g_loc_scale = -1, g_loc_hd = -1;
+GLint g_loc_mono = -1, g_loc_mono_dark = -1, g_loc_mono_light = -1;   /* modo de cor original (P&B) */
 constexpr int kLogW = 256, kLogH = (PPU_NATIVE_GPU_LOG_MAX + kLogW - 1) / kLogW;
 std::vector<uint16_t> g_dirty;        /* 0x4000 x (início + 1, quantidade) */
 std::vector<uint8_t> g_logtex;        /* kLogW*kLogH x (line_plus1, valor) */
@@ -978,6 +979,9 @@ const char* kFragment =
     "uniform int u_haslog;\n"
     "uniform int u_scale;\n"
     "uniform int u_hd;\n"
+    "uniform int u_mono;\n"         /* modo de cor original (P&B): paleta do sprite pelo bit 4 do OAM */
+    "uniform ivec3 u_mono_dark;\n"  /* rampa P&B (R, G, B) para os tiles HD */
+    "uniform ivec3 u_mono_light;\n"
     "uniform int u_out;\n"   /* passo 3D-1: 0 = cor, 1 = só o fundo (sem sprites), 2 = classe */
     "uniform int u_winfloor;\n"   /* passo 3D-2g: janela = chão (g00) */
     "uniform int u_marks;\n"   /* passo 3D-2b: fora das fases, tipo marcado à mão por tile (linha 16 de u_slot) */
@@ -1181,6 +1185,15 @@ const char* kFragment =
     "    if (!r.on) return c;\n"
     "    return min(((c * r.mul) >> 16u) + r.add, uvec3(255u));\n"
     "}\n"
+    /* Modo original (P&B), igual a ppu_mono_tint_rgba: a cor do PNG HD vai para a
+     * rampa pela luminância. ocol: paleta do sprite na tabela da linha (no P&B,
+     * 0 = OBP0 e 1 = OBP1 pelo bit 4 do OAM; senão, a paleta CGB). */
+    "uvec3 hdm(uvec3 c) {\n"
+    "    if (u_mono == 0) return c;\n"
+    "    uint l = (c.r * 77u + c.g * 150u + c.b * 29u) >> 8u;\n"
+    "    return (uvec3(u_mono_dark) * (255u - l) + uvec3(u_mono_light) * l + 127u) / 255u;\n"
+    "}\n"
+    "int ocol(int fl) { return u_mono != 0 ? ((fl & 0x10) != 0 ? 1 : 0) : (fl & 7); }\n"
     /* Passo 14b-4: laterais, como margin_hd do ppu_native (registros de ppu.c) */
     "uvec3 unpack_rgb(uint v) { return uvec3((v >> 16) & 255u, (v >> 8) & 255u, v & 255u); }\n"
     "uvec3 fade3(bool on, int m, uvec3 c) {\n"
@@ -1225,14 +1238,14 @@ const char* kFragment =
     "    uvec3 c = fade3(fade, m, bg_rgba);\n"
     "    if (bs != 0u) {\n"
     "        uvec4 h = hd_texel(bs, int(bg_uvf & 7u), int((bg_uvf >> 3) & 7u), uvf_flags(bg_uvf), sx, sy, n);\n"
-    "        if (h.a != 0u) c = fade3(fade, m, rc_apply(rc_setup(bs, bg_raw, bg_rgba), h));\n"
+    "        if (h.a != 0u) c = fade3(fade, m, hdm(rc_apply(rc_setup(bs, bg_raw, bg_rgba), h)));\n"
     "    }\n"
     "    uvec3 cbg = c;\n"
     "    int cls = clsb;\n"
     "    if (ot) {\n"
     "        if (os != 0u) {\n"
     "            uvec4 h = hd_texel(os, int(obj_uvf & 7u), int((obj_uvf >> 3) & 7u), uvf_flags(obj_uvf), sx, sy, n);\n"
-    "            if (h.a >= 128u) { c = rc_apply(rc_setup(os, obj_raw, obj_rgba), h); cls = 3; }\n"
+    "            if (h.a >= 128u) { c = hdm(rc_apply(rc_setup(os, obj_raw, obj_rgba), h)); cls = 3; }\n"
     "        } else {\n"
     "            c = obj_rgba; cls = 3;\n"
     "        }\n"
@@ -1272,7 +1285,7 @@ const char* kFragment =
     "        uint s1 = slot_of(0, attr & 7, ((attr & 0x08) != 0 ? 384 : 0) + tidx);\n"
     "        if (s1 != 0u) {\n"
     "            uvec4 h = hd_texel(s1, wx & 7, wy & 7, attr & 0x60, X - cx * n, Y - cy * n, n);\n"
-    "            if (h.a != 0u) c = rc_apply(rc_setup(s1, raw, c), h);\n"
+    "            if (h.a != 0u) c = hdm(rc_apply(rc_setup(s1, raw, c), h));\n"
     "        }\n"
     "    }\n"
     "    g_kind = 0;\n"
@@ -1292,7 +1305,7 @@ const char* kFragment =
     "    bool outscr = sy < 0 || sy >= 144 || scr < -u_exto.z || scr >= 160 + u_exto.z;\n"   /* 17a: também acima/abaixo */
     "    if (outscr && (lcdc & 0x02) != 0) {\n"
     "        int h = (lcdc & 0x04) != 0 ? 16 : 8;\n"
-    "        int oraw = 0, opal = 0, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
+    "        int oraw = 0, opal = 0, odm = 0, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
     "        bool obehind = false;\n"
     "        for (int i = 0; i < 40; ++i) {\n"
     "            int tx = u_spr[i].x;\n"
@@ -1309,7 +1322,7 @@ const char* kFragment =
     "            int bank = (fl & 0x08) != 0 ? 1 : 0;\n"
     "            int r = tpix(bank, t, (fl & 0x20) != 0 ? 7 - p : p, line & 7);\n"
     "            if (r == 0) continue;\n"
-    "            oraw = r; opal = fl & 7; obehind = (fl & 0x80) != 0;\n"
+    "            oraw = r; opal = fl & 7; odm = ocol(fl); obehind = (fl & 0x80) != 0;\n"
     "            ou = p; ov = (sy - spy) & 7; ofl = fl & 0x60; ogi = bank * 384 + t;\n"
     "            break;\n"   /* o de índice menor fica por cima */
     "        }\n"
@@ -1327,17 +1340,17 @@ const char* kFragment =
     "            int bank = (fl & 0x08) != 0 ? 1 : 0;\n"
     "            int r = tpix(bank, t, (fl & 0x20) != 0 ? 7 - p : p, line & 7);\n"
     "            if (r == 0) continue;\n"
-    "            oraw = r; opal = fl & 7; obehind = (fl & 0x80) != 0;\n"
+    "            oraw = r; opal = fl & 7; odm = ocol(fl); obehind = (fl & 0x80) != 0;\n"
     "            ou = p; ov = (sy - g.y) & 7; ofl = fl & 0x60; ogi = bank * 384 + t;\n"
     "        }\n"
     "        if (oraw != 0 && !(raw != 0 && (lcdc & 0x01) != 0 && ((attr & 0x80) != 0 || obehind))) {\n"
-    "            uvec3 oc = pal(32 + opal * 4 + oraw, ly);\n"
+    "            uvec3 oc = pal(32 + odm * 4 + oraw, ly);\n"
     "            bool show = true;\n"
     "            if (u_hd != 0) {\n"
     "                uint os = slot_of(1, opal, ogi);\n"
     "                if (os != 0u) {\n"
     "                    uvec4 ho = hd_texel(os, ou, ov, ofl, X - cx * n, Y - cy * n, n);\n"
-    "                    if (ho.a >= 128u) oc = rc_apply(rc_setup(os, oraw, oc), ho); else show = false;\n"
+    "                    if (ho.a >= 128u) oc = hdm(rc_apply(rc_setup(os, oraw, oc), ho)); else show = false;\n"
     "                }\n"
     "            }\n"
     "            if (show) { emit(oc, c, 3); return; }\n"
@@ -1391,10 +1404,10 @@ const char* kFragment =
     "    if (u_winfloor != 0 && inwin && !mkwin && !hudl) { g_kind = bgraw != 0 ? 1 : 0; mkwin = true; }\n"
     "    bool hudpix = (inwin && !mkwin) || hudl;\n"
     /* sprites: todos os 40; vencedor e a primeira caixa transparente (HD) */
-    "    int oraw = 0, opal = 0, osx = 999, oidx = 99, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
+    "    int oraw = 0, opal = 0, odm = 0, osx = 999, oidx = 99, ou = 0, ov = 0, ofl = 0, ogi = 0;\n"
     "    bool obehind = false;\n"
     "    bool box = false;\n"
-    "    int xu = 0, xv = 0, xfl = 0, xpal = 0, xgi = 0;\n"
+    "    int xu = 0, xv = 0, xfl = 0, xpal = 0, xdm = 0, xgi = 0;\n"
     "    bool xbehind = false;\n"
     "    if ((lcdc & 0x02) != 0) {\n"
     "        int h = (lcdc & 0x04) != 0 ? 16 : 8;\n"
@@ -1413,7 +1426,7 @@ const char* kFragment =
     "            int bank = (fl & 0x08) != 0 ? 1 : 0;\n"
     "            int raw = tpix(bank, t, (fl & 0x20) != 0 ? 7 - p : p, line & 7);\n"
     "            if (raw == 0) {\n"
-    "                if (!box) { box = true; xu = p; xv = (y - spy) & 7; xfl = fl & 0x60; xpal = fl & 7;\n"
+    "                if (!box) { box = true; xu = p; xv = (y - spy) & 7; xfl = fl & 0x60; xpal = fl & 7; xdm = ocol(fl);\n"
     "                            xbehind = (fl & 0x80) != 0; xgi = bank * 384 + t; }\n"
     "                continue;\n"
     "            }\n"
@@ -1421,45 +1434,45 @@ const char* kFragment =
     "                bool wins = opri ? (spx < osx || (spx == osx && i < oidx)) : (i < oidx);\n"
     "                if (!wins) continue;\n"
     "            }\n"
-    "            oraw = raw; opal = fl & 7; obehind = (fl & 0x80) != 0; osx = spx; oidx = i;\n"
+    "            oraw = raw; opal = fl & 7; odm = ocol(fl); obehind = (fl & 0x80) != 0; osx = spx; oidx = i;\n"
     "            ou = p; ov = (y - spy) & 7; ofl = fl & 0x60; ogi = bank * 384 + t;\n"
     "        }\n"
     "    }\n"
     "    bool useobj = oraw != 0;\n"
     "    if (useobj && bgraw != 0 && (lcdc & 0x01) != 0 && (bgpri || obehind)) useobj = false;\n"
     "    uvec3 bgc1 = pal(bgpal * 4 + bgraw, y);\n"
-    "    uvec3 c1 = useobj ? pal(32 + opal * 4 + oraw, y) : bgc1;\n"
+    "    uvec3 c1 = useobj ? pal(32 + odm * 4 + oraw, y) : bgc1;\n"
     "    int cls1 = useobj ? 3 : (hudpix ? 2 : 1);\n"
     "    if (u_hd == 0) { emit(c1, bgc1, cls1); return; }\n"
     /* HD (render_line com g_hd_scale > 1) */
     "    uint bs = slot_of(0, bgpal, bgi);\n"
     "    uint os = 0u;\n"
     "    bool ot = false;\n"
-    "    int cu = 0, cv = 0, cfl = 0, cpal = 0;\n"
+    "    int cu = 0, cv = 0, cfl = 0, cpal = 0, cdm = 0;\n"
     "    bool cbehind = false;\n"
     "    if (oraw != 0) {\n"
-    "        ot = true; cu = ou; cv = ov; cfl = ofl; cpal = opal; cbehind = obehind;\n"
+    "        ot = true; cu = ou; cv = ov; cfl = ofl; cpal = opal; cdm = odm; cbehind = obehind;\n"
     "        os = slot_of(1, opal, ogi);\n"
     "    } else if (box) {\n"
     "        os = slot_of(1, xpal, xgi);\n"
-    "        if (os != 0u) { ot = true; cu = xu; cv = xv; cfl = xfl; cpal = xpal; cbehind = xbehind; }\n"
+    "        if (os != 0u) { ot = true; cu = xu; cv = xv; cfl = xfl; cpal = xpal; cdm = xdm; cbehind = xbehind; }\n"
     "    }\n"
     "    if (bs == 0u && os == 0u) { emit(c1, bgc1, cls1); return; }\n"
     "    uvec3 bg_orig = pal(bgpal * 4 + bgraw, y);\n"
-    "    uvec3 obj_orig = oraw != 0 ? pal(32 + cpal * 4 + oraw, y) : uvec3(0u);\n"
+    "    uvec3 obj_orig = oraw != 0 ? pal(32 + cdm * 4 + oraw, y) : uvec3(0u);\n"
     "    bool blocked = bgraw != 0 && (lcdc & 0x01) != 0 && (bgpri || cbehind);\n"
     "    bool can_win = ot && !blocked;\n"
     "    uvec3 c = bg_orig;\n"
     "    if (bs != 0u) {\n"
     "        uvec4 hb = hd_texel(bs, bu, bv, attr & 0x60, sx, sy, n);\n"
-    "        if (hb.a != 0u) c = rc_apply(rc_setup(bs, bgraw, bg_orig), hb);\n"
+    "        if (hb.a != 0u) c = hdm(rc_apply(rc_setup(bs, bgraw, bg_orig), hb));\n"
     "    }\n"
     "    uvec3 cbg = c;\n"
     "    int cls = hudpix ? 2 : 1;\n"
     "    if (can_win) {\n"
     "        if (os != 0u) {\n"
     "            uvec4 ho = hd_texel(os, cu, cv, cfl, sx, sy, n);\n"
-    "            if (ho.a >= 128u) { c = rc_apply(rc_setup(os, oraw, pal(32 + cpal * 4 + oraw, y)), ho); cls = 3; }\n"
+    "            if (ho.a >= 128u) { c = hdm(rc_apply(rc_setup(os, oraw, pal(32 + cdm * 4 + oraw, y)), ho)); cls = 3; }\n"
     "        } else if (oraw != 0) {\n"
     "            c = obj_orig; cls = 3;\n"
     "        }\n"
@@ -1686,6 +1699,15 @@ void bind_inputs(void) {
         gl.BindTexture(targets[i], texs[i]);
     }
     gl.ActiveTexture(kTexture0);
+    /* Modo de cor original (P&B). As cores da tabela da linha já vêm em P&B do
+     * ppu_native; aqui só a escolha OBP0/OBP1 dos sprites e o HD (a GPU só
+     * monta quadros do modo CGB). */
+    const bool mono = ppu_get_color_mode() != PPU_COLOR_DX;
+    uint32_t dark = 0, light = 0;
+    ppu_mono_ramp_ends(&dark, &light);
+    gl.Uniform1i(g_loc_mono, mono ? 1 : 0);
+    gl.Uniform3i(g_loc_mono_dark, (GLint)((dark >> 16) & 255u), (GLint)((dark >> 8) & 255u), (GLint)(dark & 255u));
+    gl.Uniform3i(g_loc_mono_light, (GLint)((light >> 16) & 255u), (GLint)((light >> 8) & 255u), (GLint)(light & 255u));
 }
 
 bool g_nofade = false;   /* 3D-4a: laterais sem escurecimento (u_ext = 2 no margin_main) */
@@ -1815,6 +1837,9 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     g_loc_haslog = gl.GetUniformLocation(g_prog, "u_haslog");
     g_loc_scale = gl.GetUniformLocation(g_prog, "u_scale");
     g_loc_hd = gl.GetUniformLocation(g_prog, "u_hd");
+    g_loc_mono = gl.GetUniformLocation(g_prog, "u_mono");
+    g_loc_mono_dark = gl.GetUniformLocation(g_prog, "u_mono_dark");
+    g_loc_mono_light = gl.GetUniformLocation(g_prog, "u_mono_light");
     g_loc_hastl = gl.GetUniformLocation(g_prog, "u_hastl");
     g_loc_margin = gl.GetUniformLocation(g_prog, "u_margin");
     g_loc_out = gl.GetUniformLocation(g_prog, "u_out");

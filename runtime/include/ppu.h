@@ -284,6 +284,28 @@ const uint32_t* ppu_get_framebuffer(GBPPU* ppu);
  */
 uint32_t ppu_get_dmg_shade_rgb(uint8_t shade);
 
+/* Modo de cor (opção do menu). No modo CGB, PPU_COLOR_MONO_* trocam as
+ * paletas de cor pelos registradores do DMG (BGP/OBP0/OBP1), que o jogo
+ * continua escrevendo: cada índice de 2 bits vira um dos 4 tons originais.
+ * Tiles, bancos, flips e prioridades continuam os do DX. Fora do modo CGB
+ * não muda nada. É só exibição: não afeta a lógica do jogo. */
+typedef enum {
+    PPU_COLOR_DX = 0,          /* paletas de cor do patch DX */
+    PPU_COLOR_MONO_GRAY = 1,   /* original, 4 tons de cinza */
+    PPU_COLOR_MONO_GREEN = 2,  /* original, verde do DMG */
+    PPU_COLOR_MODE_COUNT
+} PPUColorMode;
+
+void ppu_set_color_mode(int mode);
+int ppu_get_color_mode(void);
+/** Cor RGB555 do tom 0-3 (0 = mais claro) no modo P&B atual. */
+uint16_t ppu_mono_shade_rgb555(uint8_t shade);
+/** Extremos da rampa P&B atual (0xFFRRGGBB): o tom mais escuro e o mais claro. */
+void ppu_mono_ramp_ends(uint32_t* dark, uint32_t* light);
+/** Converte uma cor qualquer (0xAARRGGBB, ex.: pixel de tile HD) para a rampa
+ *  P&B atual pela luminância; o alfa vira 0xFF. */
+uint32_t ppu_mono_tint_rgba(uint32_t argb);
+
 /**
  * @brief Enable/disable widescreen (16:9) background extension.
  *        Off by default. Purely a display option.

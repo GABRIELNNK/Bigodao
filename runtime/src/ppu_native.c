@@ -185,9 +185,21 @@ static inline uint8_t dmg_shade(uint8_t raw, uint8_t reg) {
     return (uint8_t)((reg >> (raw * 2u)) & 3u);
 }
 
+/* Modo de cor "original" (menu): no modo CGB, as cores saem de BGP/OBP0/OBP1
+ * em vez das paletas do DX. g_mono vale para o quadro/linha em andamento e é
+ * usado também para levar os tiles HD para a rampa P&B. */
+static bool g_mono = false;
+
+static inline bool mono_on(bool cgb) {
+    return cgb && ppu_get_color_mode() != PPU_COLOR_DX;
+}
+
 static uint32_t bg_color(const GBPPU* ppu, bool cgb, bool compat,
                          uint8_t palette, uint8_t raw, uint8_t bgp) {
     if (cgb) {
+        if (mono_on(cgb)) {
+            return rgb(ppu_mono_shade_rgb555(dmg_shade(raw, bgp)));
+        }
         return rgb(palette_word(ppu->bg_palette_ram, palette, raw));
     }
     if (compat) {
@@ -199,6 +211,9 @@ static uint32_t bg_color(const GBPPU* ppu, bool cgb, bool compat,
 static uint32_t obj_color(const GBPPU* ppu, bool cgb, bool compat,
                           uint8_t palette, uint8_t raw, uint8_t obp) {
     if (cgb) {
+        if (mono_on(cgb)) {
+            return rgb(ppu_mono_shade_rgb555(dmg_shade(raw, obp)));
+        }
         return rgb(palette_word(ppu->obj_palette_ram, palette, raw));
     }
     if (compat) {
@@ -367,6 +382,7 @@ static inline uint8_t sample_tile_sub(const uint8_t* tile, unsigned u, unsigned 
 typedef struct {
     uint8_t raw[NATIVE_W];
     uint8_t palette[NATIVE_W];
+    uint8_t obp[NATIVE_W];    /* registrador DMG do sprite (OBP0/OBP1 pelo bit 4 do OAM) */
     uint8_t behind[NATIVE_W];
     int16_t screen_x[NATIVE_W];
     uint8_t oam_index[NATIVE_W];
@@ -382,6 +398,7 @@ typedef struct {
     uint8_t box_v[NATIVE_W];
     uint8_t box_flags[NATIVE_W];
     uint8_t box_palette[NATIVE_W];
+    uint8_t box_obp[NATIVE_W];
     uint8_t box_behind[NATIVE_W];
 } ObjLine;
 
@@ -425,6 +442,8 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
         const uint8_t* row = tile_px + (line & 7) * 8;
         const uint8_t screen_v = (uint8_t)((y - sprite_y) & 7);
         const uint8_t palette = cgb ? (flags & OAM_CGB_PALETTE) : ((flags & OAM_PALETTE) ? 1u : 0u);
+        /* Igual a "palette ? OBP1 : OBP0" fora do CGB; no CGB, o do jogo original. */
+        const uint8_t obp = (flags & OAM_PALETTE) ? st->obp1 : st->obp0;
 
         for (int p = 0; p < 8; ++p) {
             const int x = sprite_x + p;
@@ -439,6 +458,7 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
                     out->box_v[x] = screen_v;
                     out->box_flags[x] = flags & (OAM_FLIP_X | OAM_FLIP_Y);
                     out->box_palette[x] = palette;
+                    out->box_obp[x] = obp;
                     out->box_behind[x] = (flags & OAM_PRIORITY) ? 1u : 0u;
                 }
                 continue;
@@ -454,6 +474,7 @@ static void rasterize_objects(const GBPPU* ppu, const GBContext* ctx, bool cgb,
             }
             out->raw[x] = raw;
             out->palette[x] = palette;
+            out->obp[x] = obp;
             out->behind[x] = (flags & OAM_PRIORITY) ? 1u : 0u;
             out->screen_x[x] = (int16_t)sprite_x;
             out->oam_index[x] = (uint8_t)index;
@@ -540,8 +561,13 @@ static void dump_tile(char kind, const uint8_t* tile_px, const uint16_t colors[4
 /* Cores RGB555 de uma paleta, como a linha as resolve. */
 static void line_palette_colors(const GBPPU* ppu, bool cgb, bool compat, bool obj,
                                 uint8_t palette, uint8_t dmg_reg, uint16_t out[4]) {
+    const bool mono = mono_on(cgb);
     for (uint8_t raw = 0; raw < 4u; ++raw) {
-        if (cgb) {
+        if (mono) {
+            /* P&B: a "paleta" p dos sprites é a do bit 4 do OAM (0 = OBP0, 1 = OBP1);
+             * quem chama passa dmg_reg = p ? OBP1 : OBP0. */
+            out[raw] = ppu_mono_shade_rgb555(dmg_shade(raw, dmg_reg));
+        } else if (cgb) {
             out[raw] = palette_word(obj ? ppu->obj_palette_ram : ppu->bg_palette_ram, palette, raw);
         } else if (compat) {
             out[raw] = palette_word(obj ? ppu->obj_palette_ram : ppu->bg_palette_ram,
@@ -742,7 +768,7 @@ static inline void hd_recolor_setup(HdRecolor* r, const HdTile* t, uint8_t idx, 
     }
 }
 
-static inline uint32_t hd_recolor_apply(const HdRecolor* r, uint32_t c) {
+static inline uint32_t hd_recolor_apply_rgb(const HdRecolor* r, uint32_t c) {
     if (!r->active) {
         return c | 0xFF000000u;
     }
@@ -756,12 +782,22 @@ static inline uint32_t hd_recolor_apply(const HdRecolor* r, uint32_t c) {
     return out;
 }
 
+static inline uint32_t hd_recolor_apply(const HdRecolor* r, uint32_t c) {
+    if (g_mono) {
+        /* PNG HD é colorido: no modo original vira a rampa P&B pela luminância */
+        c = hd_recolor_apply_rgb(r, c);
+        return ppu_mono_tint_rgba(c);
+    }
+    return hd_recolor_apply_rgb(r, c);
+}
+
 static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
     static ObjLine objects;
     const PPUNativeLineState* st = &g_lines[y];
     const bool cgb = is_cgb(ctx);
     const bool compat = is_compat(ctx);
     uint32_t* row = g_frame + (size_t)y * NATIVE_W;
+    g_mono = mono_on(cgb);
 
     rasterize_objects(ppu, ctx, cgb, st, y, &objects);
 
@@ -851,8 +887,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
         }
 
         if (use_object) {
-            const uint8_t obp = objects.palette[x] ? st->obp1 : st->obp0;
-            row[x] = obj_color(ppu, cgb, compat, objects.palette[x], objects.raw[x], obp);
+            row[x] = obj_color(ppu, cgb, compat, objects.palette[x], objects.raw[x], objects.obp[x]);
         } else {
             row[x] = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
         }
@@ -885,10 +920,9 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                 g_scene.bg_uvf[i] = 0;
             }
             if (objects.raw[x]) {
-                const uint8_t obp = objects.palette[x] ? st->obp1 : st->obp0;
                 const uint8_t pi = objects.palette[x] & 7u;
                 g_scene.obj_rgba[i] = obj_color(ppu, cgb, compat, objects.palette[x],
-                                                objects.raw[x], obp);
+                                                objects.raw[x], objects.obp[x]);
                 g_scene.obj_tile[i] = scene_tile_id('o', objects.tile[x], obj_cols[pi], pi);
                 g_scene.obj_uvf[i] = scene_uvf(objects.u[x], objects.v[x], objects.flags[x]);
             } else {
@@ -905,7 +939,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
             /* Sprite candidato: o vencedor do pixel ou, se nenhum sprite tem
              * cor aqui, um sprite cuja caixa cobre o pixel e que tenha HD. */
             const uint8_t* ot = NULL;
-            uint8_t ou = 0, ov = 0, of = 0, opal = 0, obehind = 0;
+            uint8_t ou = 0, ov = 0, of = 0, opal = 0, obehind = 0, oobp = 0;
             const HdTile* obj_hd = NULL;
             if (objects.raw[x]) {
                 ot = objects.tile[x];
@@ -913,6 +947,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                 ov = objects.v[x];
                 of = objects.flags[x];
                 opal = objects.palette[x];
+                oobp = objects.obp[x];
                 obehind = objects.behind[x];
                 obj_hd = hd_tiles ? hd_lookup('o', ot, opal) : NULL;
             } else if (hd_tiles && objects.box_tile[x]) {
@@ -923,6 +958,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                     ov = objects.box_v[x];
                     of = objects.box_flags[x];
                     opal = objects.box_palette[x];
+                    oobp = objects.box_obp[x];
                     obehind = objects.box_behind[x];
                 }
             }
@@ -941,7 +977,7 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                  * são calculados uma vez por pixel. Por subpixel só se lê o PNG.
                  * Fundo: prioridade pelo tile original, alfa 0 no PNG = cor
                  * original. Sprite: forma pelo alfa do PNG (>= 128). */
-                const uint8_t obp = opal ? st->obp1 : st->obp0;
+                const uint8_t obp = oobp;
                 const uint32_t bg_orig = bg_color(ppu, cgb, compat, bg.palette, bg.raw, st->bgp);
                 const uint8_t obj_raw = objects.raw[x];      /* 0 quando veio da caixa */
                 const uint32_t obj_orig = obj_raw
@@ -960,7 +996,10 @@ static void render_line(const GBPPU* ppu, const GBContext* ctx, int y) {
                                      rgb(bg_cols[cgb ? (bg.palette & 7u) : 0u][bg.raw]));
                 }
                 if (obj_hd && obj_can_win) {
-                    hd_recolor_setup(&obj_rc, obj_hd, obj_raw, rgb(obj_cols[opal & 7u][obj_raw]));
+                    /* obj_orig = obj_cols[opal][obj_raw] nos modos de sempre; no P&B
+                     * a paleta certa é a do bit 4 do OAM, que obj_orig já usa. */
+                    hd_recolor_setup(&obj_rc, obj_hd, obj_raw,
+                                     obj_raw ? obj_orig : rgb(obj_cols[opal & 7u][obj_raw]));
                 }
                 const bool verify = g_hd_check && !bg_hd && !obj_hd;
                 for (unsigned sy = 0; sy < n; ++sy) {
@@ -1835,6 +1874,7 @@ static void margin_capture(const GBPPU* ppu, const GBContext* ctx, int y,
 static void margin_hd(const GBContext* ctx, int y, const PPUNativeMarginPixel* px) {
     const unsigned n = (unsigned)g_hd_scale;
     const bool cgb = is_cgb(ctx);
+    g_mono = mono_on(cgb);
     const size_t stride = (size_t)MARGIN_W * n;
     const bool hd_tiles = g_hd_tiles_enabled && g_hd_tile_count > 0;
     for (int m = 0; m < MARGIN_W; ++m) {

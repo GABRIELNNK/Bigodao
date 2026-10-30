@@ -144,6 +144,47 @@ static uint32_t rgb555_to_rgba(uint16_t color) {
     return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
 }
 
+/* ============================================================================
+ * Modo de cor: DX ou original (P&B pelos registradores BGP/OBP0/OBP1)
+ * ========================================================================== */
+
+static int g_color_mode = PPU_COLOR_DX;
+
+/* Cinza: branco, 172, 82, preto (os valores RGB555 mais próximos de 4 tons
+ * igualmente espaçados). O verde é a mesma paleta do modo DMG. */
+static const uint16_t mono_gray_rgb555[4] = {0x7FFF, 0x56B5, 0x294A, 0x0000};
+
+void ppu_set_color_mode(int mode) {
+    g_color_mode = (mode >= 0 && mode < PPU_COLOR_MODE_COUNT) ? mode : PPU_COLOR_DX;
+}
+
+int ppu_get_color_mode(void) {
+    return g_color_mode;
+}
+
+uint16_t ppu_mono_shade_rgb555(uint8_t shade) {
+    return g_color_mode == PPU_COLOR_MONO_GREEN ? dmg_palette_rgb555[shade & 3u]
+                                                : mono_gray_rgb555[shade & 3u];
+}
+
+void ppu_mono_ramp_ends(uint32_t* dark, uint32_t* light) {
+    if (dark) *dark = rgb555_to_rgba(ppu_mono_shade_rgb555(3));
+    if (light) *light = rgb555_to_rgba(ppu_mono_shade_rgb555(0));
+}
+
+uint32_t ppu_mono_tint_rgba(uint32_t argb) {
+    const uint32_t r = (argb >> 16) & 0xFFu, g = (argb >> 8) & 0xFFu, b = argb & 0xFFu;
+    const uint32_t lum = (r * 77u + g * 150u + b * 29u) >> 8;   /* 0..255 */
+    uint32_t dark = 0, light = 0;
+    ppu_mono_ramp_ends(&dark, &light);
+    uint32_t out = 0xFF000000u;
+    for (unsigned sh = 0; sh < 24u; sh += 8u) {
+        const uint32_t d = (dark >> sh) & 0xFFu, l = (light >> sh) & 0xFFu;
+        out |= ((d * (255u - lum) + l * lum + 127u) / 255u) << sh;
+    }
+    return out;
+}
+
 
 
 
@@ -382,6 +423,9 @@ static uint16_t resolve_bg_color(const GBPPU* ppu,
                                  uint8_t raw_color,
                                  uint8_t dmg_palette_reg) {
     if (ppu_is_cgb_mode(ctx)) {
+        if (g_color_mode != PPU_COLOR_DX) {
+            return ppu_mono_shade_rgb555(apply_palette(raw_color, dmg_palette_reg));
+        }
         return read_palette_color(ppu->bg_palette_ram, palette_number, raw_color);
     }
 
@@ -399,6 +443,9 @@ static uint16_t resolve_obj_color(const GBPPU* ppu,
                                   uint8_t raw_color,
                                   uint8_t dmg_palette_reg) {
     if (ppu_is_cgb_mode(ctx)) {
+        if (g_color_mode != PPU_COLOR_DX) {
+            return ppu_mono_shade_rgb555(apply_palette(raw_color, dmg_palette_reg));
+        }
         return read_palette_color(ppu->obj_palette_ram, palette_number, raw_color);
     }
 
@@ -809,7 +856,7 @@ static void render_sprites_scanline(GBPPU* ppu,
             ppu->framebuffer[ppu->ly * GB_SCREEN_WIDTH + screen_x] = chosen_color;
             ppu->color_framebuffer[ppu->ly * GB_SCREEN_WIDTH + screen_x] =
                 resolve_obj_color(ppu, ctx, chosen_sprite->palette, chosen_color,
-                                  chosen_sprite->palette ? ppu->latched_obp1 : ppu->latched_obp0);
+                                  (chosen_sprite->flags & OAM_PALETTE) ? ppu->latched_obp1 : ppu->latched_obp0);
         } else {
             uint8_t bg_color = bg_raw ? bg_raw[screen_x] : 0;
             uint8_t dmg_palette_reg = chosen_sprite->palette ? ppu->latched_obp1 : ppu->latched_obp0;
@@ -847,6 +894,7 @@ typedef struct {
     bool present;
     uint8_t raw_color;
     uint8_t palette;
+    uint8_t dmg_pal;    /* bit 4 do OAM (0 = OBP0, 1 = OBP1), também no modo CGB */
     bool behind_bg;
 } DotObjectPixel;
 
@@ -905,7 +953,7 @@ static DotBackgroundPixel ppu_fetch_background_dot(const GBPPU* ppu,
 
 static DotObjectPixel ppu_fetch_object_dot(const GBPPU* ppu,
                                             const GBContext* ctx) {
-    DotObjectPixel chosen = {false, 0, 0, false};
+    DotObjectPixel chosen = {false, 0, 0, 0, false};
     const bool cgb_mode = ppu_is_cgb_mode(ctx);
     const bool dmg_priority = !cgb_mode || ppu->opri != 0;
     int chosen_x = 256;
@@ -968,6 +1016,7 @@ static DotObjectPixel ppu_fetch_object_dot(const GBPPU* ppu,
         chosen.palette = cgb_mode
             ? (flags & OAM_CGB_PALETTE)
             : ((flags & OAM_PALETTE) ? 1 : 0);
+        chosen.dmg_pal = (flags & OAM_PALETTE) ? 1 : 0;
         chosen.behind_bg = (flags & OAM_PRIORITY) != 0;
         chosen_x = screen_x;
         chosen_index = oam_index;
@@ -1007,7 +1056,7 @@ static void ppu_render_dot(GBPPU* ppu, GBContext* ctx) {
     }
 
     if (use_object) {
-        const uint8_t palette_reg = obj.palette ? ppu->obp1 : ppu->obp0;
+        const uint8_t palette_reg = obj.dmg_pal ? ppu->obp1 : ppu->obp0;
         ppu->framebuffer[framebuffer_index] = cgb_mode
             ? obj.raw_color
             : apply_palette(obj.raw_color, palette_reg);
@@ -1341,6 +1390,7 @@ typedef struct {
     bool present;
     uint8_t raw_color;
     uint8_t palette;
+    uint8_t dmg_pal;    /* bit 4 do OAM (0 = OBP0, 1 = OBP1), também no modo CGB */
     bool behind_bg;
     int screen_x;
     uint8_t oam_index;
@@ -2016,7 +2066,7 @@ static uint32_t ppu_composite_widescreen_pixel(
     if (use_object) {
         const uint16_t color15 = resolve_obj_color(
             ppu, ctx, obj->palette, obj->raw_color,
-            obj->palette ? ppu->latched_obp1 : ppu->latched_obp0);
+            obj->dmg_pal ? ppu->latched_obp1 : ppu->latched_obp0);
         return rgb555_to_rgba(color15);
     }
 
@@ -2222,6 +2272,7 @@ typedef struct {
     uint16_t tile_ref;  /* 0 = nenhum */
     uint8_t uvf;
     uint8_t palette;
+    uint8_t dmg_pal;    /* bit 4 do OAM (0 = OBP0, 1 = OBP1), também no modo CGB */
 } WsSpriteBox;
 
 static int ppu_ws_collect_line_sprites(const GBPPU* ppu,
@@ -2307,7 +2358,7 @@ static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
                                                  bool dmg_priority,
                                                  int extended_x,
                                                  WsSpriteBox* box) {
-    WidescreenObjectPixel chosen = {false, 0, 0, false, 0, 0, 0, 0};
+    WidescreenObjectPixel chosen = {false, 0, 0, 0, false, 0, 0, 0, 0};
     int chosen_x = 256;
     int chosen_index = 256;
     if (box) {
@@ -2328,6 +2379,7 @@ static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
                 box->tile_ref = s->tile_ref;
                 box->uvf = ws_uvf((unsigned)sprite_pixel, s->screen_v, s->flags);
                 box->palette = s->palette;
+                box->dmg_pal = (s->flags & OAM_PALETTE) ? 1 : 0;
             }
             continue;
         }
@@ -2348,6 +2400,7 @@ static WidescreenObjectPixel ppu_ws_object_pixel(const WsLineSprite* sprites,
         chosen.present = true;
         chosen.raw_color = raw;
         chosen.palette = s->palette;
+        chosen.dmg_pal = (s->flags & OAM_PALETTE) ? 1 : 0;
         chosen.behind_bg = (s->flags & OAM_PRIORITY) != 0;
         chosen.screen_x = s->screen_x;
         chosen.oam_index = s->oam_index;
@@ -2736,7 +2789,7 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
                 r->obj_pal = obj.palette;
                 r->obj_rgba = rgb555_to_rgba(resolve_obj_color(
                     ppu, ctx, obj.palette, obj.raw_color,
-                    obj.palette ? ppu->latched_obp1 : ppu->latched_obp0));
+                    obj.dmg_pal ? ppu->latched_obp1 : ppu->latched_obp0));
             } else if (box.tile_ref) {
                 r->obj_tile = box.tile_ref;
                 r->obj_uvf = box.uvf;
@@ -2744,7 +2797,7 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
                 r->obj_pal = box.palette;
                 r->obj_rgba = rgb555_to_rgba(resolve_obj_color(
                     ppu, ctx, box.palette, 0,
-                    box.palette ? ppu->latched_obp1 : ppu->latched_obp0));
+                    box.dmg_pal ? ppu->latched_obp1 : ppu->latched_obp0));
             }
         }
     }
