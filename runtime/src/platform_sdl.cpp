@@ -579,7 +579,7 @@ static double g_last_vsync_end_ms = 0.0;
 static int g_texture_scale = 1;          /* escala com que a textura foi criada */
 
 // Supersampling
-static int g_internal_res_scale = 1; // 1x (Nativo), 2x, 3x, 4x — 1x padrão (passo 20a)
+static int g_internal_res_scale = 2; // 1x (Nativo), 2x, 3x, 4x — 2x padrão (passo 31a; era 1x no 20a)
 static const char* g_internal_res_names[] = {
     "1x (Nativo GB - 160x144)",
     "2x Internal (320x288)",
@@ -3273,7 +3273,7 @@ static void reset_runtime_display_defaults(void) {
     g_max_speed_mode = false;
     g_render_scaling_mode = GB_RENDER_SCALING_PIXEL_PERFECT;
     g_render_filter_mode = GB_RENDER_FILTER_LINEAR;   /* passo 14p */
-    g_internal_res_scale = 1;                         /* passo 20a: 1x padrao */
+    g_internal_res_scale = 2;                         /* passo 31a: 2x padrao (texturas originais) */
     g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
     g_gpu_screen_pref = 1;                            /* passo 14c-3: a GPU monta a tela */
     g_3d_mode = 0;                                    /* passo 3D-1 */
@@ -5351,10 +5351,24 @@ static void render_frame_internal(const uint32_t* framebuffer,
                                          TR("Original (black and white)", "Original (preto e branco)"),
                                          TR("Original (DMG green)", "Original (verde do DMG)")};
             if (ImGui::Combo(TR("Colors", "Cores"), &color_mode, color_names, IM_ARRAYSIZE(color_names))) {
+                const bool was_dx = ppu_get_color_mode() == PPU_COLOR_DX;
                 ppu_set_color_mode(color_mode);
+                /* Passo 31a: entrar/sair do Original liga/desliga as texturas originais
+                 * embutidas (fonte de mods abaixo dos mods da pasta) */
+                if (was_dx != (color_mode == PPU_COLOR_DX)) {
+                    hd_pack_io_load_pack();
+                    g_renderer_reset_pending = true;
+                }
                 save_runtime_preferences();
             }
             if (color_mode != PPU_COLOR_DX) {
+                if (!hd_pack_io_builtin_present()) {   /* passo 31a */
+                    ImGui::TextDisabled("%s", TR("Original textures not found in wario.o2r (rebuild it with the launcher).",
+                                                 "Texturas originais nao estao no wario.o2r (refaca pelo launcher)."));
+                } else if (effective_internal_scale() < 2) {
+                    ImGui::TextDisabled("%s", TR("Original textures need Internal Resolution 2x or more.",
+                                                 "As texturas originais precisam de Resolucao interna 2x ou mais."));
+                }
                 if (const GBPPU* ppu = active_ppu()) {
                     /* Diagnóstico: se ficarem em FC/FF/FF, o patch não escreve
                      * mais esses registradores e o P&B sai errado. */

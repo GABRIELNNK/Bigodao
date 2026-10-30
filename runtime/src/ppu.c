@@ -173,16 +173,12 @@ void ppu_mono_ramp_ends(uint32_t* dark, uint32_t* light) {
 }
 
 uint32_t ppu_mono_tint_rgba(uint32_t argb) {
+    /* Passo 31a: cai num dos 4 tons da rampa (as texturas originais usam
+     * exatamente 255/170/85/0; no verde os tons do meio ficam os do DMG). */
     const uint32_t r = (argb >> 16) & 0xFFu, g = (argb >> 8) & 0xFFu, b = argb & 0xFFu;
     const uint32_t lum = (r * 77u + g * 150u + b * 29u) >> 8;   /* 0..255 */
-    uint32_t dark = 0, light = 0;
-    ppu_mono_ramp_ends(&dark, &light);
-    uint32_t out = 0xFF000000u;
-    for (unsigned sh = 0; sh < 24u; sh += 8u) {
-        const uint32_t d = (dark >> sh) & 0xFFu, l = (light >> sh) & 0xFFu;
-        out |= ((d * (255u - lum) + l * lum + 127u) / 255u) << sh;
-    }
-    return out;
+    const uint8_t shade = lum >= 213u ? 0u : lum >= 128u ? 1u : lum >= 43u ? 2u : 3u;
+    return rgb555_to_rgba(ppu_mono_shade_rgb555(shade));
 }
 
 

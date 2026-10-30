@@ -233,3 +233,11 @@
 ## Passo 20b — versão 1.6
 - RELEASE_NOTES.md: seção v.1.6 no topo (inimigos além da borda no widescreen/3D, morcegos, giroscópio, V-Sync no Android, 1x padrão, README de controles, Steam Deck como problema conhecido). A v.1.5 continua logo abaixo.
 - android/app/build.gradle: versionName '1.6', versionCode 3 (antes '1.1' / 2).
+
+## Passo 31a — texturas P&B originais embutidas no wario.o2r
+- `tools/gerar_receita_original_bw.py` (roda na máquina do dev, com o disassembly): gera `original_bw_receita.h` (raiz) só com números: hash do tile do DX + contexto, origem do tile na ROM original (.bin, .rlc + índice, água 1bpp) e BGP/OBP0. Confere que reproduz byte a byte o `.o2r` do `gerar_mod_original_bw.py`.
+- `original_bw.hpp`: no launcher, depois do IPS, segue a receita (confere o SHA-256 das duas ROMs), pinta PNGs 8x8 indexados e grava em `original_bw/` dentro do `wario.o2r` (`AssetExtractor::build` com arquivos extras). `o2r_info.txt` ganha `original_bw_recipe=<versão>` e `original_bw=1|0`. Sem o header no projeto, nada muda.
+- `main.cpp`: `wario.o2r` com outra versão da receita abre o launcher com o aviso "Update needed"; cancelar segue com o pacote antigo.
+- `hd_pack_io`: fonte embutida "Original textures (built-in)", primeira da lista (abaixo dos mods da pasta), só com Cores = Original. Trocar entre DX e Original recarrega os mods.
+- Rampa P&B (cinza/verde) só nos tiles embutidos (`HdTile.builtin`; GPU: bit 0x4000 do meta, `hdm(slot, cor)`), caindo exatamente nos 4 tons. Mods da pasta ficam com as cores deles e, no modo Original, sem recolorir pela paleta.
+- Resolução interna padrão: 2x (também no Reset Display).

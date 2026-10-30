@@ -18,6 +18,8 @@
 #include "platform_sdl.h"
 #include "ppu.h"
 #include "wl_sm3_patch.hpp"
+#include "original_bw.hpp"   /* passo 31a */
+#include "hd_pack_io.h"     /* passo 31a */
 #include "gbrt.h"
 #include "android_bridge.h"   /* [android-port] */
 #include "app_icon.h"         /* [fix-v3] */
@@ -671,7 +673,9 @@ static void draw_icon(ImDrawList* dl, SDL_Texture* art, ImVec2 center, float siz
 } // namespace launcher
 
 // Execute Launcher GUI via ImGui + SDL2
-static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch_path, const char* exec_path) {
+/* Passo 31a: notice != "" abre o launcher já com um aviso (ex.: wario.o2r desatualizado). */
+static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch_path, const char* exec_path,
+                               const std::string& notice = "") {
     using namespace launcher;
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
@@ -758,7 +762,9 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
         if (SDL_GetDisplayDPI(0, &ddpi, nullptr, nullptr) == 0 && ddpi > 0.0f) android_dp = ddpi / 160.0f;
     }
 #endif
-    std::string modal_msg;
+    std::string modal_msg = notice;
+    std::string modal_title = notice.empty() ? "Could not start the game" : "Update needed";   /* passo 31a */
+    bool modal_is_info = !notice.empty();
     bool ready_to_launch = false;
     bool done = false;
     const Uint64 t_start = SDL_GetPerformanceCounter();
@@ -789,6 +795,8 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
             done = true;
         } catch (const std::exception& e) {
             modal_msg = std::string("Failed to prepare the ROM:\n") + e.what();
+            modal_title = "Could not start the game";
+            modal_is_info = false;
         }
     };
 
@@ -994,9 +1002,13 @@ static bool run_imgui_launcher(std::string& out_rom_path, std::string& out_patch
             const ImVec2 a((W - mw) * 0.5f, (H - mh) * 0.5f), b(a.x + mw, a.y + mh);
             soft_shadow(dl, a, b, U(16.0f), IM_COL32(0, 0, 0, 255), 0.8f, U(4.0f), 6, U(8.0f));
             dl->AddRectFilled(a, b, IM_COL32(24, 26, 38, 255), U(16.0f));
-            dl->AddRect(a, b, IM_COL32(239, 68, 68, 90), U(16.0f), 0, U(1.5f));
-            icon_cross(dl, ImVec2(a.x + pad, a.y + pad + U(5.0f)), U(12.0f), COL_RED, U(2.5f));
-            dl->AddText(fonts.title, U(FS_TITLE), ImVec2(a.x + pad + U(24.0f), a.y + pad), COL_TEXT, "Could not start the game");
+            dl->AddRect(a, b, modal_is_info ? IM_COL32(96, 165, 250, 110) : IM_COL32(239, 68, 68, 90), U(16.0f), 0, U(1.5f));
+            if (modal_is_info) {
+                dl->AddCircleFilled(ImVec2(a.x + pad + U(6.0f), a.y + pad + U(11.0f)), U(6.0f), IM_COL32(96, 165, 250, 255), 16);
+            } else {
+                icon_cross(dl, ImVec2(a.x + pad, a.y + pad + U(5.0f)), U(12.0f), COL_RED, U(2.5f));
+            }
+            dl->AddText(fonts.title, U(FS_TITLE), ImVec2(a.x + pad + U(24.0f), a.y + pad), COL_TEXT, modal_title.c_str());
             dl->AddText(fonts.body, U(FS_BODY), ImVec2(a.x + pad, a.y + pad + U(36.0f)), COL_SUB,
                         modal_msg.c_str(), nullptr, mw - pad * 2.0f);
             const float ok_w = blue_button_width(fonts, "OK");
@@ -1061,12 +1073,26 @@ static int game_main(int argc, char* argv[]) {   /* [android-port] corpo origina
     std::string custom_ips_path = argc > 2 ? argv[2] : "";
 
     std::vector<uint8_t> patched_rom;
+    std::vector<uint8_t> previous_rom;   /* passo 31a: o do wario.o2r antigo, se o launcher for cancelado */
+    std::string launcher_notice;
+    const std::string bw_version = std::to_string(original_bw::recipe_version());
 
     if (rom_input_path.empty() && assets.exists()) {
         std::string err;
         if (assets.load(patched_rom, err)) {
             std::cout << "[VFS] Loaded patched ROM from " << assets.path().filename().string()
                       << " (" << patched_rom.size() << " bytes).\n";
+            /* Passo 31a: wario.o2r sem as texturas originais desta versão: refazer pelo launcher */
+            if (original_bw::available() && assets.info_value("original_bw_recipe") != bw_version) {
+                std::cout << "[VFS] " << assets.path().filename().string()
+                          << " needs an update (original textures). Opening the launcher...\n";
+                launcher_notice =
+                    "Your wario.o2r was created by an older version of Bigodao and needs to be updated "
+                    "(it is missing the original black and white textures).\n\n"
+                    "Select the original ROM and the DX patch again, then press LOAD & PLAY "
+                    "to rebuild it.";
+                previous_rom.swap(patched_rom);
+            }
         } else {
             std::cerr << "[VFS] " << assets.path().filename().string() << " can't be used (" << err
                       << "). It will be rebuilt from the ROM.\n";
@@ -1081,14 +1107,23 @@ static int game_main(int argc, char* argv[]) {   /* [android-port] corpo origina
     if (patched_rom.empty()) {
         if (rom_input_path.empty()) {
             std::cout << "[Launcher] No usable " << assets.path().filename().string() << ". Opening the launcher...\n";
-            if (!run_imgui_launcher(rom_input_path, custom_ips_path, argv[0])) {
-                std::cout << "[Launcher] Cancelled by user.\n";
-                return 0;
+            if (!run_imgui_launcher(rom_input_path, custom_ips_path, argv[0], launcher_notice)) {
+                if (previous_rom.empty()) {
+                    std::cout << "[Launcher] Cancelled by user.\n";
+                    return 0;
+                }
+                /* Passo 31a: sem atualizar, segue com o wario.o2r antigo (sem as texturas originais) */
+                std::cout << "[Launcher] Update cancelled; using the old " << assets.path().filename().string() << ".\n";
+                patched_rom.swap(previous_rom);
             }
         }
+    }
 
+    if (patched_rom.empty()) {   /* passo 31a: pulado se o launcher de atualização foi cancelado */
+        std::vector<uint8_t> original_rom;
         try {
             const fs::path manifest_path = find_patch_manifest(argv[0]);
+            original_rom = wl_sm3_patch::read_binary_file(rom_input_path);   /* passo 31a */
             if (!custom_ips_path.empty()) {
                 std::cout << "Using IPS patch: " << custom_ips_path << "\n";
                 patched_rom = wl_sm3_patch::load_and_patch_rom_with_override(rom_input_path, manifest_path, custom_ips_path);
@@ -1105,13 +1140,30 @@ static int game_main(int argc, char* argv[]) {   /* [android-port] corpo origina
 
         // ---------------------------------------------------------------------
         // 3. Asset extraction (.o2r) — from now on the game starts from it alone
+        //    Passo 31a: com as texturas P&B originais em original_bw/ (da ROM original)
         // ---------------------------------------------------------------------
+        std::vector<AssetExtractor::ExtraFile> extra;
+        std::string extra_info;
+        if (original_bw::available()) {
+            std::vector<original_bw::File> bw;
+            std::string bw_err;
+            const bool bw_ok = original_bw::build(original_rom, patched_rom, bw, bw_err);
+            if (bw_ok) {
+                for (original_bw::File& f : bw) extra.push_back({std::move(f.name), std::move(f.data)});
+                std::cout << "[VFS] Original textures: " << extra.size() << " tiles.\n";
+            } else {
+                std::cerr << "[VFS] Original textures not created (" << bw_err << ").\n";
+            }
+            /* a versão vai mesmo quando falha, para não abrir o launcher toda vez */
+            extra_info = "original_bw_recipe=" + bw_version + "\noriginal_bw=" + (bw_ok ? "1" : "0") + "\n";
+        }
         std::string err;
-        if (!assets.build(patched_rom, err)) {
+        if (!assets.build(patched_rom, err, extra, extra_info)) {
             std::cerr << "[VFS] Warning: could not create " << assets.path().string() << " (" << err
                       << "). The game will start, but the ROM will be needed again next time.\n";
         }
     }
+    hd_pack_io_set_builtin_source(assets.path().string().c_str(), original_bw::FOLDER);   /* passo 31a */
 
     std::cout << "[VFS] Initializing runtime context allocation...\n";
 

@@ -436,6 +436,8 @@ struct HdModSource {
     std::string name;      /* "meu_mod.o2r" ou "hd/" */
     fs::path path;
     bool is_folder = false;
+    bool builtin = false;  /* passo 31a: texturas originais dentro do wario.o2r */
+    std::string prefix;    /* passo 31a: só as entradas do ZIP nesta pasta */
     bool enabled = true;
     int tiles = 0;
     std::string info;
@@ -696,6 +698,7 @@ static bool collect_source(const HdModSource& src, std::vector<PendingTile>& til
     }
     for (const ZipEntry& e : entries) {
         if (e.name.empty() || e.name.back() == '/') continue;    /* pasta */
+        if (!src.prefix.empty() && e.name.compare(0, src.prefix.size(), src.prefix) != 0) continue;   /* passo 31a */
         const std::string leaf = lower_ascii(leaf_of(e.name));
         const bool is_pack = leaf == "pack.json";
         const bool is_png = leaf.size() > 4 && leaf.compare(leaf.size() - 4, 4, ".png") == 0;
@@ -737,6 +740,7 @@ static int load_source(HdModSource& src, int& no_ref_total) {
         return 0;
     }
     int loaded = 0, no_ref = 0;
+    ppu_native_hd_set_builtin_loading(src.builtin);   /* passo 31a: recebem a rampa P&B */
     for (const PendingTile& t : tiles) {
         char kind;
         uint64_t hash;
@@ -760,13 +764,14 @@ static int load_source(HdModSource& src, int& no_ref_total) {
         stbi_image_free(data);
         const auto it = palettes.find(t.stem);
         const uint32_t* ref = (it != palettes.end()) ? it->second.data() : nullptr;
-        if (!ref) no_ref++;
+        if (!ref && !src.builtin) no_ref++;
         if (ppu_native_hd_add_tile_ex(kind, hash, context, pal, w, argb.data(), ref)) {
             loaded++;
         } else {
             skipped++;
         }
     }
+    ppu_native_hd_set_builtin_loading(false);
     src.tiles = loaded;
     char buf[160];
     snprintf(buf, sizeof(buf), "%d tiles%s%s", loaded,
@@ -784,9 +789,45 @@ static bool name_disabled(const std::string& name) {
     return false;
 }
 
+/* Passo 31a: fonte embutida (texturas P&B originais no wario.o2r) */
+static bool zip_list_file(const fs::path& path, std::vector<ZipEntry>& out, std::string& err);
+static fs::path g_builtin_path;
+static std::string g_builtin_prefix;
+static bool g_builtin_present = false;
+
+void hd_pack_io_set_builtin_source(const char* o2r_path, const char* prefix) {
+    g_builtin_path = o2r_path ? fs::path(o2r_path) : fs::path();
+    g_builtin_prefix = prefix ? prefix : "";
+    g_builtin_present = false;
+    std::vector<ZipEntry> entries;
+    std::string err;
+    if (!g_builtin_path.empty() && !g_builtin_prefix.empty() && zip_list_file(g_builtin_path, entries, err)) {
+        for (const ZipEntry& e : entries) {
+            if (e.name.compare(0, g_builtin_prefix.size(), g_builtin_prefix) == 0) {
+                g_builtin_present = true;
+                break;
+            }
+        }
+    }
+    fprintf(stderr, "[HD] texturas originais embutidas: %s\n", g_builtin_present ? "sim" : "nao");
+}
+
+bool hd_pack_io_builtin_present(void) {
+    return g_builtin_present;
+}
+
 /* Lista as fontes de mods (não carrega nada). */
 static void scan_mods(void) {
     g_mods.clear();
+    /* Passo 31a: primeiro da lista = abaixo dos mods da pasta (eles sobrepõem) */
+    if (g_builtin_present && ppu_get_color_mode() != PPU_COLOR_DX) {
+        HdModSource s;
+        s.name = "Original textures (built-in)";
+        s.path = g_builtin_path;
+        s.builtin = true;
+        s.prefix = g_builtin_prefix;
+        g_mods.push_back(s);
+    }
     const fs::path mods_dir = fs::path(hd_pack_io_pack_dir()).parent_path();
     std::error_code ec;
     if (fs::is_directory(mods_dir, ec)) {
@@ -989,7 +1030,7 @@ void hd_pack_io_list_files(hd_pack_io_file_visitor visit, void* user) {
     if (!visit) return;
     for (size_t i = 0; i < g_mods.size(); ++i) {
         const HdModSource& s = g_mods[i];
-        if (!s.enabled) continue;
+        if (!s.enabled || s.builtin) continue;   /* passo 31a: o embutido só tem tiles */
         std::error_code ec;
         if (s.is_folder) {
             for (auto it = fs::recursive_directory_iterator(s.path, ec);

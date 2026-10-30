@@ -40,6 +40,14 @@ const char* hd_pack_io_last_scene(void);
  * Em cada fonte: b_<tile>.png / o_<tile>.png (qualquer subpasta) e pack.json.
  * Devolve quantos tiles HD ficaram carregados. */
 int hd_pack_io_load_pack(void);
+
+/* Passo 31a: texturas P&B originais embutidas no wario.o2r (pasta prefix, ex.
+ * "original_bw/"). Entram como a primeira fonte da lista (abaixo dos mods da
+ * pasta mods) só quando a opção Cores está em Original. Chamar antes do
+ * primeiro hd_pack_io_load_pack(). */
+void hd_pack_io_set_builtin_source(const char* o2r_path, const char* prefix);
+/* O wario.o2r tem as texturas originais? */
+bool hd_pack_io_builtin_present(void);
 const char* hd_pack_io_pack_dir(void);   /* <base>/mods/hd */
 const char* hd_pack_io_mods_dir(void);   /* <base>/mods */
 const char* hd_pack_io_pack_status(void);

@@ -326,6 +326,11 @@ int ppu_native_gpu_last_line(void);
 uint32_t ppu_native_hd_table_capacity(void);
 /* Entrada i da tabela: false se vazia. ref = NULL sem paleta de referência. */
 bool ppu_native_hd_table_entry(uint32_t i, int* size, const uint32_t** px, const uint32_t** ref);
+/* Passo 31a: o tile da posição i veio das texturas originais embutidas? */
+bool ppu_native_hd_table_entry_builtin(uint32_t i);
+/* Passo 31a: os tiles adicionados enquanto ligado são os embutidos (no modo
+ * Original passam pela rampa P&B; os dos mods da pasta ficam com as cores deles). */
+void ppu_native_hd_set_builtin_loading(bool on);
 
 void ppu_native_gpu_capture(bool enabled);
 bool ppu_native_gpu_capture_enabled(void);

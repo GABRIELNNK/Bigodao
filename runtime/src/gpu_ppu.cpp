@@ -33,7 +33,7 @@ GLint g_loc_level = -1;
 /* Passo 14b-2: escritas no meio do quadro, organizadas por endereço */
 GLuint g_tex_dirty = 0, g_tex_log = 0;
 GLint g_loc_haslog = -1, g_loc_scale = -1, g_loc_hd = -1;
-GLint g_loc_mono = -1, g_loc_mono_dark = -1, g_loc_mono_light = -1;   /* modo de cor original (P&B) */
+GLint g_loc_mono = -1, g_loc_mono_ramp = -1;   /* modo de cor original (P&B) */
 constexpr int kLogW = 256, kLogH = (PPU_NATIVE_GPU_LOG_MAX + kLogW - 1) / kLogW;
 std::vector<uint16_t> g_dirty;        /* 0x4000 x (início + 1, quantidade) */
 std::vector<uint8_t> g_logtex;        /* kLogW*kLogH x (line_plus1, valor) */
@@ -980,8 +980,7 @@ const char* kFragment =
     "uniform int u_scale;\n"
     "uniform int u_hd;\n"
     "uniform int u_mono;\n"         /* modo de cor original (P&B): paleta do sprite pelo bit 4 do OAM */
-    "uniform ivec3 u_mono_dark;\n"  /* rampa P&B (R, G, B) para os tiles HD */
-    "uniform ivec3 u_mono_light;\n"
+    "uniform ivec4 u_mono_ramp[4];\n"  /* passo 31a: os 4 tons P&B (R, G, B) para os tiles embutidos */
     "uniform int u_out;\n"   /* passo 3D-1: 0 = cor, 1 = só o fundo (sem sprites), 2 = classe */
     "uniform int u_winfloor;\n"   /* passo 3D-2g: janela = chão (g00) */
     "uniform int u_marks;\n"   /* passo 3D-2b: fora das fases, tipo marcado à mão por tile (linha 16 de u_slot) */
@@ -1160,12 +1159,13 @@ const char* kFragment =
     "    int size = int(m.a);\n"
     "    int hx = cs, hy = rs;\n"
     "    if (size != span) { hx = cs * size / span; hy = rs * size / span; }\n"
-    "    return texelFetch(u_atlas, ivec3(int(m.r) + hx, int(m.g) + hy, int(m.b) & 0x7FFF), 0);\n"
+    "    return texelFetch(u_atlas, ivec3(int(m.r) + hx, int(m.g) + hy, int(m.b) & 0x3FFF), 0);\n"
     "}\n"
     /* Recoloração proporcional (hd_recolor_setup/apply) */
     "struct Rc { bool on; uvec3 mul; uvec3 add; };\n"
     "Rc rc_setup(uint s1, int idx, uvec3 cur) {\n"
     "    Rc r; r.on = false; r.mul = uvec3(65536u); r.add = uvec3(0u);\n"
+    "    if (u_mono != 0) return r;\n"   /* passo 31a: no P&B os mods não são recoloridos pela paleta */
     "    int s = int(s1) - 1;\n"
     "    uvec4 m = texelFetch(u_meta, ivec2(s & 255, s >> 8), 0);\n"
     "    if ((m.b & 0x8000u) == 0u) return r;\n"
@@ -1185,13 +1185,18 @@ const char* kFragment =
     "    if (!r.on) return c;\n"
     "    return min(((c * r.mul) >> 16u) + r.add, uvec3(255u));\n"
     "}\n"
-    /* Modo original (P&B), igual a ppu_mono_tint_rgba: a cor do PNG HD vai para a
-     * rampa pela luminância. ocol: paleta do sprite na tabela da linha (no P&B,
-     * 0 = OBP0 e 1 = OBP1 pelo bit 4 do OAM; senão, a paleta CGB). */
-    "uvec3 hdm(uvec3 c) {\n"
+    /* Modo original (P&B), igual a ppu_mono_tint_rgba: no tile HD embutido (texturas
+     * originais, bit 0x4000 do meta) a cor do PNG cai num dos 4 tons da rampa; os
+     * mods da pasta ficam com as cores deles (passo 31a). ocol: paleta do sprite na
+     * tabela da linha (no P&B, 0 = OBP0 e 1 = OBP1 pelo bit 4 do OAM; senão, a CGB). */
+    "uvec3 hdm(uint s1, uvec3 c) {\n"
     "    if (u_mono == 0) return c;\n"
+    "    int s = int(s1) - 1;\n"
+    "    uvec4 m = texelFetch(u_meta, ivec2(s & 255, s >> 8), 0);\n"
+    "    if ((m.b & 0x4000u) == 0u) return c;\n"
     "    uint l = (c.r * 77u + c.g * 150u + c.b * 29u) >> 8u;\n"
-    "    return (uvec3(u_mono_dark) * (255u - l) + uvec3(u_mono_light) * l + 127u) / 255u;\n"
+    "    int k = l >= 213u ? 0 : (l >= 128u ? 1 : (l >= 43u ? 2 : 3));\n"
+    "    return uvec3(u_mono_ramp[k].rgb);\n"
     "}\n"
     "int ocol(int fl) { return u_mono != 0 ? ((fl & 0x10) != 0 ? 1 : 0) : (fl & 7); }\n"
     /* Passo 14b-4: laterais, como margin_hd do ppu_native (registros de ppu.c) */
@@ -1238,14 +1243,14 @@ const char* kFragment =
     "    uvec3 c = fade3(fade, m, bg_rgba);\n"
     "    if (bs != 0u) {\n"
     "        uvec4 h = hd_texel(bs, int(bg_uvf & 7u), int((bg_uvf >> 3) & 7u), uvf_flags(bg_uvf), sx, sy, n);\n"
-    "        if (h.a != 0u) c = fade3(fade, m, hdm(rc_apply(rc_setup(bs, bg_raw, bg_rgba), h)));\n"
+    "        if (h.a != 0u) c = fade3(fade, m, hdm(bs, rc_apply(rc_setup(bs, bg_raw, bg_rgba), h)));\n"
     "    }\n"
     "    uvec3 cbg = c;\n"
     "    int cls = clsb;\n"
     "    if (ot) {\n"
     "        if (os != 0u) {\n"
     "            uvec4 h = hd_texel(os, int(obj_uvf & 7u), int((obj_uvf >> 3) & 7u), uvf_flags(obj_uvf), sx, sy, n);\n"
-    "            if (h.a >= 128u) { c = hdm(rc_apply(rc_setup(os, obj_raw, obj_rgba), h)); cls = 3; }\n"
+    "            if (h.a >= 128u) { c = hdm(os, rc_apply(rc_setup(os, obj_raw, obj_rgba), h)); cls = 3; }\n"
     "        } else {\n"
     "            c = obj_rgba; cls = 3;\n"
     "        }\n"
@@ -1285,7 +1290,7 @@ const char* kFragment =
     "        uint s1 = slot_of(0, attr & 7, ((attr & 0x08) != 0 ? 384 : 0) + tidx);\n"
     "        if (s1 != 0u) {\n"
     "            uvec4 h = hd_texel(s1, wx & 7, wy & 7, attr & 0x60, X - cx * n, Y - cy * n, n);\n"
-    "            if (h.a != 0u) c = hdm(rc_apply(rc_setup(s1, raw, c), h));\n"
+    "            if (h.a != 0u) c = hdm(s1, rc_apply(rc_setup(s1, raw, c), h));\n"
     "        }\n"
     "    }\n"
     "    g_kind = 0;\n"
@@ -1350,7 +1355,7 @@ const char* kFragment =
     "                uint os = slot_of(1, opal, ogi);\n"
     "                if (os != 0u) {\n"
     "                    uvec4 ho = hd_texel(os, ou, ov, ofl, X - cx * n, Y - cy * n, n);\n"
-    "                    if (ho.a >= 128u) oc = hdm(rc_apply(rc_setup(os, oraw, oc), ho)); else show = false;\n"
+    "                    if (ho.a >= 128u) oc = hdm(os, rc_apply(rc_setup(os, oraw, oc), ho)); else show = false;\n"
     "                }\n"
     "            }\n"
     "            if (show) { emit(oc, c, 3); return; }\n"
@@ -1465,14 +1470,14 @@ const char* kFragment =
     "    uvec3 c = bg_orig;\n"
     "    if (bs != 0u) {\n"
     "        uvec4 hb = hd_texel(bs, bu, bv, attr & 0x60, sx, sy, n);\n"
-    "        if (hb.a != 0u) c = hdm(rc_apply(rc_setup(bs, bgraw, bg_orig), hb));\n"
+    "        if (hb.a != 0u) c = hdm(bs, rc_apply(rc_setup(bs, bgraw, bg_orig), hb));\n"
     "    }\n"
     "    uvec3 cbg = c;\n"
     "    int cls = hudpix ? 2 : 1;\n"
     "    if (can_win) {\n"
     "        if (os != 0u) {\n"
     "            uvec4 ho = hd_texel(os, cu, cv, cfl, sx, sy, n);\n"
-    "            if (ho.a >= 128u) { c = hdm(rc_apply(rc_setup(os, oraw, pal(32 + cdm * 4 + oraw, y)), ho)); cls = 3; }\n"
+    "            if (ho.a >= 128u) { c = hdm(os, rc_apply(rc_setup(os, oraw, pal(32 + cdm * 4 + oraw, y)), ho)); cls = 3; }\n"
     "        } else if (oraw != 0) {\n"
     "            c = obj_orig; cls = 3;\n"
     "        }\n"
@@ -1562,11 +1567,14 @@ void rebuild_atlas(void) {
     drain_errors("atlas");
     g_atlas_tiles = 0;
     const uint32_t cap = ppu_native_hd_table_capacity();
-    struct Item { uint32_t slot; int size; const uint32_t* px; const uint32_t* ref; };
+    struct Item { uint32_t slot; int size; const uint32_t* px; const uint32_t* ref; bool builtin; };
     std::vector<Item> items;
     for (uint32_t i = 0; i < cap; ++i) {
-        Item it{i, 0, nullptr, nullptr};
-        if (ppu_native_hd_table_entry(i, &it.size, &it.px, &it.ref)) items.push_back(it);
+        Item it{i, 0, nullptr, nullptr, false};
+        if (ppu_native_hd_table_entry(i, &it.size, &it.px, &it.ref)) {
+            it.builtin = ppu_native_hd_table_entry_builtin(i);   /* passo 31a */
+            items.push_back(it);
+        }
     }
     std::vector<uint16_t> meta((size_t)256 * 128 * 4, 0);
     std::vector<uint32_t> ref((size_t)1024 * 128, 0);
@@ -1607,7 +1615,7 @@ void rebuild_atlas(void) {
         uint16_t* m = &meta[(size_t)it.slot * 4];
         m[0] = (uint16_t)pos[k].x;
         m[1] = (uint16_t)pos[k].y;
-        m[2] = (uint16_t)(pos[k].layer | (it.ref ? 0x8000 : 0));
+        m[2] = (uint16_t)(pos[k].layer | (it.ref ? 0x8000 : 0) | (it.builtin ? 0x4000 : 0));   /* passo 31a */
         m[3] = (uint16_t)it.size;
         if (it.ref) {
             for (int c = 0; c < 4; ++c) ref[(size_t)it.slot * 4 + c] = it.ref[c];
@@ -1703,11 +1711,17 @@ void bind_inputs(void) {
      * ppu_native; aqui só a escolha OBP0/OBP1 dos sprites e o HD (a GPU só
      * monta quadros do modo CGB). */
     const bool mono = ppu_get_color_mode() != PPU_COLOR_DX;
-    uint32_t dark = 0, light = 0;
-    ppu_mono_ramp_ends(&dark, &light);
     gl.Uniform1i(g_loc_mono, mono ? 1 : 0);
-    gl.Uniform3i(g_loc_mono_dark, (GLint)((dark >> 16) & 255u), (GLint)((dark >> 8) & 255u), (GLint)(dark & 255u));
-    gl.Uniform3i(g_loc_mono_light, (GLint)((light >> 16) & 255u), (GLint)((light >> 8) & 255u), (GLint)(light & 255u));
+    GLint ramp[16];
+    for (int k = 0; k < 4; ++k) {   /* passo 31a: os 4 tons, como ppu_mono_tint_rgba */
+        const uint32_t v = 255u - (uint32_t)k * 85u;
+        const uint32_t c = ppu_mono_tint_rgba(0xFF000000u | (v << 16) | (v << 8) | v);
+        ramp[k * 4 + 0] = (GLint)((c >> 16) & 255u);
+        ramp[k * 4 + 1] = (GLint)((c >> 8) & 255u);
+        ramp[k * 4 + 2] = (GLint)(c & 255u);
+        ramp[k * 4 + 3] = 255;
+    }
+    gl.Uniform4iv(g_loc_mono_ramp, 4, ramp);
 }
 
 bool g_nofade = false;   /* 3D-4a: laterais sem escurecimento (u_ext = 2 no margin_main) */
@@ -1838,8 +1852,7 @@ bool gpu_ppu_init(char* err, size_t err_size) {
     g_loc_scale = gl.GetUniformLocation(g_prog, "u_scale");
     g_loc_hd = gl.GetUniformLocation(g_prog, "u_hd");
     g_loc_mono = gl.GetUniformLocation(g_prog, "u_mono");
-    g_loc_mono_dark = gl.GetUniformLocation(g_prog, "u_mono_dark");
-    g_loc_mono_light = gl.GetUniformLocation(g_prog, "u_mono_light");
+    g_loc_mono_ramp = gl.GetUniformLocation(g_prog, "u_mono_ramp");   /* passo 31a */
     g_loc_hastl = gl.GetUniformLocation(g_prog, "u_hastl");
     g_loc_margin = gl.GetUniformLocation(g_prog, "u_margin");
     g_loc_out = gl.GetUniformLocation(g_prog, "u_out");

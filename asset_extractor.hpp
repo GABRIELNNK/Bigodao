@@ -39,6 +39,33 @@ public:
 
     const std::filesystem::path& path() const { return path_; }
 
+    // Passo 31a: arquivos extras no pacote (ex.: original_bw/*.png). O leitor da
+    // ROM ignora o que não é fatia, então isso não muda a remontagem.
+    struct ExtraFile {
+        std::string name;
+        std::vector<uint8_t> data;
+    };
+
+    // Valor de uma linha "chave=valor" do bigodao/o2r_info.txt ("" se não houver).
+    std::string info_value(const std::string& key) const {
+        std::ifstream in(path_, std::ios::binary);
+        if (!in) return "";
+        std::vector<uint8_t> z((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::map<std::string, std::vector<uint8_t>> files;
+        std::string err;
+        if (!read_zip(z, files, err)) return "";
+        auto it = files.find(INFO_NAME);
+        if (it == files.end()) return "";
+        std::istringstream ss(std::string(it->second.begin(), it->second.end()));
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (line.size() > key.size() && line.compare(0, key.size(), key) == 0 && line[key.size()] == '=') {
+                return line.substr(key.size() + 1);
+            }
+        }
+        return "";
+    }
+
     bool exists() const {
         std::error_code ec;
         return std::filesystem::is_regular_file(path_, ec);
@@ -46,7 +73,9 @@ public:
 
     // Gera o .o2r a partir da ROM patcheada. Escreve num arquivo temporário, confere
     // que dá para remontar a ROM byte a byte e só então substitui o pacote antigo.
-    bool build(const std::vector<uint8_t>& rom, std::string& err) const {
+    // extra: arquivos a mais no pacote; extra_info: linhas a mais no o2r_info.txt.
+    bool build(const std::vector<uint8_t>& rom, std::string& err,
+               const std::vector<ExtraFile>& extra = {}, const std::string& extra_info = "") const {
         namespace fs = std::filesystem;
         if (rom.size() <= MIN_ROM_SIZE) {
             err = "ROM too small (" + std::to_string(rom.size()) + " bytes)";
@@ -70,9 +99,14 @@ public:
                 add_file(zf, s.name, &rom[s.begin], end - s.begin, cd, names);
             }
 
+            // Passo 31a: arquivos extras (texturas originais etc.)
+            for (const ExtraFile& f : extra) {
+                add_file(zf, f.name, f.data.data(), f.data.size(), cd, names);
+            }
+
             const std::string info = "format=" + std::to_string(FORMAT_VERSION) + "\n"
                                      "rom_size=" + std::to_string(rom.size()) + "\n"
-                                     "content=Wario Land: Super Mario Land 3 + DX v1.2 (patched)\n";
+                                     "content=Wario Land: Super Mario Land 3 + DX v1.2 (patched)\n" + extra_info;
             add_file(zf, INFO_NAME, reinterpret_cast<const uint8_t*>(info.data()), info.size(), cd, names);
 
             const uint32_t cd_offset = static_cast<uint32_t>(zf.tellp());
@@ -81,6 +115,7 @@ public:
                 zf.write(names[i].data(), static_cast<std::streamsize>(names[i].size()));
             }
             EndOfCentralDir eocd;
+            if (cd.size() > 0xFFFF) { err = "too many files for the package"; return false; }
             eocd.diskEntries = eocd.totalEntries = static_cast<uint16_t>(cd.size());
             eocd.centralDirSize = static_cast<uint32_t>(zf.tellp()) - cd_offset;
             eocd.centralDirOffset = cd_offset;

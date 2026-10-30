@@ -124,6 +124,7 @@ typedef struct {
     uint16_t size;
     bool has_ref;
     uint32_t ref[4];     /* paleta em que o tile foi pintado (pack.json) */
+    bool builtin;        /* passo 31a: texturas originais embutidas */
 } HdTile;
 #define HD_TABLE_CAP 32768u   /* potência de 2 (passo 11a: era 16384) */
 static HdTile g_hd_tiles[HD_TABLE_CAP];
@@ -743,11 +744,15 @@ typedef struct {
     bool active;
     uint32_t mul[3];   /* 16.16, arredondado para cima: ref * mul >> 16 == atual */
     uint32_t add[3];   /* usado quando o canal de referência é 0 */
+    bool mono;         /* passo 31a: tile embutido no modo Original: vai para a rampa P&B */
 } HdRecolor;
 
 static inline void hd_recolor_setup(HdRecolor* r, const HdTile* t, uint8_t idx, uint32_t cur) {
     r->active = false;
-    if (!t->has_ref) {
+    r->mono = g_mono && t->builtin;
+    /* Passo 31a: no modo Original a paleta da linha é P&B; os mods coloridos
+     * ficam com as cores do PNG (sem recolorir pela paleta). */
+    if (g_mono || !t->has_ref) {
         return;
     }
     const uint32_t ref = t->ref[idx & 3u];
@@ -783,8 +788,8 @@ static inline uint32_t hd_recolor_apply_rgb(const HdRecolor* r, uint32_t c) {
 }
 
 static inline uint32_t hd_recolor_apply(const HdRecolor* r, uint32_t c) {
-    if (g_mono) {
-        /* PNG HD é colorido: no modo original vira a rampa P&B pela luminância */
+    if (r->mono) {
+        /* Passo 31a: só os tiles embutidos vão para a rampa P&B (cinza ou verde) */
         c = hd_recolor_apply_rgb(r, c);
         return ppu_mono_tint_rgba(c);
     }
@@ -1554,6 +1559,16 @@ bool ppu_native_hd_table_entry(uint32_t i, int* size, const uint32_t** px, const
     return true;
 }
 
+bool ppu_native_hd_table_entry_builtin(uint32_t i) {   /* passo 31a */
+    return i < HD_TABLE_CAP && g_hd_tiles[i].key != 0 && g_hd_tiles[i].builtin;
+}
+
+static bool g_hd_loading_builtin = false;   /* passo 31a */
+
+void ppu_native_hd_set_builtin_loading(bool on) {
+    g_hd_loading_builtin = on;
+}
+
 /* Passo 14b */
 void ppu_native_gpu_capture(bool enabled) {
     g_gpu_on = enabled;
@@ -1737,6 +1752,7 @@ bool ppu_native_hd_add_tile_ex(char kind, uint64_t tile_hash, uint16_t context, 
     t->px = px;
     t->size = (uint16_t)size;
     t->has_ref = ref_palette != NULL;
+    t->builtin = g_hd_loading_builtin;   /* passo 31a */
     for (unsigned c = 0; c < 4u; ++c) {
         t->ref[c] = ref_palette ? ref_palette[c] : 0u;
     }
