@@ -1896,6 +1896,19 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
     const GBContext* ctx,
     int extended_x,
     const WidescreenBlockAttributeCache* attribute_cache);
+/* Passo 31b: diferença entre o SCX da linha e a câmera lógica do quadro
+ * ($A902/$A903, menos 0x50). Parado é 0; andando, o jogo escreve o SCX com a
+ * posição do quadro anterior e a diferença é a velocidade da câmera (1-4
+ * pontos). As laterais seguem o SCX para casar com o centro; o teste das
+ * paredes da sala precisa usar a mesma conta, senão sobra uma faixa do tamanho
+ * da diferença com o cenário de depois da parede. */
+static inline int ppu_ws_scx_delta(const GBPPU* ppu) {
+    int d = (int)ppu->latched_scx - ((int)(ppu->frame_widescreen_scroll_x - 0x50) & 0xFF);
+    if (d > 128) d -= 256;
+    if (d < -128) d += 256;
+    return d;
+}
+
 static uint32_t ppu_ws_screen_edge_rgba(const GBPPU* ppu,
                                         const GBContext* ctx,
                                         const WidescreenBlockAttributeCache* attribute_cache,
@@ -1937,9 +1950,7 @@ static WidescreenBackgroundPixel ppu_fetch_widescreen_background_pixel(
         if (scy_delta > 128) scy_delta -= 256;
         if (scy_delta < -128) scy_delta += 256;
 
-        int scx_delta = (int)ppu->latched_scx - ((int)(base_scroll_x - 0x50) & 0xFF);
-        if (scx_delta > 128) scx_delta -= 256;
-        if (scx_delta < -128) scx_delta += 256;
+        const int scx_delta = ppu_ws_scx_delta(ppu);   /* passo 31b: a mesma conta do teste das paredes */
 
         // 3. Aplica o desvio do tremor às coordenadas globais do mundo
         const int world_x = (int)base_scroll_x - 0x50 + extended_x + scx_delta;
@@ -2647,6 +2658,7 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
         ppu_ws_attribute_cache_for_line(ppu, ctx);
 
     const uint16_t scroll_x = ppu->frame_widescreen_scroll_x;
+    const int ws_scx_delta = ppu_ws_scx_delta(ppu);   /* passo 31b */
     bool wall_l, wall_r;
     int wall_l_x = 0, wall_r_x = 0;
     ppu_room_walls(ctx, scroll_x, &wall_l, &wall_l_x, &wall_r, &wall_r_x);
@@ -2699,7 +2711,11 @@ static void ppu_render_widescreen_scanline_fast(GBPPU* ppu,
         }
         const int dest_x = extended_x + GB_WIDESCREEN_MARGIN;
         const bool margin = extended_x < 0 || extended_x >= GB_SCREEN_WIDTH;
-        const int world_x = (int)scroll_x - 0x50 + extended_x;
+        /* Passo 31b: o mesmo X do mundo que ppu_fetch_widescreen_background_pixel
+         * desenha (com a diferença do SCX); antes o teste das paredes usava o X
+         * sem ela e, andando perto do fim da sala, aparecia uma faixa do cenário
+         * de depois da parede. */
+        const int world_x = (int)scroll_x - 0x50 + extended_x + ws_scx_delta;
 
         if (is_sidescrolling_gameplay) {
             if (world_x < 0) {

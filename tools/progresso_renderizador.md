@@ -241,3 +241,8 @@
 - `hd_pack_io`: fonte embutida "Original textures (built-in)", primeira da lista (abaixo dos mods da pasta), só com Cores = Original. Trocar entre DX e Original recarrega os mods.
 - Rampa P&B (cinza/verde) só nos tiles embutidos (`HdTile.builtin`; GPU: bit 0x4000 do meta, `hdm(slot, cor)`), caindo exatamente nos 4 tons. Mods da pasta ficam com as cores deles e, no modo Original, sem recolorir pela paleta.
 - Resolução interna padrão: 2x (também no Reset Display).
+
+## Passo 31b — faixa de cenário depois da parede da sala (laterais, em movimento)
+- Sintoma: andando perto do fim da fase ou de uma porta, aparecia por um instante uma faixa vertical (largura = velocidade da câmera) com o cenário de depois da parede; parado, sumia.
+- Causa: as laterais desenham o mundo em `câmera - 0x50 + x + scx_delta` (o SCX da linha, para casar com o centro), mas o teste das paredes (`ppu_room_walls`) e o `world_x < 0` usavam o X sem o `scx_delta`. Parado o `scx_delta` é 0; andando, os pontos `[parede - scx_delta, parede)` passavam no teste e mostravam o depois da parede.
+- Correção: `ppu_ws_scx_delta()` (uma conta só) e o teste usa o mesmo X do desenho.
