@@ -246,3 +246,33 @@
 - Sintoma: andando perto do fim da fase ou de uma porta, aparecia por um instante uma faixa vertical (largura = velocidade da câmera) com o cenário de depois da parede; parado, sumia.
 - Causa: as laterais desenham o mundo em `câmera - 0x50 + x + scx_delta` (o SCX da linha, para casar com o centro), mas o teste das paredes (`ppu_room_walls`) e o `world_x < 0` usavam o X sem o `scx_delta`. Parado o `scx_delta` é 0; andando, os pontos `[parede - scx_delta, parede)` passavam no teste e mostravam o depois da parede.
 - Correção: `ppu_ws_scx_delta()` (uma conta só) e o teste usa o mesmo X do desenho.
+
+## Passo 21a — medição de tempo por etapa (GPU e CPU)
+- `video_gl`: `vgl_prof_*` com timer query (GL 3.3: `glQueryCounter`; GLES: precisa de `GL_EXT_disjoint_timer_query`, senão só CPU). Lê os resultados 3 quadros depois (sem esperar a GPU) e mostra médias de ~0,5 s.
+- Marcas no 3D (`gpu_ppu_compose_3d`/`gpu_ppu_draw_3d`): envio, centro/laterais/tela/fase além (3 imagens cada, na escala interna), água e fundo (1x), planos de trás, lados dos blocos/portas/sprites (instância por ponto), chão da água, frente + ondas, sprites, plano da frente, HUD. Na plataforma: linhas base (CPU), tela 2D, tela pela CPU, janela, ImGui. A troca de buffer (espera do V-Sync) fica fora.
+- Overlay (F1, com o menu fechado): tabela Etapa / GPU ms / CPU ms + total, e o tamanho do 3D (imagem com a fase além, pontos por desenho, escala das imagens, tamanho da vista).
+- Primeira leitura (llvmpipe, só para conferir): imagem 448x272 = 121.856 pontos; cada desenho "por ponto" manda 24 vértices por ponto (~2,9 milhões de vértices por desenho, 4 desenhos por quadro).
+
+## Passo 21b — 3D: menos vértices nos lados e passos de 1x lendo 1x
+- Números do Steam Deck (21a, 1280x720, imagem 448x272 = 121.856 pontos): 4x = 22,7 ms de GPU (43 fps); 1x = 14,9 ms (59,5 fps). Maiores: "água e fundo (1x)" 7,6 ms em 4x / 4,1 em 1x; os 4 desenhos por ponto (blocos, portas, sprites, plano da frente) ~1,8–2,2 ms cada, em qualquer escala; "fase além" 5,2 ms em 4x / 0,6 em 1x.
+- Lados por ponto: de cada ponto só 2 lados podem aparecer (esquerda ou direita, cima ou baixo). Todos os planos dos lados passam pela reta x = 0, z = dist (por causa do `sc`), então o lado de cada eixo que o olho enxerga sai de uma conta só (`u_eye`). 12 vértices por ponto em vez de 24 (os 6 desenhos por ponto).
+- Água, fundo e os lados liam as classes e as cores na escala interna (16x mais memória em 4x). Agora há uma cópia em 1x (o ponto do meio, a mesma conta que eles já faziam) feita uma vez por quadro (`kDown1xFragment`, etapa "3D: classes e cores em 1x"); o programa dos lados lê as classes da unidade 5. Com as imagens em 1x a cópia não é feita.
+- Conferido: imagem idêntica pixel a pixel ao 21a (fase 1 e caverna, 4x/2x/1x, inclinação −20 a 40, giro −50 a 30).
+
+## Passo 21c — resolução das imagens do 3D
+- Steam Deck depois do 21b: 4x = 16,3 ms (55 fps; "fase além" 8,6 ms, água+fundo 3,4, lados ~3,8); 1x = 13,6 ms (água+fundo 5,1, lados ~5,8).
+- No 3D o filtro é sempre Nearest, então sem tiles HD as imagens em 4x saem iguais às de 1x (só custam 16x mais). Nova opção 3D > "Resolução das imagens do 3D" (`display.res3d`): Automática (padrão: 1x sem tiles HD, a resolução interna com tiles HD), 1x, 2x, 3x, 4x. A escala da textura 2D não muda.
+- Overlay: "água e fundo" separado em "3D: agua (1x)" e "3D: fundo atras dos objetos (1x)".
+- Conferido: 4x com Automática (1x) e com 4x fixa dão a mesma imagem (só mudou o quadro de animação dos sprites, por tempo).
+
+## Passo 21d — 3D: blocos e portas num desenho; fundo atrás dos objetos mais leve
+- Steam Deck depois do 21c (imagens em 1x, sem V-Sync): 13,3 ms; "fundo atrás dos objetos" 4,2 ms, água 0,8, os 4 desenhos por ponto ~1,4–1,5 ms cada. Com V-Sync e 18 ms de GPU (imagens em 4x) caía para 30 fps (passou do quadro, espera o próximo).
+- Lados por ponto: blocos (modo 0) e portas (modo 2) viraram um desenho só (modo 4): cada ponto é chão sólido (bandeira 32) ou porta sólida (64), nunca os dois; a porta usa `u_zf2/u_zb2/u_light2`, e a luz do lado passou a vir do vértice (`v_light`). Um desenho de 122 mil pontos a menos por quadro.
+- Fundo atrás dos objetos: a busca de lado (até 24 pontos para cada lado) feita em cada uma das 16 primeiras linhas de objeto acima de cada ponto virou uma tabela por ponto (`kBgRowFragment`, 1x), lida uma vez por linha.
+- Conferido: blocos+portas juntos dão a imagem idêntica à do 21c (caverna); a tabela foi comparada com a busca antiga dentro do próprio shader, ponto a ponto, em 4 cenas (nenhuma diferença). Comparar imagens entre binários diferentes no llvmpipe não serve: com velocidades diferentes o quadro congelado cai em outro momento da animação.
+
+## Passo 21e — as três imagens do 3D num desenho só (MRT)
+- Steam Deck depois do 21d, sem V-Sync: imagens em 1x = 8,8 ms (ok); imagens em 4x = 15,3 ms ("fase além" 8,6); modo original P&B (tiles HD embutidos, Automática = 4x) = 17,9 ms ("fase além" 10,7). Com V-Sync e imagens em 4x: 38 fps.
+- Centro, laterais e fase além da tela eram desenhados 3 vezes (cor, só o fundo, classe), cada vez refazendo tudo (tiles, HD, 40 sprites + 48 imagens de inimigos por ponto). Agora o `kFragment` tem 3 saídas (`u_out = 3`) e o `Target3` ganhou um framebuffer com as três texturas (`mrt`, `glDrawBuffers`); um desenho só. Se o driver não aceitar o framebuffer, fica o caminho antigo (também com `BIGODAO_SEM_MRT=1`).
+- No centro fora das fases com marcas à mão ou janela-chão (que mudam a cor também) continua o caminho antigo.
+- Conferido dentro do mesmo quadro (desenho antigo x novo, leitura das texturas): 0 pontos diferentes em todas as 3 imagens, centro e fase além, fase 1/caverna/morcego, imagens em 1x e 2x, e no modo P&B com os tiles HD.

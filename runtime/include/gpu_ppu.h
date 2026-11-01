@@ -93,6 +93,9 @@ bool gpu_ppu_draw_3d(const Gpu3DView* view);
 /* Passo 3D-3: o 3D é desenhado fora da tela (com profundidade) no tamanho do
  * retângulo do jogo; esta é a imagem pronta para ir à janela (RGBA, linha 0 = topo). */
 unsigned int gpu_ppu_3d_texture(int* w, int* h);
+/* Passo 21a: tamanho da imagem do 3D (com a fase além da tela, em 1x), escala
+ * das imagens e tamanho do desenho final. false sem 3D. */
+bool gpu_ppu_3d_info(int* cw, int* ch, int* scale, int* vw, int* vh);
 bool gpu_ppu_read_3d(int which, uint32_t* argb, int* w, int* h);
 
 /* Passo 14d-1: camadas do 120 fps a partir da última tela da GPU (mesmo

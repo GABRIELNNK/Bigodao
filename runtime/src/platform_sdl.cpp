@@ -243,6 +243,10 @@ static bool g_gpu_frame_on_gpu = false;  /* passo 14d-1: o quadro do jogo atual 
 static std::string g_gpu_screen_error;
 /* Passo 3D-1: modo 3D em camadas (Graphics > "Modo 3D"). */
 static int g_3d_mode = 0;          /* 0 = desligado, 1 = camadas (pref display.mode3d) */
+/* Passo 21c: escala das imagens do 3D (pref display.res3d): 0 = automática (1x sem
+ * tiles HD, que fica igual porque o 3D usa sempre Nearest; com tiles HD, a
+ * resolução interna), 1..4 = fixa */
+static int g_3d_res = 0;
 static int g_3d_tilt = 10;         /* graus (pref display.tilt3d) */
 static int g_3d_depth = 60;        /* % (pref display.depth3d) */
 static int g_3d_hide = 0;          /* 3D-4f: Desenvolvedor > "3D: esconder" (diagnóstico, não grava) */
@@ -2271,6 +2275,11 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     g_video_backend_pref = (strtol(value, NULL, 10) == 1) ? 1 : 0;
                     continue;
                 }
+                if (strcmp(key, "display.res3d") == 0) {   /* passo 21c */
+                    long v = strtol(value, NULL, 10);
+                    g_3d_res = (int)(v < 0 ? 0 : (v > 4 ? 4 : v));
+                    continue;
+                }
                 if (strcmp(key, "display.mode3d") == 0) {   /* passo 3D-1 */
                     g_3d_mode = (strtol(value, NULL, 10) == 1) ? 1 : 0;
                     continue;
@@ -2500,6 +2509,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.fps_mode=%d\n", g_fps_mode);   /* passo 10a */
     fprintf(file, "display.gpu_screen=%d\n", g_gpu_screen_pref);   /* passo 14c-2 */
     fprintf(file, "display.mode3d=%d\n", g_3d_mode);                /* passo 3D-1 */
+    fprintf(file, "display.res3d=%d\n", g_3d_res);                  /* passo 21c */
     fprintf(file, "display.tilt3d=%d\n", g_3d_tilt);
     fprintf(file, "display.depth3d=%d\n", g_3d_depth);
     fprintf(file, "display.yaw3d=%d\n", g_3d_yaw);
@@ -3277,6 +3287,7 @@ static void reset_runtime_display_defaults(void) {
     g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
     g_gpu_screen_pref = 1;                            /* passo 14c-3: a GPU monta a tela */
     g_3d_mode = 0;                                    /* passo 3D-1 */
+    g_3d_res = 0;                                     /* passo 21c */
     g_3d_tilt = 10;    /* 3D-6d: padrões escolhidos pelo usuário */
     g_3d_depth = 60;
     g_3d_yaw = -5;
@@ -4467,6 +4478,13 @@ static VidTex* gpu_screen_vtex(void) {
 /* Monta a tela pela GPU: a CPU só faz a linha base 1x; o HD (centro e
  * laterais) já foi montado na GPU no vsync. Quadro repetido (pausa, LCD
  * desligado): mostra a última de novo. Devolve false para a CPU montar. */
+/* Passo 21c: escala das imagens do 3D. */
+static int g3d_image_scale(int internal_scale) {
+    if (g_3d_res >= 1) return g_3d_res;
+    const bool hd = ppu_native_hd_get_tiles_enabled() && ppu_native_hd_tile_count() > 0;
+    return hd ? internal_scale : 1;
+}
+
 static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_frame,
                               bool framebuffer_is_widescreen) {
     const int scale = g_texture_scale;
@@ -4495,6 +4513,7 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     const bool remap = g_palette_idx != 0;   /* passo 14e-2: paleta alternativa (sem HD, como na CPU) */
     const bool ws_ambient = !remap && black_fill && g_ws_fill_mode != WS_FILL_BLACK &&
                             base_width == GB_WIDESCREEN_WIDTH;
+    vgl_prof_mark("Tela: linhas base (CPU)");   /* passo 21a */
     if (ws_ambient) {
         ws_ambient_update(src, src_is_wide, true, g_frame_count);
     }
@@ -4517,6 +4536,7 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     in.black_fill = black_fill;
     if (g3d_active()) {   /* passo 3D-1: camadas (o filtro de pós-processamento não vale aqui) */
         GpuScreenInput in3 = in;
+        in3.scale = g3d_image_scale(scale);   /* passo 21c */
         in3.hd_margins = in.wide && src_is_wide && !black_fill;
         marks3d_load();   /* passo 3D-2b */
         marks3d_table(g_registered_ctx);
@@ -4535,6 +4555,7 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
     } else {
         g_3d_valid = false;
     }
+    vgl_prof_mark("Tela 2D: montagem + filtro");   /* passo 21a */
     if (!gpu_ppu_compose_screen(&in) || !gpu_ppu_apply_filter((int)g_post_filter_mode)) {   /* passo 14e-1: filtro */
         g_gpu_screen_valid = false;
         return false;
@@ -4662,6 +4683,11 @@ static void render_frame_internal(const uint32_t* framebuffer,
     }
 
     double total_render_start_ms = sdl_now_ms();
+    if (g_use_gl) {   /* passo 21a: tempos por etapa no overlay */
+        vgl_prof_enable(g_show_overlay && !g_show_menu);
+        vgl_prof_begin();
+        vgl_prof_mark("Inicio do quadro");
+    }
 
     /* Debug: check framebuffer content on first few guest frames */
     if (count_guest_frame && g_frame_count <= 3) {
@@ -4709,6 +4735,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     }
     if (!g_ip_mid_draw && !(gpu_shown && !g_gpu_compare)) {   /* passo 10a: o quadro do meio usa o que ja foi montado */
     /* Update texture */
+    vgl_prof_mark("Tela pela CPU + envio");   /* passo 21a */
     double upload_start_ms = sdl_now_ms();
     void* pixels;
     int pitch;
@@ -4999,6 +5026,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
     /* Clear and render */
     double compose_start_ms = sdl_now_ms();
+    vgl_prof_mark("Janela: limpar + copiar");   /* passo 21a */
 
     // Força o reset do viewport nativo do SDL antes do Clear
     vid_begin_frame();   /* passo 14a */
@@ -5141,6 +5169,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (g_3d_mark) { v.tilt_deg = 0.0f; v.yaw_deg = 0.0f; }   /* 3D-2b: vista reta para o clique bater com o tile */
             v.hide = g_3d_hide | (getenv("BIGODAO_3D_ESCONDER") ? atoi(getenv("BIGODAO_3D_ESCONDER")) : 0);
             drawn3d = gpu_ppu_draw_3d(&v);
+            vgl_prof_mark("Janela: limpar + copiar");   /* passo 21a */
             if (drawn3d) {   /* passo 3D-3: desenhado fora da tela, com profundidade */
                 int tw = 0, th = 0;
                 const unsigned id = gpu_ppu_3d_texture(&tw, &th);
@@ -5164,6 +5193,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
         }
     }
 
+    vgl_prof_mark("Menu e overlay (ImGui)");   /* passo 21a */
     vid_imgui_new_frame();   /* passo 14a */
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
@@ -5530,6 +5560,17 @@ static void render_frame_internal(const uint32_t* framebuffer,
                             ImGui::TextDisabled("%s", TR("In 3D the post-processing filter and the in-between frame (120 fps) are off.",
                                                          "No 3D o filtro de pos-processamento e o quadro do meio (120 fps) ficam desligados."));
                         }
+                    }
+                    {   /* passo 21c */
+                        const char* kRes3D[] = {TR("Automatic", "Automatica"), "1x", "2x", "3x", "4x"};
+                        int r3 = g_3d_res;
+                        if (ImGui::Combo(TR("3D image resolution", "Resolucao das imagens do 3D"), &r3, kRes3D, IM_ARRAYSIZE(kRes3D))) {
+                            g_3d_res = r3;
+                            save_runtime_preferences();
+                        }
+                        ImGui::TextDisabled(TR("In use: %dx. Automatic: 1x without HD tiles (it looks the same), the internal resolution with HD tiles.",
+                                               "Em uso: %dx. Automatica: 1x sem tiles HD (fica igual), a resolucao interna com tiles HD."),
+                                            g3d_image_scale(g_texture_scale));
                     }
                     ImGui::SeparatorText(TR("Camera", "Camera"));
                     if (ImGui::SliderInt(TR("Tilt (degrees)", "Inclinacao (graus)"), &g_3d_tilt, -35, 35)) save_runtime_preferences();
@@ -6443,6 +6484,48 @@ static void render_frame_internal(const uint32_t* framebuffer,
                                 (unsigned long long)cmp->unhooked_tile_writes);
                 }
                 ImGui::Separator();
+                if (g_use_gl && vgl_prof_enabled()) {   /* passo 21a: tempos por etapa */
+                    VglProfRow rows[40];
+                    float gtot = -1.0f, ctot = 0.0f;
+                    const int nr = vgl_prof_rows(rows, 40, &gtot, &ctot);
+                    const bool has_gpu = vgl_prof_gpu_available();
+                    {
+                        int cw = 0, ch = 0, sc = 0, vw = 0, vh = 0;
+                        if (g3d_active() && gpu_ppu_3d_info(&cw, &ch, &sc, &vw, &vh)) {
+                            ImGui::Text(TR("3D: image %dx%d (%d points), images at %dx, view %dx%d",
+                                           "3D: imagem %dx%d (%d pontos), imagens em %dx, vista %dx%d"),
+                                        cw, ch, cw * ch, sc, vw, vh);
+                        }
+                    }
+                    if (ImGui::BeginTable("##prof", 3, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+                        ImGui::TableSetupColumn(TR("Stage", "Etapa"));
+                        ImGui::TableSetupColumn(has_gpu ? "GPU ms" : TR("GPU (n/a)", "GPU (sem)"));
+                        ImGui::TableSetupColumn("CPU ms");
+                        ImGui::TableHeadersRow();
+                        for (int i = 0; i < nr; ++i) {
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted(rows[i].name);
+                            ImGui::TableNextColumn();
+                            if (rows[i].gpu_ms >= 0.0f) ImGui::Text("%6.2f", rows[i].gpu_ms);
+                            else ImGui::TextUnformatted("   --");
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%6.2f", rows[i].cpu_ms);
+                        }
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(TR("Total (without the buffer swap)", "Total (sem a troca de buffer)"));
+                        ImGui::TableNextColumn();
+                        if (gtot >= 0.0f) ImGui::Text("%6.2f", gtot);
+                        else ImGui::TextUnformatted("   --");
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%6.2f", ctot);
+                        ImGui::EndTable();
+                    }
+                    if (!has_gpu) ImGui::TextDisabled("%s", TR("This driver has no GPU timer: only the CPU is measured.",
+                                                              "Este driver nao tem cronometro de GPU: so a CPU e medida."));
+                    ImGui::Separator();
+                }
             }
             ImGui::Text("%s", overlay_menu_hint_text());
             ImGui::Text("%s", overlay_visibility_hint_text());
@@ -6527,6 +6610,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     g_last_timing.compose_ms = sdl_now_ms() - compose_start_ms;
 
     double present_start_ms = sdl_now_ms();
+    vgl_prof_end();   /* passo 21a: a troca de buffer (espera do V-Sync) fica de fora */
     vid_present();   /* passo 14a */
     if (count_guest_frame) {
         g_ip_last_present = SDL_GetPerformanceCounter();   /* passo 10a */

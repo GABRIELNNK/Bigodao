@@ -58,6 +58,21 @@ void vgl_set_clip(const SDL_Rect* clip);        /* NULL = sem recorte */
 void vgl_rect_to_fb(const SDL_Rect* r, int* x, int* y, int* w, int* h);
 void vgl_present(SDL_Window* window);
 
+/* Passo 21a: medição de tempo por etapa do quadro, na GPU (timer query) e na CPU.
+ * vgl_prof_begin abre o quadro, cada vgl_prof_mark começa uma etapa (o nome tem
+ * que ser uma string fixa), vgl_prof_end fecha. Os resultados chegam com alguns
+ * quadros de atraso (sem esperar a GPU) e saem como média de ~0,5 s.
+ * Desligado (vgl_prof_enable(false)) não custa nada. */
+void vgl_prof_enable(bool on);
+bool vgl_prof_enabled(void);
+bool vgl_prof_gpu_available(void);   /* false: só a CPU é medida */
+void vgl_prof_begin(void);
+void vgl_prof_mark(const char* name);
+void vgl_prof_end(void);
+typedef struct VglProfRow { const char* name; float gpu_ms; float cpu_ms; } VglProfRow;
+/* Copia até max linhas; devolve quantas. gpu_ms < 0: sem medida na GPU. */
+int vgl_prof_rows(VglProfRow* out, int max, float* gpu_total_ms, float* cpu_total_ms);
+
 /* Lê o framebuffer (RGBA, de cima para baixo) — para testes. */
 bool vgl_read_pixels(int x, int y, int w, int h, unsigned char* rgba);
 

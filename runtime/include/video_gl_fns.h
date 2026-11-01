@@ -52,6 +52,8 @@ constexpr GLenum kArrayBuffer = 0x8892, kStreamDraw = 0x88E0;
 constexpr GLenum kVertexShader = 0x8B31, kFragmentShader = 0x8B30;
 constexpr GLenum kCompileStatus = 0x8B81, kLinkStatus = 0x8B82, kInfoLogLength = 0x8B84;
 constexpr GLenum kTexture0 = 0x84C0, kVersion = 0x1F02, kRenderer = 0x1F01;
+constexpr GLenum kTimestamp = 0x8E28, kQueryResult = 0x8866, kQueryResultAvailable = 0x8867;   /* passo 21a */
+constexpr GLenum kGpuDisjoint = 0x8FBB, kExtensions = 0x1F03;
 constexpr GLenum kFramebuffer = 0x8D40, kColorAttachment0 = 0x8CE0, kFramebufferComplete = 0x8CD5;
 
 struct Fns {
@@ -98,6 +100,8 @@ struct Fns {
     VGL_FN(void, Uniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat))
     VGL_FN(void, UniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*))
     VGL_FN(void, Uniform2f, (GLint, GLfloat, GLfloat))   /* passo 3D-3 */
+    VGL_FN(void, Uniform3f, (GLint, GLfloat, GLfloat, GLfloat))   /* passo 21b */
+    VGL_FN(void, DrawBuffers, (GLsizei, const GLenum*))   /* passo 21e */
     VGL_FN(void, GenRenderbuffers, (GLsizei, GLuint*))
     VGL_FN(void, DeleteRenderbuffers, (GLsizei, const GLuint*))
     VGL_FN(void, BindRenderbuffer, (GLenum, GLuint))
@@ -124,6 +128,12 @@ struct Fns {
     VGL_FN(void, TexImage3D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*))
     VGL_FN(void, TexSubImage3D, (GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void*))
     VGL_FN(void, GetIntegerv, (GLenum, GLint*))
+    /* passo 21a: timer query (opcionais: podem ficar nulas) */
+    VGL_FN(void, GenQueries, (GLsizei, GLuint*))
+    VGL_FN(void, DeleteQueries, (GLsizei, const GLuint*))
+    VGL_FN(void, QueryCounter, (GLuint, GLenum))
+    VGL_FN(void, GetQueryObjectuiv, (GLuint, GLenum, GLuint*))
+    VGL_FN(void, GetQueryObjectui64v, (GLuint, GLenum, unsigned long long*))
 #undef VGL_FN
 };
 

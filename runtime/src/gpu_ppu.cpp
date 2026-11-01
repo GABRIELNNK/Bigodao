@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -83,6 +84,7 @@ GLint g_sloc_cls = -1, g_sloc_bf = -1;   /* passo 3D-1 */
  * (0 longe, 1 fundo, 2 HUD, 3 sprite). */
 struct Target3 {
     GLuint fbo[3] = {0, 0, 0}, out[3] = {0, 0, 0};
+    GLuint mrt = 0;   /* passo 21e: as três imagens num framebuffer só (0 = sem) */
     int w = 0, h = 0;
 };
 Target3 g_3c, g_3m, g_3s;
@@ -96,6 +98,7 @@ GLint g_loc_ext = -1, g_loc_extg = -1, g_loc_exto = -1, g_loc_tx = -1, g_loc_gh 
 GLuint g_cprog = 0;   /* cópia de uma textura para um pedaço do alvo */
 GLint g_cloc_off = -1;
 bool g_3d_ok = false;
+int g_3d_n = 1;   /* passo 21a: escala das imagens do 3D */
 bool g_3d_level = false;   /* passo 3D-2: a fase está na tela (há chão separado) */
 int g_3d_bw = 0;   /* largura base da tela 3D (256 ou 160) */
 GLuint g_dprog = 0;
@@ -140,9 +143,18 @@ const char* kBoxVertex =
     "out float v_dep;\n"    /* 3D-6c: 0 na frente da extrusão, 1 atrás */
     "uniform int u_front;\n"   /* 3D-6c: extrusão do plano da frente (só blocos de terreno) */
     "uniform int u_half;\n"    /* 3D-2k: lados do chão: 0 = chão normal, 1 = só o de meia extrusão */
+    "uniform vec3 u_eye;\n"    /* passo 21b: olho da câmera (mesmas coordenadas do u_mvp) */
+    /* passo 21d: modo 4 = lados dos blocos (modo 0) e das portas (modo 2) num desenho
+     * só (cada ponto é de um ou de outro); a porta usa u_zf2/u_zb2/u_light2 */
+    "uniform float u_zf2;\n"
+    "uniform float u_zb2;\n"
+    "uniform float u_light;\n"
+    "uniform float u_light2;\n"
+    "out float v_light;\n"
+    "int g_m;\n"
     "bool pix_solid(int px, int py) {\n"
     "    if (px < 0 || py < 0 || float(px) >= u_bw || float(py) >= u_ch) return false;\n"
-    "    if (u_mode == 0 && u_front == 0) {\n"
+    "    if (g_m == 0 && u_front == 0) {\n"
     "        ivec2 cs = textureSize(u_clsmap, 0);\n"
     "        ivec2 q = clamp(ivec2((vec2(float(px), float(py)) + 0.5) * vec2(cs) / vec2(u_bw, u_ch)), ivec2(0), cs - 1);\n"
     "        if ((texelFetch(u_clsmap, q, 0).b > 0.5) != (u_half != 0)) return false;\n"
@@ -152,12 +164,12 @@ const char* kBoxVertex =
     "        ivec2 q = clamp(ivec2((vec2(float(px), float(py)) + 0.5) * vec2(cs) / vec2(u_bw, u_ch)), ivec2(0), cs - 1);\n"
     "        if (texelFetch(u_clsmap, q, 0).g < 0.5) return false;\n"
     "    }\n"
-    "    if (u_mode == 3) {\n"   /* 3D-5c: ponto de sprite (extrusão dos sprites) */
+    "    if (g_m == 3) {\n"   /* 3D-5c: ponto de sprite (extrusão dos sprites) */
     "        ivec2 cs = textureSize(u_clsmap, 0);\n"
     "        ivec2 q = clamp(ivec2((vec2(float(px), float(py)) + 0.5) * vec2(cs) / vec2(u_bw, u_ch)), ivec2(0), cs - 1);\n"
     "        return (int(round(texelFetch(u_clsmap, q, 0).r * 255.0)) & 7) == 3;\n"
     "    }\n"
-    "    return (int(round(texelFetch(u_wp, ivec2(px, py), 0).r * 255.0)) & (u_mode == 2 ? 64 : 32)) != 0;\n"
+    "    return (int(round(texelFetch(u_wp, ivec2(px, py), 0).r * 255.0)) & (g_m == 2 ? 64 : 32)) != 0;\n"
     "}\n"
     "bool band_at(float px, float py) {\n"
     "    if (px < 0.0 || py < 0.0 || px >= u_bw || py >= u_ch) return false;\n"
@@ -166,6 +178,8 @@ const char* kBoxVertex =
     "void main() {\n"
     "    int cx = gl_InstanceID % u_cols - 1, cy = gl_InstanceID / u_cols - 1;\n"
     "    int face = gl_VertexID / 6, cor = gl_VertexID - face * 6;\n"
+    "    g_m = u_mode;\n"
+    "    v_light = u_light;\n"
     "    int ci = cor < 3 ? cor : (cor == 3 ? 0 : (cor == 4 ? 2 : 3));\n"
     /* 3D-3c: debaixo das cópias das ondas, um chão horizontal da cor da água (na
      * célula de baixo da faixa das ondas), da frente até o fundo: tapa o que fica
@@ -195,13 +209,29 @@ const char* kBoxVertex =
      * uma face onde o vizinho não é sólido; assim o volume segue o contorno do
      * desenho (barril redondo) e não o quadrado do tile */
     "    int px = gl_InstanceID % int(u_bw), py = gl_InstanceID / int(u_bw);\n"
+    /* passo 21b: de cada ponto só podem aparecer 2 lados (o da esquerda ou o da
+     * direita, o de cima ou o de baixo): o plano de cada lado passa pela reta do
+     * centro da projeção (x = 0, z = dist), e o olho fica de um lado só dele.
+     * Antes eram 4 lados (24 vértices por ponto), agora 2 (12). */
+    "    if (face == 0) {\n"
+    "        float kl = (float(px) - u_bw * 0.5) / u_dist;\n"
+    "        face = (u_eye.x - kl * (u_dist - u_eye.z) < 0.0) ? 2 : 3;\n"
+    "    } else {\n"
+    "        float kt = (u_ch * 0.5 - float(py)) / u_dist;\n"
+    "        face = (u_eye.y - kt * (u_dist - u_eye.z) > 0.0) ? 0 : 1;\n"
+    "    }\n"
     "    ivec2 nd = face == 0 ? ivec2(0, -1) : (face == 1 ? ivec2(0, 1) : (face == 2 ? ivec2(-1, 0) : ivec2(1, 0)));\n"
     "    v_uv = vec2(0.0); v_in = vec2(0.0); v_shade = 0.0; v_tint = 0.0; v_wuv = vec2(0.0); v_out = vec2(-1.0);\n"
     "    v_dep = 0.0;\n"
+    "    float zf = u_zf, zb = u_zb;\n"
+    "    if (u_mode == 4) {\n"   /* passo 21d */
+    "        g_m = 0;\n"
+    "        if (!pix_solid(px, py)) { g_m = 2; zf = u_zf2; zb = u_zb2; v_light = u_light2; }\n"
+    "    }\n"
     "    if (!pix_solid(px, py) || pix_solid(px + nd.x, py + nd.y)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }\n"
     "    float x0 = float(px), y0 = float(py);\n"
     "    vec2 ab = ci == 0 ? vec2(0.0, 0.0) : (ci == 1 ? vec2(1.0, 0.0) : (ci == 2 ? vec2(1.0, 1.0) : vec2(0.0, 1.0)));\n"
-    "    float z = mix(u_zf, u_zb, ab.y);\n"
+    "    float z = mix(zf, zb, ab.y);\n"
     "    v_dep = ab.y;\n"
     "    {\n"
     "        vec4 w = texelFetch(u_wp, ivec2(px, py), 0);\n"
@@ -221,7 +251,7 @@ const char* kBoxVertex =
 const char* kBoxFragment =
     "uniform sampler2D u_tex;\n"
     "uniform float u_alpha;\n"
-    "uniform float u_light;\n"   /* 3D-3i: lados da porta mais claros */
+    "in float v_light;\n"   /* 3D-3i: lados da porta mais claros (21d: vem do vértice) */
     "uniform int u_simple;\n"   /* 3D-5c: lados dos sprites */
     "uniform sampler2D u_clsmap;\n"   /* 3D-5d: só pontos do próprio sprite na cor do lado */
     "in vec2 v_uv;\n"
@@ -275,10 +305,27 @@ const char* kBoxFragment =
     "        for (int j = 0; j < 8; ++j) { vec3 d = abs(cs[i] - cs[j]); if (d.r + d.g + d.b < 0.06) ++n; }\n"
     "        if (n > bn) { bn = n; best = i; }\n"
     "    }\n"
-    "    vec3 c = mix(best >= 0 ? cs[best] : cs[1], vec3(1.0), u_light) * v_shade;\n"
+    "    vec3 c = mix(best >= 0 ? cs[best] : cs[1], vec3(1.0), v_light) * v_shade;\n"
     "    if (v_tint > 0.5) c = mix(c, texture(u_tex, v_wuv).rgb, u_alpha);\n"
     "    o_color = vec4(c, 1.0);\n"
     "}\n";
+/* Passo 21b: cópia em 1x (o ponto do meio de cada ponto da tela) das classes e
+ * das cores, para os passos que só olham pontos inteiros (água, fundo, lados):
+ * em 4x eles liam texturas 16 vezes maiores, pulando na memória. */
+const char* kDown1xFragment =
+    "uniform sampler2D u_src;\n"
+    "uniform int u_n;\n"
+    "out vec4 o_color;\n"
+    "void main() {\n"
+    "    ivec2 cs = textureSize(u_src, 0);\n"
+    "    ivec2 q = clamp(ivec2((floor(gl_FragCoord.xy) + 0.5) * float(u_n)), ivec2(0), cs - 1);\n"
+    "    o_color = texelFetch(u_src, q, 0);\n"
+    "}\n";
+GLuint g_d1prog = 0, g_fbo_c1 = 0, g_out_c1 = 0, g_fbo_k1 = 0, g_out_k1 = 0;
+GLint g_d1loc_n = -1;
+int g_c1_w = 0, g_c1_h = 0;
+GLint g_bloc_eye = -1;
+GLint g_bloc_zf2 = -1, g_bloc_zb2 = -1, g_bloc_light2 = -1;   /* passo 21d */
 GLuint g_bprog = 0;
 GLint g_bloc_mode = -1, g_bloc_alpha = -1, g_bloc_light = -1, g_bloc_simple = -1;
 GLint g_bloc_front = -1, g_bloc_edge = -1;   /* 3D-6c */
@@ -679,6 +726,48 @@ const char* kWaterPrepFragment =
     /* 3D-4a: coluna guardada relativa ao ponto (+128), a imagem pode ter mais de 255 */
     "    o_color = vec4(float(fl) / 255.0, float(row) / 255.0, float(sx < 0 ? 255 : sx - x + 128) / 255.0, float(ref) / 255.0);\n"
     "}\n";
+/* Passo 21d: para cada ponto de objeto (classe 2/3), o fundo mais perto na mesma
+ * linha até 24 pontos (primeiro a esquerda, depois a direita, como no laço do
+ * kBgSrcFragment): r = distância (0 = nenhum), g = 1 se for à direita. O fundo
+ * atrás dos objetos olhava isso de novo para cada ponto embaixo (até 16 linhas x 48
+ * pontos); agora lê uma vez. */
+const char* kBgRowFragment =
+    "uniform sampler2D u_clsmap;\n"
+    "uniform sampler2D u_wp;\n"
+    "uniform ivec2 u_cx;\n"
+    "out vec4 o_color;\n"
+    "ivec2 g_sz;\n"
+    "ivec2 g_cs;\n"
+    "int rank_at(int x, int y) {\n"
+    "    if (x < u_cx.x || x >= u_cx.y) return -1;\n"
+    "    ivec2 p = clamp(ivec2((vec2(float(x), float(y)) + 0.5) * vec2(g_cs) / vec2(g_sz)), ivec2(0), g_cs - 1);\n"
+    "    int code = int(round(texelFetch(u_clsmap, p, 0).r * 255.0));\n"
+    "    int c = code & 7, u = (code >> 3) & 3;\n"
+    "    if (c == 3) c = u == 0 ? 1 : (u == 1 ? 4 : (u == 2 ? 5 : 6));\n"
+    "    int r = -1;\n"
+    "    if (c == 1) r = 0; else if (c == 5) r = 1; else if (c == 6) r = 2; else if (c == 4) r = 3; else if (c == 2) r = 4;\n"
+    "    if (r == 0 && (int(round(texelFetch(u_wp, ivec2(x, y), 0).r * 255.0)) & 128) != 0) r = 2;\n"
+    "    return r;\n"
+    "}\n"
+    "void main() {\n"
+    "    g_sz = textureSize(u_wp, 0);\n"
+    "    g_cs = textureSize(u_clsmap, 0);\n"
+    "    int x = int(gl_FragCoord.x), y = int(gl_FragCoord.y);\n"
+    "    int r0 = rank_at(x, y);\n"
+    "    int hi = 0, hs = 0;\n"
+    "    if (r0 == 2 || r0 == 3) {\n"
+    "        for (int i = 1; i <= 24 && hi == 0; ++i) {\n"
+    "            for (int sd = -1; sd <= 1; sd += 2) {\n"
+    "                int hx = x + sd * i;\n"
+    "                if (hx < 0 || hx >= g_sz.x) continue;\n"
+    "                if (rank_at(hx, y) == 0) { hi = i; hs = sd > 0 ? 1 : 0; break; }\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "    o_color = vec4(float(hi) / 255.0, float(hs), 0.0, 1.0);\n"
+    "}\n";
+GLuint g_bhprog = 0, g_fbo_bh = 0, g_out_bh = 0;
+int g_bh_w = 0, g_bh_h = 0;
 /* Passo 3D-4i: origem do fundo atrás dos objetos, 1 ponto por ponto 1x da imagem
  * (mesma regra do 3D-4g/4h: primeiro de lado na mesma linha, até 32 pontos e
  * deslocado de 16 em 16; senão subindo, e ao passar por um objeto olha os lados
@@ -688,6 +777,7 @@ const char* kBgSrcFragment =
     "uniform sampler2D u_clsmap;\n"
     "uniform sampler2D u_wp;\n"
     "uniform ivec2 u_cx;\n"   /* 3D-2m: colunas onde vale procurar o fundo (fora das fases: só o meio da tela) */
+    "uniform sampler2D u_bh;\n"   /* passo 21d: fundo mais perto na linha (kBgRowFragment) */
     "out vec4 o_color;\n"
     "ivec2 g_sz;\n"
     "ivec2 g_cs;\n"
@@ -740,13 +830,9 @@ const char* kBgSrcFragment =
     "                if (rq < 0) break;\n"
     "                if (rq == 3 && gy < 0) gy = yy;\n"
     "                if (rq >= 2 && rq <= 3 && ob++ < 16) {\n"
-    "                    for (int i = 1; i <= 24 && !found; ++i) {\n"
-    "                        for (int sd = -1; sd <= 1; sd += 2) {\n"
-    "                            int hx = x + sd * i;\n"
-    "                            if (hx < 0 || hx >= g_sz.x) continue;\n"
-    "                            if (rank_at(hx, yy) == 0) { sx = hx; sy = yy; found = true; break; }\n"
-    "                        }\n"
-    "                    }\n"
+    "                    vec4 h = texelFetch(u_bh, ivec2(x, yy), 0);\n"   /* passo 21d */
+    "                    int hi = int(round(h.r * 255.0));\n"
+    "                    if (hi > 0) { sx = x + (h.g > 0.5 ? hi : -hi); sy = yy; found = true; }\n"
     "                }\n"
     "            }\n"
     /* 3D-4k: sem fundo acima nem dos lados (debaixo de um teto, caverna): atrás vai
@@ -782,9 +868,25 @@ bool ensure3(Target3& t, int w, int h) {
         if (t.fbo[k]) gl.DeleteFramebuffers(1, &t.fbo[k]);
         t.out[k] = t.fbo[k] = 0;
     }
+    if (t.mrt) gl.DeleteFramebuffers(1, &t.mrt);
+    t.mrt = 0;
     t.w = t.h = 0;
     for (int k = 0; k < 3; ++k) {
         if (!make_target(&t.fbo[k], &t.out[k], w, h)) return false;
+    }
+    {   /* passo 21e: framebuffer com as três (se o driver não aceitar, fica sem) */
+        gl.GenFramebuffers(1, &t.mrt);
+        gl.BindFramebuffer(kFramebuffer, t.mrt);
+        for (int k = 0; k < 3; ++k)
+            gl.FramebufferTexture2D(kFramebuffer, kColorAttachment0 + (GLenum)k, kTexture2D, t.out[k], 0);
+        const GLenum bufs[3] = {kColorAttachment0, kColorAttachment0 + 1, kColorAttachment0 + 2};
+        gl.DrawBuffers(3, bufs);
+        const bool ok = gl.CheckFramebufferStatus(kFramebuffer) == kFramebufferComplete;
+        gl.BindFramebuffer(kFramebuffer, 0);
+        if (!ok || gl.GetError() != 0 || getenv("BIGODAO_SEM_MRT")) {
+            gl.DeleteFramebuffers(1, &t.mrt);
+            t.mrt = 0;
+        }
     }
     t.w = w;
     t.h = h;
@@ -792,6 +894,8 @@ bool ensure3(Target3& t, int w, int h) {
 }
 
 void free3(Target3& t) {
+    if (t.mrt) gl.DeleteFramebuffers(1, &t.mrt);   /* passo 21e */
+    t.mrt = 0;
     for (int k = 0; k < 3; ++k) {
         if (t.out[k]) gl.DeleteTextures(1, &t.out[k]);
         if (t.fbo[k]) gl.DeleteFramebuffers(1, &t.fbo[k]);
@@ -991,7 +1095,10 @@ const char* kFragment =
     "uniform int u_ngh;\n"
     "uniform ivec4 u_spr[40];\n"   /* passo 16d: por sprite: X verdadeiro (-32768 = não sabe), Y da tela (17a: verdadeiro), tile, atributos do OAM */
     "uniform ivec3 u_exto;\n"   /* EX, EY (pontos além da tela), lateral (48 com widescreen) */
-    "out vec4 o_color;\n"
+    /* passo 21e: u_out = 3 escreve as três imagens de uma vez (cor, só o fundo, classe) */
+    "layout(location = 0) out vec4 o_color;\n"
+    "layout(location = 1) out vec4 o_c1;\n"
+    "layout(location = 2) out vec4 o_c2;\n"
     "int g_y;\n"
     "int g_fid = -1;\n"
     "bool g_half = false;\n"   /* 3D-2k: chão com meia extrusão (marca 4) */   /* 3D-6c: bloco da fase deste ponto (para o plano da frente) */
@@ -1018,7 +1125,9 @@ const char* kFragment =
     /* 3D-6c: verde = bloco de terreno que vai para o plano da frente (sem caixas,
      * quebráveis, gelo, interruptores etc.) */
     /* 3D-2k: azul = chão com meia extrusão */
-    "    if (u_out == 2) o_color = vec4(float(code) / 255.0, (cls == 1 && g_kind == 1 && front_block(g_fid)) ? 1.0 : 0.0, (cls == 1 && g_kind == 1 && g_half) ? 1.0 : 0.0, 1.0);\n"
+    "    vec4 kc = vec4(float(code) / 255.0, (cls == 1 && g_kind == 1 && front_block(g_fid)) ? 1.0 : 0.0, (cls == 1 && g_kind == 1 && g_half) ? 1.0 : 0.0, 1.0);\n"
+    "    if (u_out == 3) { o_color = vec4(vec3(col) / 255.0, 1.0); o_c1 = vec4(vec3(bgc) / 255.0, 1.0); o_c2 = kc; return; }\n"
+    "    if (u_out == 2) o_color = kc;\n"
     "    else o_color = vec4(vec3(u_out == 1 ? bgc : col) / 255.0, 1.0);\n"
     "}\n"
     /* Blocos da fase que viram chão no 3D (disassembly, bank02 ActBGColi_IsSolid):
@@ -1740,9 +1849,10 @@ bool draw(GLuint fbo, int w, int h, int scale, bool hd, bool margin = false, int
     gl.Uniform1i(g_loc_hastl, (hd && g_has_tl) ? 1 : 0);
     gl.Uniform1i(g_loc_margin, margin ? 1 : 0);
     gl.Uniform1i(g_loc_out, out);   /* passo 3D-1 */
-    gl.Uniform1i(g_loc_level, (out == 2 && g_level) ? 1 : 0);   /* passo 3D-2: só a classe usa */
-    gl.Uniform1i(g_loc_marks, (out == 2 && !g_level && g_marks_any && !margin) ? 1 : 0);   /* passo 3D-2b */
-    gl.Uniform1i(g_loc_winfloor, (out == 2 && !g_level && g_winfloor && !margin) ? 1 : 0);   /* passo 3D-2g */
+    const bool cls = out == 2 || out == 3;   /* passo 21e: 3 = as três imagens juntas */
+    gl.Uniform1i(g_loc_level, (cls && g_level) ? 1 : 0);   /* passo 3D-2: só a classe usa */
+    gl.Uniform1i(g_loc_marks, (cls && !g_level && g_marks_any && !margin) ? 1 : 0);   /* passo 3D-2b */
+    gl.Uniform1i(g_loc_winfloor, (cls && !g_level && g_winfloor && !margin) ? 1 : 0);   /* passo 3D-2g */
     gl.Uniform1i(g_loc_ext, (margin && g_nofade) ? 2 : 0);
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
@@ -1769,7 +1879,7 @@ bool draw_ext(GLuint fbo, int w, int h, int scale, int out, int ex, int ey, int 
     gl.Uniform1i(g_loc_hastl, 0);
     gl.Uniform1i(g_loc_margin, 0);
     gl.Uniform1i(g_loc_out, out);
-    gl.Uniform1i(g_loc_level, (out == 2 && g_level) ? 1 : 0);
+    gl.Uniform1i(g_loc_level, ((out == 2 || out == 3) && g_level) ? 1 : 0);   /* passo 21e */
     gl.Uniform1i(g_loc_marks, 0);
     gl.Uniform1i(g_loc_winfloor, 0);
     gl.Uniform1i(g_loc_ext, 1);
@@ -1932,10 +2042,18 @@ void gpu_ppu_shutdown(void) {
         if (g_bprog) gl.DeleteProgram(g_bprog);
         if (g_wprog) gl.DeleteProgram(g_wprog);
         if (g_bsprog) gl.DeleteProgram(g_bsprog);   /* 3D-4i */
+        if (g_bhprog) gl.DeleteProgram(g_bhprog);   /* passo 21d */
+        if (g_out_bh) gl.DeleteTextures(1, &g_out_bh);
+        if (g_fbo_bh) gl.DeleteFramebuffers(1, &g_fbo_bh);
         if (g_out_bs) gl.DeleteTextures(1, &g_out_bs);
         if (g_fbo_bs) gl.DeleteFramebuffers(1, &g_fbo_bs);
         if (g_out_w) gl.DeleteTextures(1, &g_out_w);
         if (g_fbo_w) gl.DeleteFramebuffers(1, &g_fbo_w);
+        if (g_out_c1) gl.DeleteTextures(1, &g_out_c1);   /* passo 21b */
+        if (g_fbo_c1) gl.DeleteFramebuffers(1, &g_fbo_c1);
+        if (g_out_k1) gl.DeleteTextures(1, &g_out_k1);
+        if (g_fbo_k1) gl.DeleteFramebuffers(1, &g_fbo_k1);
+        if (g_d1prog) gl.DeleteProgram(g_d1prog);
         if (g_out_v) gl.DeleteTextures(1, &g_out_v);
         if (g_fbo_v) gl.DeleteFramebuffers(1, &g_fbo_v);
         if (g_rb_v) gl.DeleteRenderbuffers(1, &g_rb_v);
@@ -1963,7 +2081,11 @@ void gpu_ppu_shutdown(void) {
     g_fprog = g_fbo_f = g_out_f = g_final = 0;
     g_dprog = g_bprog = 0;
     g_wprog = g_fbo_w = g_out_w = 0;
+    g_d1prog = g_fbo_c1 = g_out_c1 = g_fbo_k1 = g_out_k1 = 0;   /* passo 21b */
+    g_c1_w = g_c1_h = 0;
     g_bsprog = g_fbo_bs = g_out_bs = 0;   /* 3D-4i */
+    g_bhprog = g_fbo_bh = g_out_bh = 0;   /* passo 21d */
+    g_bh_w = g_bh_h = 0;
     g_bs_w = g_bs_h = 0;
     g_w_w = 0;
     g_out_v = g_fbo_v = g_rb_v = 0;
@@ -2063,20 +2185,37 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
     drain_errors("3D");
     const bool hd = f->hd_on;
     if (hd) rebuild_atlas();
+    vgl_prof_mark("3D: envio do quadro");   /* passo 21a */
     upload_frame(f);
     if (!ensure3(g_3c, kW * n, kH * n)) return false;
-    for (int k = 0; k < 3; ++k) {
-        if (!draw(g_3c.fbo[k], kW * n, kH * n, n, hd && g_atlas_ok, false, k)) return false;
+    vgl_prof_mark("3D: centro (3 imagens)");
+    /* passo 21e: as três de uma vez quando as marcas à mão/janela-chão (que mudam a
+     * cor também) estão desligadas */
+    const bool mrt_ok = g_level || (!g_marks_any && !g_winfloor);
+    if (g_3c.mrt && mrt_ok) {
+        if (!draw(g_3c.mrt, kW * n, kH * n, n, hd && g_atlas_ok, false, 3)) return false;
+    } else {
+        for (int k = 0; k < 3; ++k) {
+            if (!draw(g_3c.fbo[k], kW * n, kH * n, n, hd && g_atlas_ok, false, k)) return false;
+        }
     }
     const bool margins = in->wide && in->hd_margins && f->margin_on;
     if (margins) {
+        vgl_prof_mark("3D: laterais (3 imagens)");
         upload_margins(f);
         if (!ensure3(g_3m, kMW * n, kH * n)) return false;
         g_nofade = f->level_layout && f->ext_on;   /* 3D-4a */
-        for (int k = 0; k < 3; ++k) {
-            if (!draw(g_3m.fbo[k], kMW * n, kH * n, n, hd && g_atlas_ok, true, k)) {
+        if (g_3m.mrt) {   /* passo 21e (nas laterais as marcas não valem) */
+            if (!draw(g_3m.mrt, kMW * n, kH * n, n, hd && g_atlas_ok, true, 3)) {
                 g_nofade = false;
                 return false;
+            }
+        } else {
+            for (int k = 0; k < 3; ++k) {
+                if (!draw(g_3m.fbo[k], kMW * n, kH * n, n, hd && g_atlas_ok, true, k)) {
+                    g_nofade = false;
+                    return false;
+                }
             }
         }
         g_nofade = false;
@@ -2085,6 +2224,7 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
     GpuScreenInput si = *in;
     si.hd_center = false;   /* o centro vem de g_3c (ligado abaixo) */
     si.hd_margins = false;
+    vgl_prof_mark("3D: tela (3 imagens)");
     if (!gpu_ppu_compose_screen(&si)) return false;   /* prepara programa, base e ambiente */
     const int bw = in->wide ? 256 : 160;
     if (!ensure3(g_3s, bw * n, kH * n)) return false;
@@ -2130,6 +2270,7 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
             g_cloc_off = gl.GetUniformLocation(g_cprog, "u_off");
             gl.Uniform1i(gl.GetUniformLocation(g_cprog, "u_scls"), 1);
         }
+        vgl_prof_mark("3D: fase alem da tela (3 imagens)");
         const int ex = PPU_NATIVE_GPU_EXT_X, ey = PPU_NATIVE_GPU_EXT_Y;
         const int cw = bw + 2 * ex, ch = kH + 2 * ey;
         if (!ensure3(g_3e, cw * n, ch * n)) return false;
@@ -2139,8 +2280,10 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
         upload(g_tex_ext, PPU_NATIVE_GPU_EXT_TW, PPU_NATIVE_GPU_EXT_TH, kRedInteger, kUnsignedShort, f->ext);
         gl.ActiveTexture(kTexture0);
         gl.PixelStorei(kUnpackAlignment, 1);
+        /* passo 21e: a fase além da tela nas três imagens de uma vez */
+        if (g_3e.mrt && !draw_ext(g_3e.mrt, cw * n, ch * n, n, 3, ex, ey, in->wide ? 48 : 0, f, hd && g_atlas_ok)) return false;
         for (int k = 0; k < 3; ++k) {
-            if (!draw_ext(g_3e.fbo[k], cw * n, ch * n, n, k, ex, ey, in->wide ? 48 : 0, f, hd && g_atlas_ok)) return false;
+            if (!g_3e.mrt && !draw_ext(g_3e.fbo[k], cw * n, ch * n, n, k, ex, ey, in->wide ? 48 : 0, f, hd && g_atlas_ok)) return false;
             gl.BindFramebuffer(kFramebuffer, g_3e.fbo[k]);
             gl.Viewport(ex * n, ey * n, bw * n, kH * n);
             gl.UseProgram(g_cprog);
@@ -2178,6 +2321,7 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
         g_3d_boffx = (((ox + g_ex) % 16) + 16) % 16;   /* 3D-4d: na imagem (com a fase além) */
         g_3d_boffy = (((oy + g_ey) % 16) + 16) % 16;
     }
+    g_3d_n = n;   /* passo 21a */
     g_3d_ok = true;
     return true;
 }
@@ -2263,7 +2407,11 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         }
         gl.UseProgram(g_bprog);
         gl.Uniform1i(gl.GetUniformLocation(g_bprog, "u_tex"), 0);
-        gl.Uniform1i(gl.GetUniformLocation(g_bprog, "u_clsmap"), 1);
+        gl.Uniform1i(gl.GetUniformLocation(g_bprog, "u_clsmap"), 5);   /* passo 21b: classes em 1x */
+        g_bloc_eye = gl.GetUniformLocation(g_bprog, "u_eye");
+        g_bloc_zf2 = gl.GetUniformLocation(g_bprog, "u_zf2");
+        g_bloc_zb2 = gl.GetUniformLocation(g_bprog, "u_zb2");
+        g_bloc_light2 = gl.GetUniformLocation(g_bprog, "u_light2");
         g_bloc_mvp = gl.GetUniformLocation(g_bprog, "u_mvp");
         g_bloc_off = gl.GetUniformLocation(g_bprog, "u_off");
         g_bloc_bw = gl.GetUniformLocation(g_bprog, "u_bw");
@@ -2305,6 +2453,51 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         g_w_w = g_cw;
         g_w_h = g_ch;
     }
+    /* passo 21b: classes e cores em 1x (com as imagens já em 1x, as próprias) */
+    GLuint cls1 = g_cv->out[2], col1 = g_cv->out[1];
+    if (g_3d_n > 1) {
+        vgl_prof_mark("3D: classes e cores em 1x");
+        if (!g_d1prog) {
+            std::string e;
+            g_d1prog = link_program(std::string(shader_header()) + kVertex,
+                                    std::string(shader_header()) + kDown1xFragment, nullptr, 0, e);
+            if (!g_d1prog) {
+                std::fprintf(stderr, "[GPU] shader da copia 1x: %s\n", e.c_str());
+                return false;
+            }
+            gl.UseProgram(g_d1prog);
+            gl.Uniform1i(gl.GetUniformLocation(g_d1prog, "u_src"), 0);
+            g_d1loc_n = gl.GetUniformLocation(g_d1prog, "u_n");
+        }
+        if (g_c1_w != g_cw || g_c1_h != g_ch) {
+            if (g_out_c1) gl.DeleteTextures(1, &g_out_c1);
+            if (g_fbo_c1) gl.DeleteFramebuffers(1, &g_fbo_c1);
+            if (g_out_k1) gl.DeleteTextures(1, &g_out_k1);
+            if (g_fbo_k1) gl.DeleteFramebuffers(1, &g_fbo_k1);
+            g_out_c1 = g_fbo_c1 = g_out_k1 = g_fbo_k1 = 0;
+            g_c1_w = g_c1_h = 0;
+            if (!make_target(&g_fbo_c1, &g_out_c1, g_cw, g_ch) || !make_target(&g_fbo_k1, &g_out_k1, g_cw, g_ch)) return false;
+            g_c1_w = g_cw;
+            g_c1_h = g_ch;
+        }
+        gl.Disable(kScissorTest);
+        gl.Disable(kBlend);
+        gl.Disable(kDepthTest);
+        gl.UseProgram(g_d1prog);
+        gl.Uniform1i(g_d1loc_n, g_3d_n);
+        gl.BindVertexArray(g_vao);
+        gl.ActiveTexture(kTexture0);
+        const GLuint src[2] = {g_cv->out[2], g_cv->out[1]}, dst[2] = {g_fbo_c1, g_fbo_k1};
+        for (int k = 0; k < 2; ++k) {
+            gl.BindFramebuffer(kFramebuffer, dst[k]);
+            gl.Viewport(0, 0, g_cw, g_ch);
+            gl.BindTexture(kTexture2D, src[k]);
+            gl.DrawArrays(kTriangles, 0, 3);
+        }
+        cls1 = g_out_c1;
+        col1 = g_out_k1;
+    }
+    vgl_prof_mark("3D: agua (1x)");   /* passo 21a */
     /* água pré-calculada (1x) a partir das classes */
     gl.BindFramebuffer(kFramebuffer, g_fbo_w);
     gl.Viewport(0, 0, g_cw, g_ch);
@@ -2316,11 +2509,12 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     gl.Uniform1f(g_wloc_ch, (float)g_ch);
     gl.Uniform2i(g_wloc_boff, g_3d_boffx, g_3d_boffy);
     gl.ActiveTexture(kTexture0 + 1);
-    gl.BindTexture(kTexture2D, g_cv->out[1]);
+    gl.BindTexture(kTexture2D, col1);   /* passo 21b */
     gl.ActiveTexture(kTexture0);
-    gl.BindTexture(kTexture2D, g_cv->out[2]);
+    gl.BindTexture(kTexture2D, cls1);
     gl.BindVertexArray(g_vao);
     gl.DrawArrays(kTriangles, 0, 3);
+    vgl_prof_mark("3D: fundo atras dos objetos (1x)");   /* passo 21c */
     /* passo 3D-4i: origem do fundo atrás dos objetos, em 1x (depois da água) */
     if (!g_bsprog) {
         std::string e;
@@ -2333,6 +2527,28 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         gl.UseProgram(g_bsprog);
         gl.Uniform1i(gl.GetUniformLocation(g_bsprog, "u_clsmap"), 0);
         gl.Uniform1i(gl.GetUniformLocation(g_bsprog, "u_wp"), 1);
+        gl.Uniform1i(gl.GetUniformLocation(g_bsprog, "u_bh"), 2);   /* passo 21d */
+    }
+    if (!g_bhprog) {   /* passo 21d */
+        std::string e;
+        g_bhprog = link_program(std::string(shader_header()) + kVertex,
+                                std::string(shader_header()) + kBgRowFragment, nullptr, 0, e);
+        if (!g_bhprog) {
+            std::fprintf(stderr, "[GPU] shader do fundo na linha 3D: %s\n", e.c_str());
+            return false;
+        }
+        gl.UseProgram(g_bhprog);
+        gl.Uniform1i(gl.GetUniformLocation(g_bhprog, "u_clsmap"), 0);
+        gl.Uniform1i(gl.GetUniformLocation(g_bhprog, "u_wp"), 1);
+    }
+    if (g_bh_w != g_cw || g_bh_h != g_ch) {
+        if (g_out_bh) gl.DeleteTextures(1, &g_out_bh);
+        if (g_fbo_bh) gl.DeleteFramebuffers(1, &g_fbo_bh);
+        g_out_bh = g_fbo_bh = 0;
+        g_bh_w = g_bh_h = 0;
+        if (!make_target(&g_fbo_bh, &g_out_bh, g_cw, g_ch)) return false;
+        g_bh_w = g_cw;
+        g_bh_h = g_ch;
     }
     if (g_bs_w != g_cw || g_bs_h != g_ch) {
         if (g_out_bs) gl.DeleteTextures(1, &g_out_bs);
@@ -2343,17 +2559,25 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         g_bs_w = g_cw;
         g_bs_h = g_ch;
     }
-    gl.BindFramebuffer(kFramebuffer, g_fbo_bs);
-    gl.Viewport(0, 0, g_cw, g_ch);
-    gl.UseProgram(g_bsprog);
     /* 3D-2m: fora das fases as laterais são só o fundo ambiente (desfoque): atrás do
      * chão perto da borda a busca pegava a cor delas (os quadrados pretos nos slots) */
-    if (!g_level && g_cw == 256) gl.Uniform2i(gl.GetUniformLocation(g_bsprog, "u_cx"), 48, 208);
-    else gl.Uniform2i(gl.GetUniformLocation(g_bsprog, "u_cx"), 0, g_cw);
+    const int cx0 = (!g_level && g_cw == 256) ? 48 : 0, cx1 = (!g_level && g_cw == 256) ? 208 : g_cw;
     gl.ActiveTexture(kTexture0 + 1);
     gl.BindTexture(kTexture2D, g_out_w);
     gl.ActiveTexture(kTexture0);
-    gl.BindTexture(kTexture2D, g_cv->out[2]);
+    gl.BindTexture(kTexture2D, cls1);   /* passo 21b */
+    gl.BindFramebuffer(kFramebuffer, g_fbo_bh);   /* passo 21d: fundo mais perto na linha */
+    gl.Viewport(0, 0, g_cw, g_ch);
+    gl.UseProgram(g_bhprog);
+    gl.Uniform2i(gl.GetUniformLocation(g_bhprog, "u_cx"), cx0, cx1);
+    gl.DrawArrays(kTriangles, 0, 3);
+    gl.BindFramebuffer(kFramebuffer, g_fbo_bs);
+    gl.Viewport(0, 0, g_cw, g_ch);
+    gl.UseProgram(g_bsprog);
+    gl.Uniform2i(gl.GetUniformLocation(g_bsprog, "u_cx"), cx0, cx1);
+    gl.ActiveTexture(kTexture0 + 2);
+    gl.BindTexture(kTexture2D, g_out_bh);
+    gl.ActiveTexture(kTexture0);
     gl.DrawArrays(kTriangles, 0, 3);
     /* passo 3D-3: imagem fora da tela com profundidade (a janela não tem) */
     if (g_v_w != v->vp_w || g_v_h != v->vp_h) {
@@ -2400,6 +2624,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     /* linha 0 da imagem = topo (como as outras texturas da tela e o vgl_copy) */
     mvp[1] = -mvp[1]; mvp[5] = -mvp[5]; mvp[9] = -mvp[9]; mvp[13] = -mvp[13];
 
+    vgl_prof_mark("3D: limpar + planos de tras");
     gl.BindFramebuffer(kFramebuffer, g_fbo_v);
     gl.Viewport(0, 0, v->vp_w, v->vp_h);
     gl.Disable(kScissorTest);
@@ -2424,6 +2649,11 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     gl.BindTexture(kTexture2D, g_cv->out[1]);
     gl.ActiveTexture(kTexture0 + 4);
     gl.BindTexture(kTexture2D, g_out_bs);   /* 3D-4i */
+    gl.ActiveTexture(kTexture0 + 5);
+    gl.BindTexture(kTexture2D, cls1);   /* passo 21b: classes em 1x para os lados */
+    gl.ActiveTexture(kTexture0);
+    gl.UseProgram(g_bprog);
+    gl.Uniform3f(g_bloc_eye, eye[0], eye[1], eye[2]);
     gl.BindVertexArray(g_vao);
 
     const float d = v->depth;
@@ -2466,6 +2696,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     for (const L& l : back) plane(l);
     /* lados dos blocos do chão */
     if (bd > 0.0f) {
+        vgl_prof_mark("3D: lados dos blocos e portas (por ponto)");
         gl.UseProgram(g_bprog);
         gl.ActiveTexture(kTexture0);
         gl.BindTexture(kTexture2D, g_cv->out[1]);
@@ -2478,25 +2709,25 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         gl.Uniform1f(g_bloc_zf, bd * 0.5f);
         gl.Uniform1f(g_bloc_zb, -bd * 0.5f);
         gl.Uniform1i(g_bloc_cols, cols);
-        gl.Uniform1i(g_bloc_mode, 0);
         gl.Uniform1f(g_bloc_alpha, alpha);
         gl.Uniform1f(g_bloc_light, 0.0f);
         gl.Uniform1i(g_bloc_half, 0);
-        if (!(v->hide & (1 << 11))) gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);   /* 3D-3h: por ponto */
+        /* passo 21d: blocos (modo 0) e portas (3D-3k: com o enfeite em cima, do plano
+         * delas até o fim do bloco de chão, lados mais claros) num desenho só */
+        gl.Uniform1i(g_bloc_mode, 4);
+        gl.Uniform1f(g_bloc_zf2, zd);
+        gl.Uniform1f(g_bloc_zb2, -bd * 0.5f);
+        gl.Uniform1f(g_bloc_light2, 0.35f);
+        if (!(v->hide & (1 << 11))) gl.DrawArraysInstanced(kTriangles, 0, 12, g_cw * g_ch);   /* 3D-3h: por ponto */
+        gl.Uniform1i(g_bloc_mode, 0);
         /* 3D-2k/2l: chão marcado com meia extrusão: do fundo (trás do bloco) até o meio */
-        gl.Uniform1f(g_bloc_zf, 0.0f);
-        gl.Uniform1f(g_bloc_zb, -bd * 0.5f);
-        gl.Uniform1i(g_bloc_half, 1);
-        if (!(v->hide & (1 << 11)) && g_marks_any) gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
-        gl.Uniform1i(g_bloc_half, 0);
-        /* 3D-3k: portas (com o enfeite em cima) extrudidas do plano delas até o fim
-         * do bloco de chão, lados mais claros */
-        gl.Uniform1f(g_bloc_zf, zd);
-        gl.Uniform1f(g_bloc_zb, -bd * 0.5f);
-        gl.Uniform1i(g_bloc_mode, 2);
-        gl.Uniform1f(g_bloc_light, 0.35f);
-        if (!(v->hide & (1 << 11))) gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
-        gl.Uniform1f(g_bloc_light, 0.0f);
+        if (!(v->hide & (1 << 11)) && g_marks_any) {
+            gl.Uniform1f(g_bloc_zf, 0.0f);
+            gl.Uniform1f(g_bloc_zb, -bd * 0.5f);
+            gl.Uniform1i(g_bloc_half, 1);
+            gl.DrawArraysInstanced(kTriangles, 0, 12, g_cw * g_ch);
+            gl.Uniform1i(g_bloc_half, 0);
+        }
         /* 3D-5c: sprites extrudidos por ponto, da frente deles (+t) até um pouco antes
          * do plano da porta; 3D-5d: cor do lado como nos blocos (a mais comum para
          * dentro, sem o contorno escuro) */
@@ -2506,13 +2737,15 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
             gl.Uniform1f(g_bloc_zf, t);
             gl.Uniform1f(g_bloc_zb, t - sp * (t - (zd + 0.3f)));
         }
+        vgl_prof_mark("3D: lados dos sprites (por ponto)");
         gl.Uniform1i(g_bloc_mode, 3);
         gl.Uniform1i(g_bloc_simple, 1);
         gl.ActiveTexture(kTexture0);
         gl.BindTexture(kTexture2D, g_cv->out[0]);
-        if (!(v->hide & (1 << 3))) gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
+        if (!(v->hide & (1 << 3))) gl.DrawArraysInstanced(kTriangles, 0, 12, g_cw * g_ch);
         gl.Uniform1i(g_bloc_simple, 0);
         gl.BindTexture(kTexture2D, g_cv->out[1]);
+        vgl_prof_mark("3D: chao da agua");
         /* 3D-3c: chão da superfície da água, da frente da água até o fundo */
         gl.Uniform1f(g_bloc_zf, zl);
         gl.Uniform1f(g_bloc_zb, zf);
@@ -2520,6 +2753,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         if (!(v->hide & (1 << 12))) gl.DrawArraysInstanced(kTriangles, 0, 6, cols * rows);
         gl.UseProgram(g_dprog);
     }
+    vgl_prof_mark("3D: frente do chao + ondas");
     plane({4, 1, bd * 0.5f});   /* frente do chão */
     if (g_marks_any && bd > 0.0f) {   /* 3D-2l: frente do meio chão, no meio do bloco */
         gl.Uniform1i(g_dloc_halfp, 1);
@@ -2545,6 +2779,7 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
      * (3D-3d: partes em profundidades diferentes mostravam uma linha na divisa) */
     /* 3D-5c: um plano só, na frente do volume do sprite (os lados vêm do programa
      * dos blocos, modo 3); antes eram 5 cópias de −t a +t */
+    vgl_prof_mark("3D: sprites (frente)");
     plane({3, 0, g_3d_level ? t : 0.07f * dist * d});
     /* 3D-2h: nos mapas, sprites extrudidos como nas fases (mesmo comprimento: 0,4 bloco
      * + 0,2, vezes a espessura dos sprites), da frente deles para trás */
@@ -2567,12 +2802,13 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
         gl.Uniform1f(g_bloc_zb, zs - sp * (0.4f * bdm + 0.2f));
         gl.Uniform1i(g_bloc_mode, 3);
         gl.Uniform1i(g_bloc_simple, 1);
-        gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
+        gl.DrawArraysInstanced(kTriangles, 0, 12, g_cw * g_ch);
         gl.Uniform1i(g_bloc_simple, 0);
         gl.UseProgram(g_dprog);
     }
     /* 3D-6a: plano da frente, cópia do chão e da água (Graphics > "Plano da frente") */
     if (g_3d_level && v->front > 0.0f && bd > 0.0f && !(v->hide & (1 << 13))) {
+        vgl_prof_mark("3D: plano da frente");
         const float zfr = bd * 0.5f + bd * v->front;
         plane({11, 1, zfr});
         /* 3D-6b: os blocos do plano da frente extrudidos até a frente do chão (os
@@ -2587,13 +2823,14 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
             gl.Uniform1f(g_bloc_light, 0.0f);
             gl.Uniform1i(g_bloc_front, 1);   /* 3D-6c: só terreno, contorno preto atrás */
             gl.Uniform1f(g_bloc_edge, std::min(0.5f, 1.0f / (bd * v->front)));
-            gl.DrawArraysInstanced(kTriangles, 0, 24, g_cw * g_ch);
+            gl.DrawArraysInstanced(kTriangles, 0, 12, g_cw * g_ch);
             gl.Uniform1i(g_bloc_front, 0);
             gl.UseProgram(g_dprog);
         }
     }
     /* 3D-3g: HUD fixo na tela (sem perspectiva nem giro), no lugar do 2D, por cima */
     if (!(v->hide & (1 << 2))) {
+        vgl_prof_mark("3D: HUD");
         float ortho[16] = {0};
         ortho[0] = 2.0f / bw;
         ortho[5] = -2.0f / bh;   /* linha 0 da imagem = topo, como o mvp */
@@ -2626,8 +2863,21 @@ bool gpu_ppu_draw_3d(const Gpu3DView* v) {
     }
     gl.Disable(kDepthTest);
     gl.BindFramebuffer(kFramebuffer, 0);
+    gl.ActiveTexture(kTexture0 + 5);
+    gl.BindTexture(kTexture2D, g_tex_log);   /* passo 21b: devolve a unidade 5 */
     gl.ActiveTexture(kTexture0);
     return gl.GetError() == 0;
+}
+
+/* Passo 21a: tamanhos do 3D para o overlay. */
+bool gpu_ppu_3d_info(int* cw, int* ch, int* scale, int* vw, int* vh) {
+    if (!g_3d_ok) return false;
+    if (cw) *cw = g_cw;
+    if (ch) *ch = g_ch;
+    if (scale) *scale = g_3d_n;
+    if (vw) *vw = g_v_w;
+    if (vh) *vh = g_v_h;
+    return true;
 }
 
 /* Passo 3D-2b: marcas por tile vindas da plataforma (fora das fases). */

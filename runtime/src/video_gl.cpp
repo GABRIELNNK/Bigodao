@@ -4,6 +4,7 @@
  */
 #include "video_gl.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -40,7 +41,7 @@ bool load_fns(std::string& missing) {
     L(CheckFramebufferStatus) L(TexImage3D) L(TexSubImage3D) L(GetIntegerv) L(Uniform2i) L(Uniform1f) L(Uniform4f) L(UniformMatrix4fv) L(Uniform2f)
     L(GenRenderbuffers) L(DeleteRenderbuffers) L(BindRenderbuffer) L(RenderbufferStorage)
     L(FramebufferRenderbuffer) L(DepthFunc) L(DepthMask) L(DrawArraysInstanced)
-    L(Uniform3i) L(Uniform4i) L(Uniform4iv)
+    L(Uniform3i) L(Uniform4i) L(Uniform4iv) L(Uniform3f) L(DrawBuffers)
 #undef L
     return ok;
 }
@@ -155,6 +156,165 @@ void vgl_set_context_attributes(void) {
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
 }
 
+/* ---- Passo 21a: medição por etapa (GPU por timer query, CPU pelo relógio) ---- */
+namespace {
+constexpr int kProfSlots = 4;      /* quadros em voo: o resultado é lido 3 quadros depois */
+constexpr int kProfMarks = 40;     /* etapas por quadro (+1 marca de fim) */
+constexpr int kProfNames = 40;
+struct ProfSlot {
+    GLuint q[kProfMarks + 1] = {};
+    const char* name[kProfMarks] = {};
+    double cpu[kProfMarks + 1] = {};
+    int n = 0;
+    bool pending = false;
+};
+bool g_prof_on = false, g_prof_gpu = false, g_prof_in_frame = false, g_prof_qmade = false;
+ProfSlot g_prof[kProfSlots];
+int g_prof_cur = 0;
+unsigned g_prof_frame = 0;
+struct ProfAcc { const char* name; double gpu, cpu; int gpu_n; };
+ProfAcc g_prof_acc[kProfNames];
+int g_prof_acc_n = 0, g_prof_acc_frames = 0, g_prof_acc_gframes = 0;
+double g_prof_acc_t0 = 0.0;
+VglProfRow g_prof_rows[kProfNames];
+int g_prof_rows_n = 0;
+float g_prof_gtot = -1.0f, g_prof_ctot = 0.0f;
+
+double prof_now_ms(void) {
+    return (double)SDL_GetPerformanceCounter() * 1000.0 / (double)SDL_GetPerformanceFrequency();
+}
+
+void prof_load(void) {
+    g_prof_gpu = false;
+    auto get = [](const char* a, const char* b) -> void* {
+        void* f = SDL_GL_GetProcAddress(a);
+        if (!f && b) f = SDL_GL_GetProcAddress(b);
+        return f;
+    };
+    gl.GenQueries = reinterpret_cast<decltype(gl.GenQueries)>(get("glGenQueries", "glGenQueriesEXT"));
+    gl.DeleteQueries = reinterpret_cast<decltype(gl.DeleteQueries)>(get("glDeleteQueries", "glDeleteQueriesEXT"));
+    gl.GetQueryObjectuiv = reinterpret_cast<decltype(gl.GetQueryObjectuiv)>(get("glGetQueryObjectuiv", "glGetQueryObjectuivEXT"));
+    if (g_es) {   /* no GLES o carimbo de tempo só existe com a extensão */
+        const char* ext = (const char*)gl.GetString(kExtensions);
+        gl.GetError();
+        if (!ext || !std::strstr(ext, "GL_EXT_disjoint_timer_query")) return;
+        gl.QueryCounter = reinterpret_cast<decltype(gl.QueryCounter)>(get("glQueryCounterEXT", nullptr));
+        gl.GetQueryObjectui64v = reinterpret_cast<decltype(gl.GetQueryObjectui64v)>(get("glGetQueryObjectui64vEXT", nullptr));
+    } else {
+        gl.QueryCounter = reinterpret_cast<decltype(gl.QueryCounter)>(get("glQueryCounter", nullptr));
+        gl.GetQueryObjectui64v = reinterpret_cast<decltype(gl.GetQueryObjectui64v)>(get("glGetQueryObjectui64v", nullptr));
+    }
+    g_prof_gpu = gl.GenQueries && gl.DeleteQueries && gl.QueryCounter && gl.GetQueryObjectuiv && gl.GetQueryObjectui64v;
+}
+
+ProfAcc* prof_acc(const char* name) {
+    for (int i = 0; i < g_prof_acc_n; ++i)
+        if (g_prof_acc[i].name == name || std::strcmp(g_prof_acc[i].name, name) == 0) return &g_prof_acc[i];
+    if (g_prof_acc_n >= kProfNames) return nullptr;
+    g_prof_acc[g_prof_acc_n] = {name, 0.0, 0.0, 0};
+    return &g_prof_acc[g_prof_acc_n++];
+}
+
+/* lê um quadro antigo; sem o resultado pronto, o quadro só entra na CPU */
+void prof_collect(ProfSlot& s) {
+    if (!s.pending) return;
+    s.pending = false;
+    bool gpu_ok = g_prof_gpu && s.n > 0;
+    if (gpu_ok) {
+        GLuint avail = 0;
+        gl.GetQueryObjectuiv(s.q[s.n], kQueryResultAvailable, &avail);
+        if (!avail) gpu_ok = false;
+        if (g_es) {
+            GLint dis = 0;
+            gl.GetIntegerv(kGpuDisjoint, &dis);
+            if (dis) gpu_ok = false;
+        }
+    }
+    unsigned long long t[kProfMarks + 1] = {};
+    if (gpu_ok)
+        for (int i = 0; i <= s.n; ++i) gl.GetQueryObjectui64v(s.q[i], kQueryResult, &t[i]);
+    gl.GetError();
+    for (int i = 0; i < s.n; ++i) {
+        ProfAcc* a = prof_acc(s.name[i]);
+        if (!a) continue;
+        a->cpu += s.cpu[i + 1] - s.cpu[i];
+        if (gpu_ok && t[i + 1] >= t[i]) { a->gpu += (double)(t[i + 1] - t[i]) / 1.0e6; a->gpu_n++; }
+    }
+    g_prof_acc_frames++;
+    if (gpu_ok) g_prof_acc_gframes++;
+    const double now = prof_now_ms();
+    if (now - g_prof_acc_t0 >= 500.0 && g_prof_acc_frames > 0) {
+        g_prof_rows_n = 0;
+        double gt = 0.0, ct = 0.0;
+        for (int i = 0; i < g_prof_acc_n; ++i) {
+            VglProfRow& r = g_prof_rows[g_prof_rows_n++];
+            r.name = g_prof_acc[i].name;
+            r.cpu_ms = (float)(g_prof_acc[i].cpu / g_prof_acc_frames);
+            r.gpu_ms = g_prof_acc_gframes > 0 ? (float)(g_prof_acc[i].gpu / g_prof_acc_gframes) : -1.0f;
+            ct += r.cpu_ms;
+            if (r.gpu_ms > 0.0f) gt += r.gpu_ms;
+        }
+        g_prof_ctot = (float)ct;
+        g_prof_gtot = g_prof_acc_gframes > 0 ? (float)gt : -1.0f;
+        g_prof_acc_n = 0;
+        g_prof_acc_frames = g_prof_acc_gframes = 0;
+        g_prof_acc_t0 = now;
+    }
+}
+}   /* namespace */
+
+void vgl_prof_enable(bool on) {
+    if (on == g_prof_on) return;
+    g_prof_on = on;
+    g_prof_in_frame = false;
+    for (ProfSlot& s : g_prof) s.pending = false;
+    g_prof_acc_n = g_prof_rows_n = 0;
+    g_prof_acc_frames = g_prof_acc_gframes = 0;
+    g_prof_acc_t0 = prof_now_ms();
+}
+bool vgl_prof_enabled(void) { return g_prof_on; }
+bool vgl_prof_gpu_available(void) { return g_prof_gpu; }
+
+void vgl_prof_begin(void) {
+    if (!g_prof_on || !g_ready) return;
+    if (g_prof_gpu && !g_prof_qmade) {
+        for (ProfSlot& s : g_prof) gl.GenQueries(kProfMarks + 1, s.q);
+        g_prof_qmade = true;
+    }
+    g_prof_cur = (int)(g_prof_frame++ % kProfSlots);
+    prof_collect(g_prof[(g_prof_cur + 1) % kProfSlots]);   /* o mais antigo em voo */
+    ProfSlot& s = g_prof[g_prof_cur];
+    s.pending = false;
+    s.n = 0;
+    g_prof_in_frame = true;
+}
+
+void vgl_prof_mark(const char* name) {
+    if (!g_prof_in_frame) return;
+    ProfSlot& s = g_prof[g_prof_cur];
+    if (s.n >= kProfMarks) return;
+    if (g_prof_gpu) gl.QueryCounter(s.q[s.n], kTimestamp);
+    s.cpu[s.n] = prof_now_ms();
+    s.name[s.n++] = name;
+}
+
+void vgl_prof_end(void) {
+    if (!g_prof_in_frame) return;
+    ProfSlot& s = g_prof[g_prof_cur];
+    if (g_prof_gpu) gl.QueryCounter(s.q[s.n], kTimestamp);
+    s.cpu[s.n] = prof_now_ms();
+    s.pending = s.n > 0;
+    g_prof_in_frame = false;
+}
+
+int vgl_prof_rows(VglProfRow* out, int max, float* gpu_total_ms, float* cpu_total_ms) {
+    const int n = std::min(max, g_prof_rows_n);
+    for (int i = 0; i < n; ++i) out[i] = g_prof_rows[i];
+    if (gpu_total_ms) *gpu_total_ms = g_prof_gtot;
+    if (cpu_total_ms) *cpu_total_ms = g_prof_ctot;
+    return n;
+}
+
 bool vgl_init(SDL_Window* window, char* err, size_t err_size) {
     auto fail = [&](const std::string& why) {
         if (err && err_size) SDL_snprintf(err, err_size, "%s", why.c_str());
@@ -193,6 +353,7 @@ bool vgl_init(SDL_Window* window, char* err, size_t err_size) {
     const char* ver = (const char*)gl.GetString(kVersion);
     const char* ren = (const char*)gl.GetString(kRenderer);
     g_desc = std::string(ver ? ver : "?") + " (" + (ren ? ren : "?") + ")";
+    prof_load();   /* passo 21a */
     g_ready = true;
     fprintf(stderr, "[GL] %s\n", g_desc.c_str());
     return true;
@@ -203,6 +364,10 @@ void vgl_shutdown(void) {
         if (gl.DeleteProgram && g_prog) gl.DeleteProgram(g_prog);
         if (gl.DeleteBuffers && g_vbo) gl.DeleteBuffers(1, &g_vbo);
         if (gl.DeleteVertexArrays && g_vao) gl.DeleteVertexArrays(1, &g_vao);
+        if (g_prof_qmade && gl.DeleteQueries)   /* passo 21a */
+            for (ProfSlot& ps : g_prof) gl.DeleteQueries(kProfMarks + 1, ps.q);
+        g_prof_qmade = false;
+        g_prof_in_frame = false;
         SDL_GL_DeleteContext(g_ctx);
     }
     g_prog = g_vao = g_vbo = 0;
