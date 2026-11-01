@@ -172,7 +172,7 @@ bool g_prof_on = false, g_prof_gpu = false, g_prof_in_frame = false, g_prof_qmad
 ProfSlot g_prof[kProfSlots];
 int g_prof_cur = 0;
 unsigned g_prof_frame = 0;
-struct ProfAcc { const char* name; double gpu, cpu; int gpu_n; };
+struct ProfAcc { const char* name; double gpu, cpu; int gpu_n; double gmax, cmax; };
 ProfAcc g_prof_acc[kProfNames];
 int g_prof_acc_n = 0, g_prof_acc_frames = 0, g_prof_acc_gframes = 0;
 double g_prof_acc_t0 = 0.0;
@@ -211,7 +211,7 @@ ProfAcc* prof_acc(const char* name) {
     for (int i = 0; i < g_prof_acc_n; ++i)
         if (g_prof_acc[i].name == name || std::strcmp(g_prof_acc[i].name, name) == 0) return &g_prof_acc[i];
     if (g_prof_acc_n >= kProfNames) return nullptr;
-    g_prof_acc[g_prof_acc_n] = {name, 0.0, 0.0, 0};
+    g_prof_acc[g_prof_acc_n] = {name, 0.0, 0.0, 0, 0.0, 0.0};
     return &g_prof_acc[g_prof_acc_n++];
 }
 
@@ -237,8 +237,15 @@ void prof_collect(ProfSlot& s) {
     for (int i = 0; i < s.n; ++i) {
         ProfAcc* a = prof_acc(s.name[i]);
         if (!a) continue;
-        a->cpu += s.cpu[i + 1] - s.cpu[i];
-        if (gpu_ok && t[i + 1] >= t[i]) { a->gpu += (double)(t[i + 1] - t[i]) / 1.0e6; a->gpu_n++; }
+        const double dc = s.cpu[i + 1] - s.cpu[i];
+        a->cpu += dc;
+        if (dc > a->cmax) a->cmax = dc;
+        if (gpu_ok && t[i + 1] >= t[i]) {
+            const double dg = (double)(t[i + 1] - t[i]) / 1.0e6;
+            a->gpu += dg;
+            a->gpu_n++;
+            if (dg > a->gmax) a->gmax = dg;
+        }
     }
     g_prof_acc_frames++;
     if (gpu_ok) g_prof_acc_gframes++;
@@ -251,6 +258,8 @@ void prof_collect(ProfSlot& s) {
             r.name = g_prof_acc[i].name;
             r.cpu_ms = (float)(g_prof_acc[i].cpu / g_prof_acc_frames);
             r.gpu_ms = g_prof_acc_gframes > 0 ? (float)(g_prof_acc[i].gpu / g_prof_acc_gframes) : -1.0f;
+            r.gpu_max = g_prof_acc_gframes > 0 ? (float)g_prof_acc[i].gmax : -1.0f;
+            r.cpu_max = (float)g_prof_acc[i].cmax;
             ct += r.cpu_ms;
             if (r.gpu_ms > 0.0f) gt += r.gpu_ms;
         }

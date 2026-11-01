@@ -6497,10 +6497,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
                                         cw, ch, cw * ch, sc, vw, vh);
                         }
                     }
-                    if (ImGui::BeginTable("##prof", 3, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+                    if (ImGui::BeginTable("##prof", 5, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
                         ImGui::TableSetupColumn(TR("Stage", "Etapa"));
                         ImGui::TableSetupColumn(has_gpu ? "GPU ms" : TR("GPU (n/a)", "GPU (sem)"));
+                        ImGui::TableSetupColumn(TR("peak", "pico"));   /* passo 21f */
                         ImGui::TableSetupColumn("CPU ms");
+                        ImGui::TableSetupColumn(TR("peak", "pico"));
                         ImGui::TableHeadersRow();
                         for (int i = 0; i < nr; ++i) {
                             ImGui::TableNextRow();
@@ -6510,7 +6512,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
                             if (rows[i].gpu_ms >= 0.0f) ImGui::Text("%6.2f", rows[i].gpu_ms);
                             else ImGui::TextUnformatted("   --");
                             ImGui::TableNextColumn();
+                            if (rows[i].gpu_max >= 0.0f) ImGui::Text("%6.2f", rows[i].gpu_max);
+                            else ImGui::TextUnformatted("   --");
+                            ImGui::TableNextColumn();
                             ImGui::Text("%6.2f", rows[i].cpu_ms);
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%6.2f", rows[i].cpu_max);
                         }
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
@@ -6519,7 +6526,9 @@ static void render_frame_internal(const uint32_t* framebuffer,
                         if (gtot >= 0.0f) ImGui::Text("%6.2f", gtot);
                         else ImGui::TextUnformatted("   --");
                         ImGui::TableNextColumn();
+                        ImGui::TableNextColumn();
                         ImGui::Text("%6.2f", ctot);
+                        ImGui::TableNextColumn();
                         ImGui::EndTable();
                     }
                     if (!has_gpu) ImGui::TextDisabled("%s", TR("This driver has no GPU timer: only the CPU is measured.",

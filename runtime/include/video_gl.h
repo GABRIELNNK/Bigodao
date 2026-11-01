@@ -69,7 +69,8 @@ bool vgl_prof_gpu_available(void);   /* false: só a CPU é medida */
 void vgl_prof_begin(void);
 void vgl_prof_mark(const char* name);
 void vgl_prof_end(void);
-typedef struct VglProfRow { const char* name; float gpu_ms; float cpu_ms; } VglProfRow;
+/* passo 21f: gpu_max/cpu_max = o pior quadro da janela (picos) */
+typedef struct VglProfRow { const char* name; float gpu_ms; float cpu_ms; float gpu_max; float cpu_max; } VglProfRow;
 /* Copia até max linhas; devolve quantas. gpu_ms < 0: sem medida na GPU. */
 int vgl_prof_rows(VglProfRow* out, int max, float* gpu_total_ms, float* cpu_total_ms);
 

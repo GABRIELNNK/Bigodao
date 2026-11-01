@@ -276,3 +276,8 @@
 - Centro, laterais e fase além da tela eram desenhados 3 vezes (cor, só o fundo, classe), cada vez refazendo tudo (tiles, HD, 40 sprites + 48 imagens de inimigos por ponto). Agora o `kFragment` tem 3 saídas (`u_out = 3`) e o `Target3` ganhou um framebuffer com as três texturas (`mrt`, `glDrawBuffers`); um desenho só. Se o driver não aceitar o framebuffer, fica o caminho antigo (também com `BIGODAO_SEM_MRT=1`).
 - No centro fora das fases com marcas à mão ou janela-chão (que mudam a cor também) continua o caminho antigo.
 - Conferido dentro do mesmo quadro (desenho antigo x novo, leitura das texturas): 0 pontos diferentes em todas as 3 imagens, centro e fase além, fase 1/caverna/morcego, imagens em 1x e 2x, e no modo P&B com os tiles HD.
+
+## Passo 21f — overlay: picos e o envio do quadro separado
+- Steam Deck depois do 21e: imagens em 1x = 8,3 ms; P&B com HD (imagens em 4x) = 12,2 ms ("fase além" 10,7 → 2,8). Sem travar. Travamentos no Steam Deck com 3D: resolvidos.
+- O usuário viu "3D: envio do quadro" pular para ~2 ms de GPU (média) mais ou menos a cada 2 s, com o jogo pausado, sem engasgo visível.
+- Overlay: colunas "pico" (o pior quadro da janela de ~0,5 s) para GPU e CPU, para saber se é um quadro só ou todos. O envio foi separado em "Envio: VRAM, linhas, OAM, paletas", "Envio: escritas no meio do quadro" e "Envio: tiles HD"; mais "3D: atlas HD" (só refaz quando os mods mudam) e "3D: imagens (criar)".

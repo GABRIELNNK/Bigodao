@@ -1757,6 +1757,7 @@ bool upload_frame(const PPUNativeGpuFrame* f) {
         g_marks_dirty = false;
     }
     if (f->serial == g_uploaded_serial) return true;
+    vgl_prof_mark("Envio: VRAM, linhas, OAM, paletas");   /* passo 21f */
     gl.PixelStorei(kUnpackAlignment, 1);
     gl.PixelStorei(kUnpackRowLength, 0);
     gl.ActiveTexture(kTexture0 + 0);
@@ -1772,6 +1773,7 @@ bool upload_frame(const PPUNativeGpuFrame* f) {
     upload(g_tex_oam, 40, kH, kRGBAInteger, kUnsignedByte, f->oam);
     gl.ActiveTexture(kTexture0 + 3);
     upload(g_tex_pal, 64, kH, kRGBAInteger, kUnsignedByte, f->pal);
+    vgl_prof_mark("Envio: escritas no meio do quadro");   /* passo 21f */
     g_has_log = build_log(f);
     gl.ActiveTexture(kTexture0 + 4);
     if (g_has_log || g_had_log) {   /* manda de novo quando muda (inclusive para limpar) */
@@ -1785,6 +1787,7 @@ bool upload_frame(const PPUNativeGpuFrame* f) {
     }
     g_had_log = g_has_log;
     if (f->hd_on) {
+        vgl_prof_mark("Envio: tiles HD");   /* passo 21f */
         gl.ActiveTexture(kTexture0 + 6);
         upload(g_tex_slot, 768, 16, kRedInteger, kUnsignedShort, f->hd_slot);
         g_has_tl = f->hd_tl_count > 0;
@@ -2184,9 +2187,11 @@ bool gpu_ppu_compose_3d(const PPUNativeGpuFrame* f, const GpuScreenInput* in) {
     if (n < 1 || n > kMaxScale) return false;
     drain_errors("3D");
     const bool hd = f->hd_on;
+    vgl_prof_mark("3D: atlas HD");   /* passo 21f: só refaz quando os mods mudam */
     if (hd) rebuild_atlas();
     vgl_prof_mark("3D: envio do quadro");   /* passo 21a */
     upload_frame(f);
+    vgl_prof_mark("3D: imagens (criar)");   /* passo 21f */
     if (!ensure3(g_3c, kW * n, kH * n)) return false;
     vgl_prof_mark("3D: centro (3 imagens)");
     /* passo 21e: as três de uma vez quando as marcas à mão/janela-chão (que mudam a
