@@ -460,6 +460,8 @@ VglTex* vgl_tex_wrap(unsigned int id, int w, int h) {
     return t;
 }
 
+unsigned int vgl_tex_gl_id(const VglTex* tex) { return tex ? tex->id : 0u; }   /* [interface-saves] */
+
 void vgl_tex_set_blend(VglTex* tex, bool blend) {
     if (tex) tex->blend = blend;
 }

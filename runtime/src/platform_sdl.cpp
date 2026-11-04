@@ -541,11 +541,9 @@ static SDL_GameController* g_controller = NULL;
 /* Passo 20a: no Android o V-Sync vem ligado (a tela do aparelho dita o ritmo e o
  * pacing pelo relogio perdia quadros: ~56 fps no 3D). No PC continua desligado:
  * o ritmo pelo relogio mantem os 59,7 fps do Game Boy em monitores de 75/144 Hz. */
-#if defined(__ANDROID__)
+/* [vsync-salvo] padrão ligado também no PC; a escolha do jogador fica salva
+ * em display.vsync. */
 #define BIGODAO_VSYNC_PADRAO true
-#else
-#define BIGODAO_VSYNC_PADRAO false
-#endif
 static bool g_vsync = BIGODAO_VSYNC_PADRAO;
 static bool g_audio_started = false;
 static uint32_t g_audio_start_threshold = 0;
@@ -1386,6 +1384,277 @@ static bool save_savestate_slot(GBContext* ctx, int slot);
 static bool load_savestate_slot(GBContext* ctx, int slot);
 static bool delete_savestate_slot(GBContext* ctx, int slot);
 static bool savestate_slot_exists(const GBContext* ctx, int slot, std::string* out_path);
+
+/* ============================================================================
+ * [interface-saves] Pílula de save state
+ *
+ * Com o menu fechado, salvar, carregar ou trocar de slot pelos atalhos mostra
+ * por ~2 s, no topo da tela do jogo, uma pílula com os 10 slots numerados
+ * (o escolhido aceso; os que têm save com um ponto; os vazios tracejados) e o
+ * texto à direita ("Jogo salvo - slot N", "Carregando - slot N", "Slot N").
+ * Abaixo dela, a miniatura da tela salva naquele slot.
+ *
+ * A miniatura é gravada junto do save: <arquivo do save>.png, com o quadro
+ * base do jogo (1x, com as laterais do widescreen quando ligadas). Saves
+ * antigos não têm: aparece "Sem foto". Cores: as do tema do menu (ImGuiStyle).
+ * Opção: Jogo > Estados salvos > "Interface de saves" (pref ui.save_interface).
+ * ========================================================================== */
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+/* Cópias static (como no hd_pack_io.cpp e no gabarito.cpp), para não colidir no link. */
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_STATIC
+#include "third_party/stb_image_write.h"
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_STATIC
+#define STBI_ONLY_PNG
+#include "third_party/stb_image.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+static void sdl_get_savestate_path(char* buffer, size_t size, const GBContext* ctx, int slot);
+
+enum { SAVE_UI_SAVE = 0, SAVE_UI_LOAD = 1, SAVE_UI_SLOT = 2 };
+static bool g_save_ui_enabled = true;
+static bool g_save_ui_active = false;
+static int g_save_ui_kind = SAVE_UI_SAVE;
+static Uint32 g_save_ui_start = 0;
+static bool g_save_ui_has[GB_SAVESTATE_SLOT_COUNT];
+static VidTex* g_save_ui_tex = NULL;
+static int g_save_ui_tex_w = 0, g_save_ui_tex_h = 0;
+static bool g_save_ui_tex_ok = false;
+static constexpr Uint32 SAVE_UI_MS = 2000u;
+static constexpr Uint32 SAVE_UI_FADE_IN_MS = 120u;
+static constexpr Uint32 SAVE_UI_FADE_OUT_MS = 350u;
+
+static std::string save_ui_thumb_path(const GBContext* ctx, int slot) {
+    char filename[512];
+    sdl_get_savestate_path(filename, sizeof(filename), ctx, slot);
+    return std::string(filename) + ".png";
+}
+
+static void save_ui_png_to_file(void* context, void* data, int size) {
+    FILE* f = (FILE*)context;
+    if (f && data && size > 0) fwrite(data, 1, (size_t)size, f);
+}
+
+/* Grava a miniatura do save (o quadro base que está na tela). */
+static void save_ui_write_thumb(const GBContext* ctx, int slot) {
+    if (!ctx) return;
+    const uint32_t* src = NULL;
+    int w = 0;
+    if (g_last_guest_widescreen_framebuffer_valid) {
+        src = g_last_guest_widescreen_framebuffer;
+        w = GB_WIDESCREEN_WIDTH;
+    } else if (g_last_guest_framebuffer_valid) {
+        src = g_last_guest_framebuffer;
+        w = GB_SCREEN_WIDTH;
+    }
+    const std::string path = save_ui_thumb_path(ctx, slot);
+    if (!src) {
+        std::error_code ec;
+        fs::remove(fs::path(path), ec);   /* sem quadro: não deixa a foto de um save antigo */
+        return;
+    }
+    const size_t count = (size_t)w * GB_SCREEN_HEIGHT;
+    std::vector<unsigned char> rgb(count * 3u);
+    for (size_t i = 0; i < count; ++i) {
+        rgb[i * 3u + 0u] = (unsigned char)((src[i] >> 16) & 0xFFu);
+        rgb[i * 3u + 1u] = (unsigned char)((src[i] >> 8) & 0xFFu);
+        rgb[i * 3u + 2u] = (unsigned char)(src[i] & 0xFFu);
+    }
+    FILE* f = fopen(path.c_str(), "wb");   /* mesmo jeito de abrir do arquivo do save */
+    if (!f) return;
+    stbi_write_png_to_func(save_ui_png_to_file, f, w, GB_SCREEN_HEIGHT, 3, rgb.data(), w * 3);
+    fclose(f);
+}
+
+static void save_ui_delete_thumb(const GBContext* ctx, int slot) {
+    if (!ctx) return;
+    std::error_code ec;
+    fs::remove(fs::path(save_ui_thumb_path(ctx, slot)), ec);
+}
+
+/* Lê a miniatura do slot para a textura (g_save_ui_tex_ok = false se não houver). */
+static void save_ui_load_thumb(const GBContext* ctx, int slot) {
+    g_save_ui_tex_ok = false;
+    if (!ctx || !vid_ready()) return;
+    FILE* f = fopen(save_ui_thumb_path(ctx, slot).c_str(), "rb");
+    if (!f) return;
+    std::vector<unsigned char> file;
+    unsigned char chunk[4096];
+    size_t got = 0;
+    while ((got = fread(chunk, 1, sizeof(chunk), f)) > 0 && file.size() < (1u << 20)) {
+        file.insert(file.end(), chunk, chunk + got);
+    }
+    fclose(f);
+    if (file.empty()) return;
+    int w = 0, h = 0, n = 0;
+    unsigned char* px = stbi_load_from_memory(file.data(), (int)file.size(), &w, &h, &n, 4);
+    if (!px) return;
+    if (w <= 0 || h <= 0 || w > 1024 || h > 1024) {
+        stbi_image_free(px);
+        return;
+    }
+    if (!g_save_ui_tex || g_save_ui_tex_w != w || g_save_ui_tex_h != h) {
+        if (g_save_ui_tex) vid_tex_destroy(g_save_ui_tex);
+        g_save_ui_tex = vid_tex_create(w, h);
+        g_save_ui_tex_w = g_save_ui_tex ? w : 0;
+        g_save_ui_tex_h = g_save_ui_tex ? h : 0;
+        if (g_save_ui_tex) vid_tex_set_linear(g_save_ui_tex, true);
+    }
+    if (!g_save_ui_tex) {
+        stbi_image_free(px);
+        return;
+    }
+    /* O ImGui desenha a textura direto: no OpenGL os bytes vão como R,G,B,A;
+     * no SDL_Renderer a textura é ARGB8888. */
+    std::vector<uint32_t> up((size_t)w * (size_t)h);
+    for (size_t i = 0; i < up.size(); ++i) {
+        const uint32_t r = px[i * 4u + 0u], g = px[i * 4u + 1u], b = px[i * 4u + 2u];
+        up[i] = g_save_ui_tex->gl ? (0xFF000000u | (b << 16) | (g << 8) | r)
+                                  : (0xFF000000u | (r << 16) | (g << 8) | b);
+    }
+    stbi_image_free(px);
+    vid_tex_update(g_save_ui_tex, NULL, up.data(), w * (int)sizeof(uint32_t));
+    g_save_ui_tex_ok = true;
+}
+
+static ImTextureID save_ui_tex_id(void) {
+    if (!g_save_ui_tex) return (ImTextureID)0;
+    if (g_save_ui_tex->gl) return (ImTextureID)(intptr_t)vgl_tex_gl_id(g_save_ui_tex->gl);
+    return (ImTextureID)g_save_ui_tex->sdl;
+}
+
+/* Chamado pelos atalhos: só com o menu fechado. */
+static void save_ui_show(int kind) {
+    if (!g_save_ui_enabled || g_show_menu || !g_registered_ctx) return;
+    for (int i = 0; i < GB_SAVESTATE_SLOT_COUNT; ++i) {
+        g_save_ui_has[i] = savestate_slot_exists(g_registered_ctx, i, NULL);
+    }
+    save_ui_load_thumb(g_registered_ctx, g_savestate_slot);
+    g_save_ui_kind = kind;
+    g_save_ui_start = SDL_GetTicks();
+    g_save_ui_active = true;
+}
+
+static void save_ui_dashed_line(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float th, float dash) {
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len <= 0.0f || dash <= 0.0f) return;
+    for (float t = 0.0f; t < len; t += dash * 2.0f) {
+        const float t1 = (t + dash < len) ? t + dash : len;
+        dl->AddLine(ImVec2(a.x + dx * t / len, a.y + dy * t / len),
+                    ImVec2(a.x + dx * t1 / len, a.y + dy * t1 / len), col, th);
+    }
+}
+
+static void save_ui_dashed_rect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float th, float dash) {
+    save_ui_dashed_line(dl, a, ImVec2(b.x, a.y), col, th, dash);
+    save_ui_dashed_line(dl, ImVec2(b.x, a.y), b, col, th, dash);
+    save_ui_dashed_line(dl, b, ImVec2(a.x, b.y), col, th, dash);
+    save_ui_dashed_line(dl, ImVec2(a.x, b.y), a, col, th, dash);
+}
+
+/* Desenha a pílula e a miniatura (depois do ImGui::NewFrame). */
+static void save_ui_draw(void) {
+    if (!g_save_ui_active) return;
+    const Uint32 age = SDL_GetTicks() - g_save_ui_start;
+    if (age >= SAVE_UI_MS || g_show_menu || !g_save_ui_enabled) {
+        g_save_ui_active = false;
+        return;
+    }
+    float alpha = 1.0f;
+    if (age < SAVE_UI_FADE_IN_MS) alpha = (float)age / (float)SAVE_UI_FADE_IN_MS;
+    if (age > SAVE_UI_MS - SAVE_UI_FADE_OUT_MS) alpha = (float)(SAVE_UI_MS - age) / (float)SAVE_UI_FADE_OUT_MS;
+
+    const ImGuiStyle& st = ImGui::GetStyle();
+    auto col = [&](ImGuiCol c, float a) {
+        ImVec4 v = st.Colors[c];
+        v.w = a * alpha;
+        return ImGui::ColorConvertFloat4ToU32(v);
+    };
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const float u = ImGui::GetFontSize();
+    const float box = u * 1.45f, gap = u * 0.3f, padx = u * 0.85f, pady = u * 0.45f;
+    const float dot = u * 0.13f, sep_gap = u * 0.7f;
+
+    const int slot = g_savestate_slot;
+    char msg[96];
+    if (g_save_ui_kind == SAVE_UI_SAVE) {
+        snprintf(msg, sizeof(msg), "%s %d", TR("Game saved - slot", "Jogo salvo - slot"), slot + 1);
+    } else if (g_save_ui_kind == SAVE_UI_LOAD) {
+        snprintf(msg, sizeof(msg), "%s %d", TR("Loading - slot", "Carregando - slot"), slot + 1);
+    } else {
+        snprintf(msg, sizeof(msg), "Slot %d", slot + 1);
+    }
+    const ImVec2 ts = ImGui::CalcTextSize(msg);
+    const float slots_w = GB_SAVESTATE_SLOT_COUNT * box + (GB_SAVESTATE_SLOT_COUNT - 1) * gap;
+    const float pill_w = padx * 2.0f + slots_w + sep_gap * 2.0f + 1.0f + ts.x;
+    const float pill_h = pady * 2.0f + box + dot * 3.0f;
+    const SDL_Rect& vp = g_game_viewport;
+    const float cx = (float)vp.x + (float)vp.w * 0.5f;
+    const float top = (float)vp.y + (float)vp.h * 0.04f;
+    const ImVec2 p0(cx - pill_w * 0.5f, top), p1(cx + pill_w * 0.5f, top + pill_h);
+    dl->AddRectFilled(p0, p1, col(ImGuiCol_WindowBg, 0.95f), pill_h * 0.5f);
+    dl->AddRect(p0, p1, col(ImGuiCol_Separator, 1.0f), pill_h * 0.5f, 0, 1.5f);
+
+    float x = p0.x + padx;
+    const float by = p0.y + pady;
+    for (int i = 0; i < GB_SAVESTATE_SLOT_COUNT; ++i) {
+        const ImVec2 a(x, by), b(x + box, by + box);
+        const bool on = (i == slot), has = g_save_ui_has[i];
+        ImU32 tc;
+        if (on) {
+            dl->AddRectFilled(a, b, col(ImGuiCol_CheckMark, 1.0f), u * 0.3f);
+            tc = col(ImGuiCol_WindowBg, 1.0f);
+        } else if (has) {
+            dl->AddRectFilled(a, b, col(ImGuiCol_FrameBg, 1.0f), u * 0.3f);
+            dl->AddRect(a, b, col(ImGuiCol_TextDisabled, 1.0f), u * 0.3f, 0, 1.5f);
+            dl->AddCircleFilled(ImVec2(x + box * 0.5f, b.y + dot * 2.0f), dot, col(ImGuiCol_CheckMark, 1.0f));
+            tc = col(ImGuiCol_Text, 1.0f);
+        } else {
+            save_ui_dashed_rect(dl, a, b, col(ImGuiCol_Separator, 1.0f), 1.5f, u * 0.22f);
+            tc = col(ImGuiCol_TextDisabled, 1.0f);
+        }
+        char num[4];
+        snprintf(num, sizeof(num), "%d", i + 1);
+        const ImVec2 ns = ImGui::CalcTextSize(num);
+        dl->AddText(ImVec2(x + (box - ns.x) * 0.5f, by + (box - ns.y) * 0.5f), tc, num);
+        x += box + gap;
+    }
+    x += sep_gap - gap;
+    dl->AddLine(ImVec2(x, by), ImVec2(x, by + box), col(ImGuiCol_Separator, 1.0f), 1.0f);
+    x += 1.0f + sep_gap;
+    dl->AddText(ImVec2(x, by + (box - ts.y) * 0.5f), col(ImGuiCol_Text, 1.0f), msg);
+
+    /* Miniatura abaixo da pílula */
+    const bool has = g_save_ui_has[slot];
+    const bool pic = has && g_save_ui_tex_ok && g_save_ui_tex_w > 0;
+    const float tw = u * 10.0f;
+    const float th = pic ? tw * (float)g_save_ui_tex_h / (float)g_save_ui_tex_w : tw * 9.0f / 16.0f;
+    const float cp = u * 0.35f;
+    const ImVec2 c0(cx - tw * 0.5f - cp, p1.y + u * 0.45f);
+    const ImVec2 c1(cx + tw * 0.5f + cp, c0.y + th + cp * 2.0f);
+    dl->AddRectFilled(c0, c1, col(ImGuiCol_WindowBg, 0.95f), u * 0.5f);
+    dl->AddRect(c0, c1, col(ImGuiCol_Separator, 1.0f), u * 0.5f, 0, 1.5f);
+    const ImVec2 i0(c0.x + cp, c0.y + cp), i1(c1.x - cp, c1.y - cp);
+    if (pic) {
+        dl->AddImage(save_ui_tex_id(), i0, i1, ImVec2(0, 0), ImVec2(1, 1),
+                     IM_COL32(255, 255, 255, (int)(255.0f * alpha)));
+    } else {
+        if (!has) save_ui_dashed_rect(dl, i0, i1, col(ImGuiCol_Separator, 1.0f), 1.5f, u * 0.3f);
+        const char* label = has ? TR("No picture", "Sem foto") : TR("Empty", "Vazio");
+        const ImVec2 ls = ImGui::CalcTextSize(label);
+        dl->AddText(ImVec2((i0.x + i1.x - ls.x) * 0.5f, (i0.y + i1.y - ls.y) * 0.5f),
+                    col(ImGuiCol_TextDisabled, 1.0f), label);
+    }
+}
 static float settings_ui_scale_for_size(const ImVec2& display_size);
 static const char* controller_menu_hint_text(void);
 static bool input_action_is_runtime(GBInputAction action);
@@ -2217,6 +2486,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     }
                     continue;
                 }
+                if (strcmp(key, "display.vsync") == 0) {   /* [vsync-salvo] */
+                    g_vsync = (strcmp(value, "0") != 0);
+                    continue;
+                }
                 if (strcmp(key, "display.fullscreen") == 0) {
                     g_fullscreen = (strcmp(value, "0") != 0);
                     continue;
@@ -2323,6 +2596,10 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                 }
                 if (strcmp(key, "ui.language") == 0) {   /* passo 15a */
                     g_ui_lang = (strtol(value, NULL, 10) == 1) ? 1 : 0;
+                    continue;
+                }
+                if (strcmp(key, "ui.save_interface") == 0) {   /* [interface-saves] */
+                    g_save_ui_enabled = (strcmp(value, "0") != 0);
                     continue;
                 }
                 if (strcmp(key, "ui.theme") == 0) {   /* passo 15b */
@@ -2528,6 +2805,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "audio.device_name=%s\n", g_audio_target_device_name.c_str());
     fprintf(file, "savestate.slot=%d\n", g_savestate_slot);
     fprintf(file, "display.fullscreen=%d\n", g_fullscreen ? 1 : 0);
+    fprintf(file, "display.vsync=%d\n", g_vsync ? 1 : 0);   /* [vsync-salvo] */
     fprintf(file, "display.widescreen_v2=%d\n", g_widescreen_mode ? 1 : 0);   /* [fix-v2] */
     fprintf(file, "display.widescreen_fade_enabled=%d\n", g_widescreen_fade_enabled ? 1 : 0);
     fprintf(file, "display.widescreen_fill_mode=%d\n", g_ws_fill_mode);          /* passo 8a */
@@ -2560,6 +2838,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "ui.language=%d\n", g_ui_lang);     /* passo 15a */
     fprintf(file, "ui.menu_page=%d\n", g_menu_page);
     fprintf(file, "ui.theme=%d\n", g_ui_theme);       /* passo 15b */
+    fprintf(file, "ui.save_interface=%d\n", g_save_ui_enabled ? 1 : 0);   /* [interface-saves] */
     fprintf(file, "display.video_backend=%d\n", g_video_backend_pref);   /* passo 14a */
     fprintf(file, "display.hd_tiles=%d\n", ppu_native_hd_get_tiles_enabled() ? 1 : 0);
     fprintf(file, "input.touch_controls=%d\n", touch_controls::enabled() ? 1 : 0);   /* [android-port] */
@@ -2680,23 +2959,25 @@ static void update_runtime_action_state(GBContext* ctx) {
                     break;
 
                 case GB_INPUT_ACTION_SAVE_STATE:
-                    save_savestate_slot(ctx, g_savestate_slot);
+                    if (save_savestate_slot(ctx, g_savestate_slot)) save_ui_show(SAVE_UI_SAVE);   /* [interface-saves] */
                     break;
 
                 case GB_INPUT_ACTION_LOAD_STATE:
-                    load_savestate_slot(ctx, g_savestate_slot);
+                    if (load_savestate_slot(ctx, g_savestate_slot)) save_ui_show(SAVE_UI_LOAD);   /* [interface-saves] */
                     break;
 
                 case GB_INPUT_ACTION_PREVIOUS_STATE_SLOT:
                     g_savestate_slot = (g_savestate_slot + GB_SAVESTATE_SLOT_COUNT - 1) % GB_SAVESTATE_SLOT_COUNT;
                     g_savestate_status = "Selected slot " + std::to_string(g_savestate_slot + 1);
                     save_runtime_preferences();
+                    save_ui_show(SAVE_UI_SLOT);   /* [interface-saves] */
                     break;
 
                 case GB_INPUT_ACTION_NEXT_STATE_SLOT:
                     g_savestate_slot = (g_savestate_slot + 1) % GB_SAVESTATE_SLOT_COUNT;
                     g_savestate_status = "Selected slot " + std::to_string(g_savestate_slot + 1);
                     save_runtime_preferences();
+                    save_ui_show(SAVE_UI_SLOT);   /* [interface-saves] */
                     break;
 
                 case GB_INPUT_ACTION_TOGGLE_OVERLAY:
@@ -5265,6 +5546,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     ImGui::NewFrame();
     ImGuiIO& imgui_io = ImGui::GetIO();
     imgui_io.FontGlobalScale = settings_ui_scale_for_size(imgui_io.DisplaySize);
+    save_ui_draw();   /* [interface-saves] */
     /* Passo 7a: retangulo do gravador de poses e aviso "gravando". */
     if (hd_pack_io_sprite_rec_active() || (g_show_menu && g_rec_rect_enabled)) {
         ImDrawList* fg = ImGui::GetForegroundDrawList();
@@ -5407,6 +5689,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
 
             if (ImGui::Checkbox("V-Sync", &g_vsync)) {
                 vid_set_vsync(g_vsync);   /* passo 14a */
+                save_runtime_preferences();   /* [vsync-salvo] */
             }
             ImGui::SeparatorText(TR("Image", "Imagem"));
             int current_internal_scale = g_internal_res_scale - 1;
@@ -5937,6 +6220,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
 
             ImGui::SeparatorText(TR("Save states", "Estados salvos"));
+            if (ImGui::Checkbox(TR("Save interface", "Interface de saves"), &g_save_ui_enabled)) {   /* [interface-saves] */
+                save_runtime_preferences();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", TR("When saving, loading or changing slot with the shortcuts (menu closed),\n"
+                                             "shows the slots at the top of the screen and a picture of the save.",
+                                             "Ao salvar, carregar ou trocar de slot pelos atalhos (menu fechado),\n"
+                                             "mostra os slots no topo da tela e uma foto do save."));
+            }
             int savestate_slot = g_savestate_slot + 1;
             if (ImGui::SliderInt(TR("Slot", "Posicao"), &savestate_slot, 1, GB_SAVESTATE_SLOT_COUNT)) {
                 g_savestate_slot = savestate_slot - 1;
@@ -8661,6 +8953,7 @@ static bool save_savestate_slot(GBContext* ctx, int slot) {
     char filename[512];
     sdl_get_savestate_path(filename, sizeof(filename), ctx, slot);
     const bool success = gb_context_save_state_file(ctx, filename);
+    if (success) save_ui_write_thumb(ctx, slot);   /* [interface-saves] */
     set_savestate_status("Save", slot, success, filename);
     return success;
 }
@@ -8694,6 +8987,7 @@ static bool delete_savestate_slot(GBContext* ctx, int slot) {
     sdl_get_savestate_path(filename, sizeof(filename), ctx, slot);
     std::error_code ec;
     const bool removed = fs::remove(fs::path(filename), ec);
+    save_ui_delete_thumb(ctx, slot);   /* [interface-saves] */
     if (!removed && !ec) {
         set_savestate_status("Delete", slot, false, "Slot file does not exist");
         return false;
