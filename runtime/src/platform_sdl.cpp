@@ -5461,19 +5461,6 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 save_runtime_preferences();
             }
 
-            if (ImGui::Checkbox(TR("Fix sprite lag (original game bug)",   /* [atraso-sprites] */
-                                   "Corrigir atraso dos sprites (bug do original)"),
-                                &g_sprite_lag_fix)) {
-                gbrt_ws_set_scroll_fix(g_sprite_lag_fix);
-                save_runtime_preferences();
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", TR("In the original, items and enemies are drawn one frame ahead of the\n"
-                                             "background while the screen scrolls. Display only: gameplay is unchanged.",
-                                             "No original, itens e inimigos ficam um quadro adiantados em relacao\n"
-                                             "ao cenario quando a tela rola. So muda a imagem: o jogo fica igual."));
-            }
-
             /* Cores do DX ou o visual original do Game Boy (BGP/OBP0/OBP1) */
             int color_mode = ppu_get_color_mode();
             const char* color_names[] = {TR("DX (color)", "DX (colorido)"),
@@ -5905,6 +5892,20 @@ static void render_frame_internal(const uint32_t* framebuffer,
     #endif
 
         } else if (g_menu_page == 4) {   /* Game */
+            ImGui::SeparatorText(TR("Game improvements", "Melhorias do jogo"));   /* [melhorias-jogo] */
+            if (ImGui::Checkbox(TR("Fix sprite lag (original game bug)",   /* [atraso-sprites] */
+                                   "Corrigir atraso dos sprites (bug do original)"),
+                                &g_sprite_lag_fix)) {
+                gbrt_ws_set_scroll_fix(g_sprite_lag_fix);
+                save_runtime_preferences();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", TR("In the original, items and enemies are drawn one frame ahead of the\n"
+                                             "background while the screen scrolls. Display only: gameplay is unchanged.",
+                                             "No original, itens e inimigos ficam um quadro adiantados em relacao\n"
+                                             "ao cenario quando a tela rola. So muda a imagem: o jogo fica igual."));
+            }
+
             ImGui::SeparatorText(TR("Speed", "Velocidade"));
             ImGui::Checkbox(TR("Show overlay", "Mostrar overlay"), &g_show_overlay);
             ImGui::Checkbox(TR("Smooth slow frames", "Suavizar quadros lentos"), &g_smooth_lcd_transitions);
