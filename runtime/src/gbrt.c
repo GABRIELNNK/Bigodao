@@ -1,5 +1,7 @@
 #include "gbrt.h"
 #include "gbrt_data_mod.h"
+#include "gbrt_hash.h"
+#include "gbrt_rom_guard.h"
 #include "gbrt_port.h"
 #include "ppu.h"
 #include "ppu_native.h"
@@ -1798,7 +1800,34 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
     }
 }
 
+/* A imagem aprovada por gb_context_load_validated_rom(). Fica aqui, e não no
+ * GBContext, porque só este arquivo precisa dela. */
+static const uint8_t* gbrt_validated_rom = NULL;
+
+/* Não usa assert(): os builds Release têm -DNDEBUG e ele sumiria justo neles. */
+static void gbrt_require_validated_rom(const GBContext* ctx) {
+    if (!ctx || !ctx->rom || ctx->rom_size == 0 || ctx->rom != gbrt_validated_rom) {
+        fprintf(stderr, "[GBRT] Fatal: generated code started without a validated ROM.\n");
+        fflush(stderr);
+        abort();
+    }
+}
+
+bool gb_context_load_validated_rom(GBContext* ctx,
+                                   const uint8_t* data,
+                                   size_t size,
+                                   const char* expected_sha256) {
+    if (!ctx || !data || size == 0 || !expected_sha256 ||
+        !gbrt_sha256_matches_hex(data, size, expected_sha256) ||
+        !gb_context_load_rom(ctx, data, size)) {
+        return false;
+    }
+    gbrt_validated_rom = ctx->rom;
+    return true;
+}
+
 bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size) {
+    gbrt_validated_rom = NULL;
     gbrt_data_mod_unload(ctx);
     if (ctx->rom) free(ctx->rom);
     ctx->rom = (uint8_t*)malloc(size);
@@ -5932,6 +5961,7 @@ uint32_t gb_run_frame(GBContext* ctx) {
 }
 
 uint32_t gb_run_cycles(GBContext* ctx, uint32_t max_cycles) {
+    gbrt_require_validated_rom(ctx);
     uint32_t start = ctx->cycles;
     uint32_t previous_budget = ctx->run_cycle_budget;
     uint32_t previous_budget_start = ctx->run_cycle_budget_start;
@@ -5989,6 +6019,7 @@ uint32_t gb_run_cycles(GBContext* ctx, uint32_t max_cycles) {
 }
 
 uint32_t gb_step(GBContext* ctx) {
+    gbrt_require_validated_rom(ctx);
     if (gbrt_instruction_limit > 0 && ++gbrt_instruction_count >= gbrt_instruction_limit) {
         printf("Instruction limit reached (%llu)\n", (unsigned long long)gbrt_instruction_limit);
         if (gbrt_instruction_limit_callback != NULL) {

@@ -169,14 +169,12 @@ inline std::vector<uint8_t> load_and_patch_rom_with_override(
         ips,
         json_size(manifest, "patch_record_count"));
 
-    // Se estiver usando o patch original, valida também o tamanho e SHA256 final da ROM
-    if (!is_custom_patch) {
-        const size_t output_size = json_size(manifest, "output_size");
-        const std::string output_sha256 = json_string(manifest, "output_sha256");
-        if (patched.size() != output_size ||
-            !gbrt_sha256_matches_hex(patched.data(), patched.size(), output_sha256.c_str())) {
-            throw std::runtime_error("O resultado do IPS nao corresponde a ROM hack 1.2 esperada");
-        }
+    // Vale para qualquer IPS: o código gerado só corresponde a esta ROM.
+    const size_t output_size = json_size(manifest, "output_size");
+    const std::string output_sha256 = json_string(manifest, "output_sha256");
+    if (patched.size() != output_size ||
+        !gbrt_sha256_matches_hex(patched.data(), patched.size(), output_sha256.c_str())) {
+        throw std::runtime_error("O resultado do IPS nao corresponde a ROM hack 1.2 esperada");
     }
 
     return patched;

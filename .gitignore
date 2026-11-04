@@ -15,6 +15,8 @@ compiler_src/game_code/
 compiler_src/game_code_hack/
 compiler_src/game_code_*
 compiler_src/SDL*
+# A ROM inteira em um vetor C, em qualquer pasta
+*_rom.c
 teste/
 
 # Bloqueia o arquivo empacotado de assets gerado pelo assistente

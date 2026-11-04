@@ -79,13 +79,47 @@ file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS
     "runtime/vendor/imgui/backends/imgui_impl_opengl3.cpp"   # passo 14a
 )
 
-# Código gerado da ROM hack; a imagem carregada em execução vem do IPS.
+# Código gerado da ROM hack. A ROM nunca entra no executável: chega em execução
+# pelo launcher (ROM + IPS) ou pelo wario.o2r, e é validada pelo SHA-256 antes de
+# qualquer código gerado rodar (gb_context_load_validated_rom).
+# Por isso o *_rom.c (a ROM inteira em um vetor C) não pode entrar nesta lista.
+set(WL_GAME_CODE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/compiler_src/game_code_hack")
 file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
-    "compiler_src/game_code_hack/*_funcs_*.c"
-    "compiler_src/game_code_hack/*_dispatch_*.c"
-    "compiler_src/game_code_hack/hack1_2_WL_SM3.c"
-    "compiler_src/game_code_hack/*_rom.c"
+    "${WL_GAME_CODE_DIR}/*_funcs_*.c"
+    "${WL_GAME_CODE_DIR}/*_dispatch_*.c"
 )
+
+# O hack1_2_WL_SM3.c referencia rom_data só no hack1_2_WL_SM3_init(), que o jogo
+# não chama. Compila-se uma cópia sem essa função e sem os externs: não sobra
+# símbolo de ROM para satisfazer, e chamar o _init por engano vira erro de link.
+set(WL_GAME_MAIN_SRC "${WL_GAME_CODE_DIR}/hack1_2_WL_SM3.c")
+set(WL_GAME_MAIN_COPY "${CMAKE_CURRENT_BINARY_DIR}/generated/hack1_2_WL_SM3_sem_init.c")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WL_GAME_MAIN_SRC}")
+file(READ "${WL_GAME_MAIN_SRC}" WL_GAME_MAIN_TEXT)
+string(REPLACE
+    "/* Extern reference to ROM data */\nextern const uint8_t rom_data[];\nextern const size_t rom_size;\n"
+    "" WL_GAME_MAIN_TEXT "${WL_GAME_MAIN_TEXT}")
+string(REPLACE
+    "void hack1_2_WL_SM3_init(GBContext* ctx) {\n    /* Load ROM data into context */\n    gb_context_load_rom(ctx, rom_data, rom_size);\n    /* Set MBC type from header */\n    ctx->mbc_type = rom_data[0x147];\n    gb_context_reset(ctx, true);\n}\n"
+    "" WL_GAME_MAIN_TEXT "${WL_GAME_MAIN_TEXT}")
+string(FIND "${WL_GAME_MAIN_TEXT}" "rom_data" WL_GAME_MAIN_ROM_REF)
+if(NOT WL_GAME_MAIN_ROM_REF EQUAL -1)
+    message(FATAL_ERROR
+        "${WL_GAME_MAIN_SRC} ainda referencia rom_data depois da remoção do _init.\n"
+        "O formato gerado pelo gbrecomp mudou: ajuste os string(REPLACE) deste arquivo.")
+endif()
+# Só regrava se mudou, para não recompilar a cada configuração.
+set(WL_GAME_MAIN_COPY_OLD "")
+if(EXISTS "${WL_GAME_MAIN_COPY}")
+    file(READ "${WL_GAME_MAIN_COPY}" WL_GAME_MAIN_COPY_OLD)
+endif()
+if(NOT WL_GAME_MAIN_COPY_OLD STREQUAL WL_GAME_MAIN_TEXT)
+    file(WRITE "${WL_GAME_MAIN_COPY}" "${WL_GAME_MAIN_TEXT}")
+endif()
+# A cópia está fora da pasta do gerado, mas inclui o hack1_2_WL_SM3_internal.h dela.
+set_source_files_properties("${WL_GAME_MAIN_COPY}" PROPERTIES
+    INCLUDE_DIRECTORIES "${WL_GAME_CODE_DIR}")
+list(APPEND GAME_SOURCES "${WL_GAME_MAIN_COPY}")
 
 set(WL_ALL_SOURCES main.cpp ${RUNTIME_SOURCES} ${GAME_SOURCES})
 

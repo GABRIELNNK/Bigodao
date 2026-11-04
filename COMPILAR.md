@@ -2,6 +2,20 @@
 
 Todos os alvos usam o mesmo `CMakeLists.txt`.
 
+## A ROM não entra no executável
+
+O `*_rom.c` gerado pelo gbrecomp (a ROM inteira em um vetor C) fica fora do build.
+A ROM chega em execução pelo launcher (ROM + IPS) ou pelo `wario.o2r`, e o
+`gb_context_load_validated_rom` confere o SHA-256 antes de o jogo rodar. Um
+`wario.o2r` contém a ROM: nunca o coloque em uma Release.
+
+O `bash_release.sh` termina com a conferência abaixo, que falha se achar trechos
+da ROM nos binários. Ela precisa de `base_WL-SM3.gb` e `hack1.2_WL-SM3.gb` na raiz:
+
+```bash
+python3 tools/verificar_rom_no_binario.py build/wario_land_port
+```
+
 ## Linux (como antes)
 
 ```bash

@@ -21,6 +21,7 @@
 #include "original_bw.hpp"   /* passo 31a */
 #include "hd_pack_io.h"     /* passo 31a */
 #include "gbrt.h"
+#include "gbrt_rom_guard.h"
 #include "android_bridge.h"   /* [android-port] */
 #include "app_icon.h"         /* [fix-v3] */
 
@@ -54,6 +55,8 @@
 // Expected SHA256 hashes
 static const std::string EXPECTED_ROM_SHA256   = "ac1682f17abcf590311a233289ee325214c2d71ab3a5aa175004002d85075e56";
 static const std::string EXPECTED_PATCH_SHA256 = "599d9f59090df3e1e77c1678e069290a2cd9ce59c71cf58d66c4dc3db8b7facd";
+// ROM + IPS: a única imagem que corresponde ao código gerado.
+static const char EXPECTED_PATCHED_ROM_SHA256[] = "3b49325fb7dfb18dff87e3b619afcceb45e8451ad10ccbbf303194e36c97b68a";
 
 extern "C" {
     const GBConfig* hack1_2_WL_SM3_default_config(void);
@@ -1079,7 +1082,12 @@ static int game_main(int argc, char* argv[]) {   /* [android-port] corpo origina
 
     if (rom_input_path.empty() && assets.exists()) {
         std::string err;
-        if (assets.load(patched_rom, err)) {
+        bool loaded = assets.load(patched_rom, err);
+        if (loaded && !gbrt_sha256_matches_hex(patched_rom.data(), patched_rom.size(), EXPECTED_PATCHED_ROM_SHA256)) {
+            loaded = false;
+            err = "it does not hold the expected ROM";
+        }
+        if (loaded) {
             std::cout << "[VFS] Loaded patched ROM from " << assets.path().filename().string()
                       << " (" << patched_rom.size() << " bytes).\n";
             /* Passo 31a: wario.o2r sem as texturas originais desta versão: refazer pelo launcher */
@@ -1183,8 +1191,9 @@ static int game_main(int argc, char* argv[]) {   /* [android-port] corpo origina
     }
     
     gb_context_set_save_id(ctx, "wario_land_sm3_dx_v12");
-    if (!gb_context_load_rom(ctx, patched_rom.data(), patched_rom.size())) {
-        std::cerr << "Failed to load patched ROM into runtime.\n";
+    /* Único ponto de carga: ROM com SHA-256 errado não chega ao código gerado. */
+    if (!gb_context_load_validated_rom(ctx, patched_rom.data(), patched_rom.size(), EXPECTED_PATCHED_ROM_SHA256)) {
+        std::cerr << "Failed to load patched ROM into runtime (missing or SHA-256 mismatch).\n";
         gb_context_destroy(ctx);
         return 1;
     }

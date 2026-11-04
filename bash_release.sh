@@ -17,4 +17,8 @@ cd android
 ./gradlew assembleRelease
 cd ..
 
+echo "=== Check binarios ==="
+APK=$(ls -t android/app/build/outputs/apk/release/*.apk | head -n 1)
+python3 tools/verificar_rom_no_binario.py build/wario_land_port build-win/wario_land_port.exe "$APK"
+
 echo "Build process completed successfully."
