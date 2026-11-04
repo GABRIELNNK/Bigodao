@@ -735,6 +735,9 @@ void gbrt_ws_actor_draw_cpy(GBContext* ctx);
 bool gbrt_ws_take_rescan(void);   /* passo 17b */
 /* Passo 18b: inimigos além da tela no 3D só como imagem */
 void gbrt_ws_set_ghosts(bool on);
+/* [atraso-sprites] sprites dos atores desenhados com a câmera do cenário
+ * (bug do original: eles usam a câmera do quadro seguinte) */
+void gbrt_ws_set_scroll_fix(bool on);
 int gbrt_ws_ghosts(const GBContext* ctx, int16_t (*out)[4], int max);
 void gbrt_ws_init_dir_cp(GBContext* ctx);   /* passo 18c */
 

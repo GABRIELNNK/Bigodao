@@ -795,6 +795,7 @@ static uint64_t g_present_count = 0;
 static GBContext* g_registered_ctx = NULL;
 static bool g_widescreen_mode = true;   /* [fix-v2] widescreen ligado por padrão */
 static bool g_widescreen_fade_enabled = true;
+static bool g_sprite_lag_fix = true;   /* [atraso-sprites] bug do original corrigido na imagem */
 static int g_widescreen_fade_percent = 65; /* mirrors GBPPU's default of 0.65f */
 static bool g_widescreen_auto_active = false;
 /* Passo 10a: 0 = 60 fps (original), 1 = 120 fps (quadros intermediarios) */
@@ -1732,6 +1733,11 @@ static const char* controller_axis_label(SDL_GameControllerAxis axis, bool posit
 static std::string binding_display_label(const GBInputBinding& binding) {
     switch (binding.kind) {
         case GB_INPUT_BINDING_KEY: {
+            /* [textos-teclado] a tecla vale pela posição (scancode), mas o nome
+             * mostrado segue o layout do sistema (AZERTY: "W" no lugar do "Z") */
+            const SDL_Keycode key = SDL_GetKeyFromScancode((SDL_Scancode)binding.code);
+            const char* key_name = key != SDLK_UNKNOWN ? SDL_GetKeyName(key) : NULL;
+            if (key_name && key_name[0]) return std::string(key_name);
             const char* name = SDL_GetScancodeName((SDL_Scancode)binding.code);
             return (name && name[0]) ? std::string(name) : ("Scancode " + std::to_string((int)binding.code));
         }
@@ -2245,6 +2251,11 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     ppu_set_color_mode((int)strtol(value, NULL, 10));
                     continue;
                 }
+                if (strcmp(key, "display.sprite_lag_fix") == 0) {   /* [atraso-sprites] */
+                    g_sprite_lag_fix = (strcmp(value, "0") != 0);
+                    gbrt_ws_set_scroll_fix(g_sprite_lag_fix);
+                    continue;
+                }
                 if (strcmp(key, "display.post_filter") == 0) {
                     long parsed = strtol(value, NULL, 10);
                     if (parsed >= 0 && parsed < GB_POST_FILTER_COUNT) {
@@ -2516,6 +2527,7 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.scaling_mode=%d\n",   /* [escala-inteira] */
             g_render_scaling_mode == GB_RENDER_SCALING_PIXEL_PERFECT ? 1 : 0);
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
+    fprintf(file, "display.sprite_lag_fix=%d\n", g_sprite_lag_fix ? 1 : 0);   /* [atraso-sprites] */
     fprintf(file, "display.color_mode=%d\n", ppu_get_color_mode());
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
     fprintf(file, "display.fps_mode=%d\n", g_fps_mode);   /* passo 10a */
@@ -3321,6 +3333,8 @@ static void reset_runtime_display_defaults(void) {
     g_max_speed_mode = false;
     g_render_scaling_mode = GB_RENDER_SCALING_ASPECT_FIT;   /* [escala-inteira] */
     g_render_filter_mode = GB_RENDER_FILTER_LINEAR;   /* passo 14p */
+    g_sprite_lag_fix = true;                          /* [atraso-sprites] */
+    gbrt_ws_set_scroll_fix(true);
     g_internal_res_scale = 2;                         /* passo 31a: 2x padrao (texturas originais) */
     g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
     g_gpu_screen_pref = 1;                            /* passo 14c-3: a GPU monta a tela */
@@ -5390,6 +5404,17 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 g_renderer_reset_pending = true;
                 save_runtime_preferences();
             }
+            ImGui::PushTextWrapPos(0.0f);   /* [textos-teclado] */
+            ImGui::TextDisabled("%s", TR(
+                "Size the picture is built at before it is scaled to the screen. It only changes what you see "
+                "with texture mods (HD tiles), with the Original colors (black and white / DMG green, which use "
+                "built-in textures) and in how sharp the Linear filter looks. The default is 2x so the Original "
+                "colors work; 3x and 4x are for HD packs made at that size.",
+                "Tamanho em que a imagem e montada antes de ser ampliada para a tela. So muda o que aparece "
+                "com mods de textura (tiles HD), nas cores Original (preto e branco / verde do DMG, que usam "
+                "texturas embutidas) e na nitidez do filtro Linear. O padrao e 2x para as cores Original "
+                "funcionarem; 3x e 4x sao para pacotes HD feitos nesse tamanho."));
+            ImGui::PopTextWrapPos();
 
             if (effective_internal_scale() == 1 && g_internal_res_scale > 1) {
                 ImGui::TextDisabled("%s", TR("No effect with the Nearest filter and no post-processing: the GPU already scales up.", "Sem efeito com filtro Nearest e sem pos-processamento: a GPU ja amplia."));
@@ -5434,6 +5459,19 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (ImGui::Combo(TR("Post-processing filter", "Filtro de pos-processamento"), &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
                 g_post_filter_mode = (GBPostFilterMode)current_post_filter;
                 save_runtime_preferences();
+            }
+
+            if (ImGui::Checkbox(TR("Fix sprite lag (original game bug)",   /* [atraso-sprites] */
+                                   "Corrigir atraso dos sprites (bug do original)"),
+                                &g_sprite_lag_fix)) {
+                gbrt_ws_set_scroll_fix(g_sprite_lag_fix);
+                save_runtime_preferences();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", TR("In the original, items and enemies are drawn one frame ahead of the\n"
+                                             "background while the screen scrolls. Display only: gameplay is unchanged.",
+                                             "No original, itens e inimigos ficam um quadro adiantados em relacao\n"
+                                             "ao cenario quando a tela rola. So muda a imagem: o jogo fica igual."));
             }
 
             /* Cores do DX ou o visual original do Game Boy (BGP/OBP0/OBP1) */

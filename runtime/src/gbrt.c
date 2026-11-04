@@ -451,6 +451,8 @@ typedef struct {
     uint8_t ybyte;
     uint8_t yok;
     uint8_t slot;   /* passo 18b: slot do ator que escreveu o sprite */
+    int8_t fx;      /* [atraso-sprites] quanto o sprite anda para casar com o cenário */
+    int8_t fy;
 } WsTrueX;
 
 static WsTrueX s_ws_work_x[40];
@@ -516,6 +518,37 @@ static int ws_actor_rel_x(const GBContext* ctx) {
                           ws_eram_peek(ctx, WS_ACT_REL_X_LOW));
 }
 
+/* [atraso-sprites] Mode_Level grava sScrollX/hScrollY com a câmera antiga,
+ * atualiza sLvlScroll e só depois desenha os atores (ActS_Do) com a câmera
+ * nova. Aqui: câmera nova - câmera que o cenário mostra (0 fora da fase). */
+#define WS_GAME_MODE        0xA8C3u   /* sGameMode */
+#define WS_GM_LEVEL         0x03u     /* GM_LEVEL */
+#define WS_LVL_SCROLL_X_HI  0xA902u   /* sLvlScrollX (16 bits, alto primeiro) */
+#define WS_SCROLL_X_SHADOW  0xA993u   /* sScrollX_High / sScrollX ($A994) */
+#define WS_HSCROLL_Y        0xFF87u   /* hScrollY */
+#define WS_SCROLL_FIX_MAX   16
+static int s_ws_scroll_fix_on = 1;
+void gbrt_ws_set_scroll_fix(bool on) { s_ws_scroll_fix_on = on ? 1 : 0; }
+
+static int ws_scroll_fix_clamp(int d) {
+    return (d >= -WS_SCROLL_FIX_MAX && d <= WS_SCROLL_FIX_MAX) ? d : 0;
+}
+
+static int ws_scroll_fix_x(const GBContext* ctx) {
+    if (!s_ws_scroll_fix_on || ws_eram_peek(ctx, WS_GAME_MODE) != WS_GM_LEVEL) return 0;
+    const int now = (ws_eram_peek(ctx, WS_LVL_SCROLL_X_HI) << 8) | ws_eram_peek(ctx, WS_LVL_SCROLL_X_HI + 1u);
+    const int shown = ((ws_eram_peek(ctx, WS_SCROLL_X_SHADOW) << 8) |
+                       ws_eram_peek(ctx, WS_SCROLL_X_SHADOW + 1u)) + 0x50;   /* LVLSCROLL_XOFFSET */
+    return ws_scroll_fix_clamp((int)(int16_t)(uint16_t)(now - shown));
+}
+
+static int ws_scroll_fix_y(const GBContext* ctx) {
+    if (!s_ws_scroll_fix_on || !ctx->hram || ws_eram_peek(ctx, WS_GAME_MODE) != WS_GM_LEVEL) return 0;
+    const int now = ws_eram_peek(ctx, WS_LVL_SCROLL_Y_HI + 1u);                 /* byte baixo */
+    const int shown = ctx->hram[WS_HSCROLL_Y - 0xFF80u] + 0x48;                /* LVLSCROLL_YOFFSET */
+    return ws_scroll_fix_clamp((int)(int8_t)(uint8_t)(now - shown));
+}
+
 void gbrt_ws_true_x_reset(void) {
     s_ws_born_ready = 0;   /* passo 18c */
     s_ws_rescan = 1;   /* passo 17b: estado carregado / reinício */
@@ -540,6 +573,7 @@ static int ws_actor_rel_y(const GBContext* ctx) {
 static void ws_note_work_oam_y(const GBContext* ctx, unsigned off, uint8_t value) {
     WsTrueX* w = &s_ws_work_x[off >> 2];
     w->yok = 0;
+    w->fy = 0;   /* [atraso-sprites] */
     if (ctx->pc != WS_ACT_WRITE_Y_PC) return;
     const unsigned slot = ws_eram_peek(ctx, WS_ACT_NUM_PROC) & 7u;
     const uint64_t now = ctx->completed_frames + 1u;
@@ -553,6 +587,7 @@ static void ws_note_work_oam_y(const GBContext* ctx, unsigned off, uint8_t value
     w->y = (int16_t)(oam_y - 16);
     w->ybyte = value;
     w->yok = 1;
+    w->fy = (int8_t)ws_scroll_fix_y(ctx);   /* [atraso-sprites] */
 }
 
 static void ws_note_work_oam_write(const GBContext* ctx, uint16_t addr, uint8_t value) {
@@ -562,6 +597,7 @@ static void ws_note_work_oam_write(const GBContext* ctx, uint16_t addr, uint8_t 
     if ((off & 3u) != 1u) return;
     WsTrueX* w = &s_ws_work_x[off >> 2];
     w->ok = 0;
+    w->fx = 0;   /* [atraso-sprites] */
     if (ctx->pc != WS_ACT_WRITE_X_PC) return;          /* outro escritor: sem X verdadeiro */
     const unsigned slot = ws_eram_peek(ctx, WS_ACT_NUM_PROC) & 7u;
     const uint64_t now = ctx->completed_frames + 1u;
@@ -576,6 +612,7 @@ static void ws_note_work_oam_write(const GBContext* ctx, uint16_t addr, uint8_t 
     w->byte = value;
     w->ok = 1;
     w->slot = (uint8_t)slot;   /* passo 18b */
+    w->fx = (int8_t)ws_scroll_fix_x(ctx);   /* [atraso-sprites] */
 }
 
 bool gbrt_oam_true_screen_x(const GBContext* ctx, int oam_index, int* screen_x) {
@@ -764,7 +801,7 @@ static void ws_ghost_capture(const GBContext* ctx) {
         const unsigned slot = t->slot & 7u;
         if (!s_ws_slot_frame[slot] || frame - s_ws_slot_frame[slot] > 2u) continue;
         const int ox = s_ws_slot_rel[slot] - 8, oy = s_ws_slot_rely[slot] - 16;
-        const int dx = t->x - ox, dy = t->y - oy;
+        const int dx = (t->x - t->fx) - ox, dy = (t->y - t->fy) - oy;   /* [atraso-sprites] */
         if (dx < -127 || dx > 127 || dy < -127 || dy > 127) continue;
         WsGhostLook* g = &now[slot];
         if (g->n >= WS_GHOST_MAX_PIECES) continue;
@@ -5436,6 +5473,14 @@ static void gb_dma_advance_active(GBContext* ctx, uint32_t cycles) {
                                    w->yok && w->ybyte == byte);
                 o->y = w->y;
                 o->ybyte = byte;
+                o->fy = 0;   /* [atraso-sprites] Y com a câmera do cenário */
+                if (o->yok && w->fy && byte > 0u && byte < 160u) {
+                    const uint8_t fixed = (uint8_t)(byte + (uint8_t)w->fy);
+                    ctx->oam[ctx->dma.progress] = fixed;
+                    o->y = (int16_t)(w->y + w->fy);
+                    o->ybyte = fixed;
+                    o->fy = w->fy;
+                }
             }
             if ((ctx->dma.progress & 3u) == 1u) {   /* passo 16a: X verdadeiro junto */
                 WsTrueX* o = &s_ws_oam_x[ctx->dma.progress >> 2];
@@ -5445,6 +5490,14 @@ static void gb_dma_advance_active(GBContext* ctx, uint32_t cycles) {
                 o->x = w->x;
                 o->byte = byte;
                 o->slot = w->slot;   /* passo 18b */
+                o->fx = 0;   /* [atraso-sprites] X com a câmera do cenário */
+                if (o->ok && w->fx) {
+                    const uint8_t fixed = (uint8_t)(byte + (uint8_t)w->fx);
+                    ctx->oam[ctx->dma.progress] = fixed;
+                    o->x = (int16_t)(w->x + w->fx);
+                    o->byte = fixed;
+                    o->fx = w->fx;
+                }
             }
             ctx->dma.progress++;
             if (ctx->dma.progress == 160 && ctx->dma.active_source_high == WS_WORK_OAM_PAGE) {

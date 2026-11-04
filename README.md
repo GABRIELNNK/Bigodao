@@ -73,6 +73,7 @@ Default bindings. Everything can be remapped in **Settings > Controls**.
 | Fullscreen | **F11** | — |
 | Capture scene (for HD mods) | **F9** | — |
 
+> Keyboard keys are listed for a US (QWERTY) keyboard but work by **position**: on AZERTY, for example, **W A S D** is **Z Q S D** and **Z** is **W**. **Settings > Controls** shows the names for your own layout. <!-- [textos-teclado] -->  
 > Controller names follow the Xbox layout (PlayStation in parentheses where it differs). Just like on the Game Boy, **A** is the right button and **B** the left one, so they sit in the same place on the pad.  
 > On **Android**, an on-screen gamepad is shown (it hides while a physical controller is in use), and **Back** also opens the menu.
 
