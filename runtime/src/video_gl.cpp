@@ -5,6 +5,7 @@
 #include "video_gl.h"
 
 #include <algorithm>
+#include <cmath>   /* [escala-inteira] */
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -97,6 +98,8 @@ bool g_ready = false;
 bool g_es = false;
 GLuint g_prog = 0, g_vao = 0, g_vbo = 0;
 GLint g_loc_rgba = -1;   /* passo 14c-2 */
+GLint g_loc_sharp = -1;  /* [escala-inteira] */
+bool g_sharp = false;    /* [escala-inteira] */
 std::string g_desc;
 /* Por quadro: tamanhos da janela (coordenadas de destino) e do framebuffer. */
 int g_win_w = 1, g_win_h = 1, g_fb_w = 1, g_fb_h = 1;
@@ -114,7 +117,21 @@ const char* kFragmentBody =
     "out vec4 o_color;\n"
     "uniform sampler2D u_tex;\n"
     "uniform int u_rgba;\n"   /* passo 14c-2: textura já em RGBA (tela da GPU) */
-    "void main() { vec4 c = texture(u_tex, v_uv); o_color = u_rgba != 0 ? c : c.bgra; }\n";
+    /* [escala-inteira] Sharp bilinear: u_sharp = quantos pixels da tela cabem
+     * inteiros em cada texel (por eixo); 0 = desligado. Dentro do texel a cor
+     * fica fixa; só a borda (a sobra não inteira) mistura com o vizinho. */
+    "uniform vec2 u_sharp;\n"
+    "void main() {\n"
+    "    vec2 uv = v_uv;\n"
+    "    if (u_sharp.x > 0.0) {\n"
+    "        vec2 ts = vec2(textureSize(u_tex, 0));\n"
+    "        vec2 texel = v_uv * ts;\n"
+    "        vec2 d = fract(texel) - 0.5;\n"
+    "        vec2 r = 0.5 - 0.5 / u_sharp;\n"
+    "        uv = (floor(texel) + (d - clamp(d, -r, r)) * u_sharp + 0.5) / ts;\n"
+    "    }\n"
+    "    vec4 c = texture(u_tex, uv); o_color = u_rgba != 0 ? c : c.bgra;\n"
+    "}\n";
 
 }  // namespace
 
@@ -348,6 +365,8 @@ bool vgl_init(SDL_Window* window, char* err, size_t err_size) {
     gl.Uniform1i(gl.GetUniformLocation(g_prog, "u_tex"), 0);
     g_loc_rgba = gl.GetUniformLocation(g_prog, "u_rgba");
     gl.Uniform1i(g_loc_rgba, 0);
+    g_loc_sharp = gl.GetUniformLocation(g_prog, "u_sharp");   /* [escala-inteira] */
+    gl.Uniform2f(g_loc_sharp, 0.0f, 0.0f);
     gl.GenVertexArrays(1, &g_vao);
     gl.BindVertexArray(g_vao);
     gl.GenBuffers(1, &g_vbo);
@@ -392,6 +411,8 @@ const char* vgl_description(void) { return g_desc.c_str(); }
 void vgl_set_vsync(bool enabled) {
     if (g_ready) SDL_GL_SetSwapInterval(enabled ? 1 : 0);
 }
+
+void vgl_set_sharp(bool on) { g_sharp = on; }   /* [escala-inteira] */
 
 VglTex* vgl_tex_create(int w, int h) {
     if (!g_ready || w <= 0 || h <= 0) return nullptr;
@@ -504,6 +525,16 @@ void vgl_copy_f(VglTex* tex, const SDL_Rect* src, const SDL_FRect* dst) {
     const SDL_Rect s = src ? *src : SDL_Rect{0, 0, tex->w, tex->h};
     const float u0 = (float)s.x / (float)tex->w, u1 = (float)(s.x + s.w) / (float)tex->w;
     const float v0 = (float)s.y / (float)tex->h, v1 = (float)(s.y + s.h) / (float)tex->h;
+    {   /* [escala-inteira] pixels do framebuffer por texel, arredondado para baixo */
+        float px = 0.0f, py = 0.0f;
+        if (g_sharp && tex->linear && s.w > 0 && s.h > 0) {
+            px = std::floor(dst->w * (float)g_fb_w / (float)g_win_w / (float)s.w);
+            py = std::floor(dst->h * (float)g_fb_h / (float)g_win_h / (float)s.h);
+            if (px < 1.0f) px = 1.0f;
+            if (py < 1.0f) py = 1.0f;
+        }
+        gl.Uniform2f(g_loc_sharp, px, py);
+    }
     const float x0 = dst->x / (float)g_win_w * 2.0f - 1.0f;
     const float x1 = (dst->x + dst->w) / (float)g_win_w * 2.0f - 1.0f;
     const float y0 = 1.0f - dst->y / (float)g_win_h * 2.0f;

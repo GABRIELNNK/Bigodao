@@ -54,6 +54,9 @@ void vgl_begin_frame(SDL_Window* window);
 void vgl_copy(VglTex* tex, const SDL_Rect* src, const SDL_Rect* dst);
 void vgl_copy_f(VglTex* tex, const SDL_Rect* src, const SDL_FRect* dst);
 void vgl_set_clip(const SDL_Rect* clip);        /* NULL = sem recorte */
+/* [escala-inteira] filtro Sharp bilinear nas próximas cópias (texturas com
+ * filtro linear); desligado, as cópias ficam como sempre. */
+void vgl_set_sharp(bool on);
 /* Passo 3D-1: retângulo da janela em pixels do framebuffer (origem embaixo). */
 void vgl_rect_to_fb(const SDL_Rect* r, int* x, int* y, int* w, int* h);
 void vgl_present(SDL_Window* window);

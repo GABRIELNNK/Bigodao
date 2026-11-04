@@ -688,6 +688,7 @@ typedef enum GBRenderScalingMode {
 typedef enum GBRenderFilterMode {
     GB_RENDER_FILTER_NEAREST = 0,
     GB_RENDER_FILTER_LINEAR = 1,
+    GB_RENDER_FILTER_SHARP = 2,   /* [escala-inteira] sharp bilinear (OpenGL) */
 } GBRenderFilterMode;
 typedef enum GBControllerLabelProfile {
     GB_CONTROLLER_LABEL_GENERIC = 0,
@@ -732,8 +733,10 @@ typedef struct GBInputBinding {
     GBInputBindingKind kind;
     int16_t code;
 } GBInputBinding;
-static GBRenderScalingMode g_render_scaling_mode = GB_RENDER_SCALING_PIXEL_PERFECT;
+static GBRenderScalingMode g_render_scaling_mode = GB_RENDER_SCALING_ASPECT_FIT;   /* [escala-inteira] ajustar padrão */
 static GBRenderFilterMode g_render_filter_mode = GB_RENDER_FILTER_LINEAR;   /* passo 14p: linear padrão */
+/* [escala-inteira] Linear e Sharp usam textura com filtro linear. */
+static bool render_filter_linear(void) { return g_render_filter_mode != GB_RENDER_FILTER_NEAREST; }
 static SDL_GameControllerType g_controller_type = SDL_CONTROLLER_TYPE_UNKNOWN;
 static GBControllerLabelProfile g_controller_label_profile = GB_CONTROLLER_LABEL_GENERIC;
 static std::string g_controller_name;
@@ -775,6 +778,7 @@ static std::string g_savestate_status;
 static const char* g_render_filter_names[] = {
     "Nearest",
     "Linear",
+    "Sharp bilinear",   /* [escala-inteira] */
 };
 static const uint32_t g_palettes[][4] = {
     { 0xFFE0F8D0, 0xFF88C070, 0xFF346856, 0xFF081820 }, // Original
@@ -2224,6 +2228,12 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                     }
                     continue;
                 }
+                if (strcmp(key, "display.scaling_mode") == 0) {   /* [escala-inteira] */
+                    g_render_scaling_mode = (strtol(value, NULL, 10) == 1)
+                                                ? GB_RENDER_SCALING_PIXEL_PERFECT
+                                                : GB_RENDER_SCALING_ASPECT_FIT;
+                    continue;
+                }
                 if (strcmp(key, "display.scale_filter") == 0) {
                     long parsed = strtol(value, NULL, 10);
                     if (parsed >= 0 && parsed < IM_ARRAYSIZE(g_render_filter_names)) {
@@ -2503,6 +2513,8 @@ static void save_runtime_preferences(void) {
     fprintf(file, "display.widescreen_fade_percent=%d\n", g_widescreen_fade_percent);
     fprintf(file, "display.internal_scale=%d\n", g_internal_res_scale);
     fprintf(file, "display.scale_filter=%d\n", (int)g_render_filter_mode);
+    fprintf(file, "display.scaling_mode=%d\n",   /* [escala-inteira] */
+            g_render_scaling_mode == GB_RENDER_SCALING_PIXEL_PERFECT ? 1 : 0);
     fprintf(file, "display.post_filter=%d\n", (int)g_post_filter_mode);
     fprintf(file, "display.color_mode=%d\n", ppu_get_color_mode());
     fprintf(file, "display.renderer=%d\n", (int)ppu_native_get_mode());
@@ -3085,11 +3097,11 @@ static void update_render_filter(void) {
 
 #if SDL_VERSION_ATLEAST(2, 0, 12)
     if (g_texture) {
-        vid_tex_set_linear(g_texture, g_render_filter_mode == GB_RENDER_FILTER_LINEAR);
+        vid_tex_set_linear(g_texture, render_filter_linear());
     }
 #else
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,
-                g_render_filter_mode == GB_RENDER_FILTER_LINEAR ? "linear" : "nearest");
+                render_filter_linear() ? "linear" : "nearest");
 #endif
 }
 
@@ -3109,6 +3121,32 @@ static void update_game_viewport(void) {
     if (window_h <= 0) window_h = GB_SCREEN_HEIGHT;
 
     const int source_w = g_widescreen_mode ? GB_WIDESCREEN_WIDTH : GB_SCREEN_WIDTH;
+
+    if (g_render_scaling_mode == GB_RENDER_SCALING_PIXEL_PERFECT) {
+        /* [escala-inteira] cada pixel do Game Boy vira k x k pixels da tela.
+         * A conta é no framebuffer (com HiDPI ele é maior que a janela) e o
+         * resultado volta para coordenadas da janela, como o resto usa. */
+        int draw_w = window_w, draw_h = window_h;
+        if (g_use_gl) SDL_GL_GetDrawableSize(g_window, &draw_w, &draw_h);
+        else if (g_renderer) SDL_GetRendererOutputSize(g_renderer, &draw_w, &draw_h);
+        if (draw_w <= 0) draw_w = window_w;
+        if (draw_h <= 0) draw_h = window_h;
+        const int kx = draw_w / source_w;
+        const int ky = draw_h / GB_SCREEN_HEIGHT;
+        int k = (kx < ky) ? kx : ky;
+        if (k < 1) k = 1;
+        const double rx = (double)window_w / (double)draw_w;
+        const double ry = (double)window_h / (double)draw_h;
+        const int fb_w = source_w * k;
+        const int fb_h = GB_SCREEN_HEIGHT * k;
+        const int fb_x = (draw_w - fb_w) / 2;
+        const int fb_y = (draw_h - fb_h) / 2;
+        g_game_viewport.x = round_to_int((double)fb_x * rx);
+        g_game_viewport.y = round_to_int((double)fb_y * ry);
+        g_game_viewport.w = round_to_int((double)fb_w * rx);
+        g_game_viewport.h = round_to_int((double)fb_h * ry);
+        return;
+    }
 
     // Mantém o aspecto proporcional (Aspect Fit) dentro da resolução real da janela
     double scale_x = (double)window_w / (double)source_w;
@@ -3281,7 +3319,7 @@ static void reset_runtime_display_defaults(void) {
     g_vsync = BIGODAO_VSYNC_PADRAO;   /* passo 20a */
     g_show_overlay = false;
     g_max_speed_mode = false;
-    g_render_scaling_mode = GB_RENDER_SCALING_PIXEL_PERFECT;
+    g_render_scaling_mode = GB_RENDER_SCALING_ASPECT_FIT;   /* [escala-inteira] */
     g_render_filter_mode = GB_RENDER_FILTER_LINEAR;   /* passo 14p */
     g_internal_res_scale = 2;                         /* passo 31a: 2x padrao (texturas originais) */
     g_video_backend_pref = 1;                         /* passo 14p: OpenGL (vale ao abrir de novo) */
@@ -4036,7 +4074,7 @@ static void ip_finish_capture(void* tex_pixels, int tex_pitch, int tex_w, int te
     }
     vid_tex_update(g_ip_tex_bg, NULL, g_ip_comp.data(), tex_w * (int)sizeof(uint32_t));
     {
-        const bool linear = (g_render_filter_mode == GB_RENDER_FILTER_LINEAR);
+        const bool linear = (render_filter_linear());
         vid_tex_set_linear(g_ip_tex_bg, linear);
         vid_tex_set_linear(g_ip_tex_obj, linear);
     }
@@ -4255,7 +4293,7 @@ static bool ip_gpu_capture(int scale, int base_w, bool black_fill) {
         g_ip_tex_w = w;
         g_ip_tex_h = h;
     }
-    const bool linear = (g_render_filter_mode == GB_RENDER_FILTER_LINEAR);
+    const bool linear = (render_filter_linear());
     vid_tex_set_linear(g_ip_tex_bg, linear);
     vid_tex_set_linear(g_ip_tex_obj, linear);
     g_ip_valid = true;
@@ -4471,7 +4509,7 @@ static VidTex* gpu_screen_vtex(void) {
         g_gpu_vtex->gl = vgl_tex_wrap(id, w, h);
         g_gpu_vtex_id = id;
     }
-    vid_tex_set_linear(g_gpu_vtex, g_render_filter_mode == GB_RENDER_FILTER_LINEAR);
+    vid_tex_set_linear(g_gpu_vtex, render_filter_linear());
     return g_gpu_vtex;
 }
 
@@ -5032,6 +5070,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
     vid_begin_frame();   /* passo 14a */
 
     // Desenha a textura do jogo no viewport proporcional correto
+    if (g_use_gl) vgl_set_sharp(g_render_filter_mode == GB_RENDER_FILTER_SHARP);   /* [escala-inteira] */
     if (g_ip_mid_draw) {
         /* passo 10c: chamada do ritmo = o quadro do jogo, meio quadro depois */
         if (g_ip_tex_stale) {
@@ -5193,6 +5232,7 @@ static void render_frame_internal(const uint32_t* framebuffer,
         }
     }
 
+    if (g_use_gl) vgl_set_sharp(false);   /* [escala-inteira] o resto (overlay) fica normal */
     vgl_prof_mark("Menu e overlay (ImGui)");   /* passo 21a */
     vid_imgui_new_frame();   /* passo 14a */
     ImGui_ImplSDL2_NewFrame();
@@ -5356,6 +5396,23 @@ static void render_frame_internal(const uint32_t* framebuffer,
             }
 
 
+            {   /* [escala-inteira] */
+                const char* scaling_names[] = {TR("Fit to screen", "Ajustar a tela"),
+                                               TR("Integer (pixel perfect)", "Inteira (pixel perfeito)")};
+                int scaling_idx = (g_render_scaling_mode == GB_RENDER_SCALING_PIXEL_PERFECT) ? 1 : 0;
+                if (ImGui::Combo(TR("Scaling", "Escala"), &scaling_idx, scaling_names,
+                                 IM_ARRAYSIZE(scaling_names))) {
+                    g_render_scaling_mode = (scaling_idx == 1) ? GB_RENDER_SCALING_PIXEL_PERFECT
+                                                               : GB_RENDER_SCALING_ASPECT_FIT;
+                    update_game_viewport();
+                    save_runtime_preferences();
+                }
+                if (g_render_scaling_mode == GB_RENDER_SCALING_PIXEL_PERFECT) {
+                    ImGui::TextDisabled("%s", TR("Every pixel has the same size; the rest becomes black bars.",
+                                                   "Todo pixel fica do mesmo tamanho; o que sobra vira barra preta."));
+                }
+            }
+
             int filter_mode = (int)g_render_filter_mode;
             if (ImGui::Combo(TR("Scale filter", "Filtro de escala"),
                              &filter_mode,
@@ -5365,8 +5422,12 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 update_render_filter();
                 save_runtime_preferences();
             }
-            if (g3d_active() && g_render_filter_mode == GB_RENDER_FILTER_LINEAR) {   /* 3D-6a */
+            if (g3d_active() && render_filter_linear()) {   /* 3D-6a */
                 ImGui::TextDisabled("%s", TR("In 3D the scale filter is always Nearest.", "No 3D o filtro de escala fica sempre em Nearest."));
+            }
+            if (g_render_filter_mode == GB_RENDER_FILTER_SHARP && !g_use_gl) {   /* [escala-inteira] */
+                ImGui::TextDisabled("%s", TR("Sharp needs OpenGL; here it works like Linear.",
+                                               "O Sharp precisa do OpenGL; aqui fica igual ao Linear."));
             }
 
             int current_post_filter = (int)g_post_filter_mode;
