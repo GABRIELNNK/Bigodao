@@ -828,10 +828,7 @@ static int effective_internal_scale(void) {
 /* [filtros-v2] Scale2x e xBR precisam da imagem em 1x (pixel art): com
  * texturas HD ou cores Original eles ficam desligados. */
 static GBPostFilterMode effective_post_filter(void) {
-    if (post_processing_is_scaler(g_post_filter_mode) &&
-        ppu_native_hd_get_tiles_enabled() && ppu_native_hd_tile_count() > 0) {
-        return GB_POST_FILTER_NONE;
-    }
+    /* [filtros-bloco] o próprio filtro pula os blocos com textura HD */
     return g_post_filter_mode;
 }
 
@@ -5475,15 +5472,6 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 g_post_filter_mode = (GBPostFilterMode)current_post_filter;
                 save_runtime_preferences();
             }
-            if (post_processing_is_scaler(g_post_filter_mode) &&   /* [filtros-v2] */
-                effective_post_filter() == GB_POST_FILTER_NONE) {
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextDisabled("%s", TR("Scale2x and xBR need the plain 1x pixel art: they are off with HD textures "
-                                               "or the Original colors. LCD and Scanlines still work.",
-                                               "Scale2x e xBR precisam da imagem original em 1x: ficam desligados com "
-                                               "texturas HD ou nas cores Original. LCD e Scanlines continuam valendo."));
-                ImGui::PopTextWrapPos();
-            }
 
             /* Cores do DX ou o visual original do Game Boy (BGP/OBP0/OBP1) */
             int color_mode = ppu_get_color_mode();
@@ -5988,6 +5976,14 @@ static void render_frame_internal(const uint32_t* framebuffer,
                 g_renderer_reset_pending = true;
             }
             ImGui::TextDisabled("%s", hd_pack_io_pack_status());
+            ImGui::PushTextWrapPos(0.0f);   /* [filtros-bloco] */
+            ImGui::TextDisabled("%s", TR("The Scale2x and xBR post-processing filters are not applied over the HD "
+                                           "textures of a mod: they only smooth what is still pixel art (the Original "
+                                           "colors, and sprites or tiles without an HD texture). LCD and Scanlines apply to everything.",
+                                           "Os filtros de pos-processamento Scale2x e xBR nao sao aplicados sobre as "
+                                           "texturas HD de um mod: so suavizam o que continua em pixel art (as cores "
+                                           "Original, e sprites ou tiles sem textura HD). LCD e Scanlines valem em tudo."));
+            ImGui::PopTextWrapPos();
             {
                 /* Passo 11a: contexto atual, que vira o sufixo _fXX/_mXX dos tiles. */
                 char hd_ctx[8];

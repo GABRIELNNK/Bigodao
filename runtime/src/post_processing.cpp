@@ -238,6 +238,20 @@ static void apply_grid(uint32_t* pixels, int width, int height, int pitch_px, in
     }
 }
 
+/* [filtros-bloco] Bloco de uma cor só = pixel art em 1x. Com detalhe dentro
+ * (textura HD de um mod) o bloco fica como está. */
+static bool block_uniform(const uint32_t* pixels, int pitch_px, int bx, int by, int s) {
+    const uint32_t* top = pixels + (size_t)(by * s) * (size_t)pitch_px + (size_t)(bx * s);
+    const uint32_t c = top[0];
+    for (int sy = 0; sy < s; sy++) {
+        const uint32_t* row = top + (size_t)sy * (size_t)pitch_px;
+        for (int sx = 0; sx < s; sx++) {
+            if (row[sx] != c) return false;
+        }
+    }
+    return true;
+}
+
 static void apply_scaler(uint32_t* pixels, int width, int height, int pitch_px, int s, bool xbr) {
     if (s < 2 || s > 4) return;
     Src1x in;
@@ -245,6 +259,7 @@ static void apply_scaler(uint32_t* pixels, int width, int height, int pitch_px, 
     uint32_t q[9];
     for (int y = 0; y < in.h; y++) {
         for (int x = 0; x < in.w; x++) {
+            if (!block_uniform(pixels, pitch_px, x, y, s)) continue;   /* [filtros-bloco] */
             const bool three = !xbr && s == 3;
             if (xbr) xbr_px(in, x, y, q);
             else if (three) scale3x_px(in, x, y, q);
