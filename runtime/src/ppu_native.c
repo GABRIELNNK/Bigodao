@@ -146,6 +146,15 @@ static int g_hd_m_valid_scale = 0;       /* escala das laterais do último frame
 static unsigned g_scene_w = NATIVE_W;    /* largura da cena em captura */
 static unsigned g_scene_off = 0;         /* coluna da cena onde começa o centro */
 static uint32_t g_hd_for_gen[2][2 * NATIVE_TILES];
+/* [tile-meio-escrito] última textura achada de cada tile neste quadro: um
+ * tile regravado no meio do quadro fica pela metade por algumas linhas e
+ * não tem textura; nessas linhas ele continua com a que tinha. */
+static uint32_t g_frame_serial = 1;
+static const HdTile* g_hd_keep[2][2 * NATIVE_TILES][8];
+static uint32_t g_hd_keep_frame[2][2 * NATIVE_TILES];
+static uint32_t g_hd_keep_gen[2][2 * NATIVE_TILES];
+/* [tile-meio-escrito-2] quadro em que o tile foi escrito com a tela sendo desenhada */
+static uint32_t g_tile_write_frame[2][NATIVE_TILES];
 
 /* ============================================================================
  * Utilitários
@@ -314,6 +323,7 @@ void ppu_native_on_vram_write(uint8_t bank, uint16_t offset) {
     }
     if (offset < TILE_DATA_BYTES) {
         g_tile_dirty[bank & 1u][offset >> 4] = true;
+        if (g_frame_open) g_tile_write_frame[bank & 1u][offset >> 4] = g_frame_serial;   /* [tile-meio-escrito-2] */
     } else {
         g_vram_map_generation++;
     }
@@ -713,8 +723,18 @@ static inline const HdTile* hd_lookup(char kind, const uint8_t* tile_px, uint8_t
     const unsigned k = (kind == 'o') ? 1u : 0u;
     if (g_hd_for_gen[k][gi] != g_hd_generation) {
         const uint64_t th = g_tile_hash[gi / NATIVE_TILES][gi % NATIVE_TILES];
+        bool any = false;
         for (uint8_t p = 0; p < 8u; ++p) {
             g_hd_for[k][gi][p] = hd_resolve(kind, th, p);
+            any = any || g_hd_for[k][gi][p] != NULL;
+        }
+        if (any) {   /* [tile-meio-escrito] guarda a textura deste quadro */
+            memcpy(g_hd_keep[k][gi], g_hd_for[k][gi], sizeof(g_hd_keep[k][gi]));
+            g_hd_keep_frame[k][gi] = g_frame_serial;
+            g_hd_keep_gen[k][gi] = g_hd_generation;
+        } else if (g_tile_write_frame[gi / NATIVE_TILES][gi % NATIVE_TILES] == g_frame_serial &&   /* [tile-meio-escrito-2] */
+                   g_hd_keep_gen[k][gi] == g_hd_generation) {
+            memcpy(g_hd_for[k][gi], g_hd_keep[k][gi], sizeof(g_hd_for[k][gi]));
         }
         g_hd_for_gen[k][gi] = g_hd_generation;
     }
@@ -1179,6 +1199,7 @@ static bool level_on_screen(const GBContext* ctx) {
 
 static void begin_frame(const GBContext* ctx, uint8_t first_line) {
     g_frame_open = true;
+    g_frame_serial++;   /* [tile-meio-escrito] */
     if (g_gpu_on && ctx->vram) {   /* passo 14b-2: VRAM do início do quadro + registro vazio */
         memcpy(g_gpu.vram, ctx->vram, sizeof(g_gpu.vram));
         g_gpu.log_count = 0;
@@ -1435,6 +1456,7 @@ static uint8_t g_gpu_tl_tile[0x3000];          /* cópia de trabalho dos tiles *
 static uint16_t g_gpu_tl_pending[2u * NATIVE_TILES];   /* line_plus1 + 1 da troca pendente, 0 = nenhuma */
 static uint16_t g_gpu_tl_gi[PPU_NATIVE_GPU_TL_MAX];
 static uint16_t g_gpu_tl_tmp[PPU_NATIVE_GPU_TL_MAX][17];
+static uint16_t g_gpu_tl_prev[2u * NATIVE_TILES][16];   /* [tile-meio-escrito] */
 
 static inline uint64_t gpu_tile_hash(const uint8_t* src) {
     uint64_t h = 1469598103934665603ull;          /* FNV-1a 64, como decode_tile */
@@ -1474,6 +1496,12 @@ static void gpu_tl_emit(unsigned gi, unsigned* n) {
     e[0] = (uint16_t)(g_gpu_tl_pending[gi] - 1u);
     const unsigned w = (gi / NATIVE_TILES) * TILE_DATA_BYTES + (gi % NATIVE_TILES) * 16u;
     gpu_slots_for(gi, &g_gpu_tl_tile[w], e + 1);
+    {   /* [tile-meio-escrito] sem nenhuma textura: continua com a anterior */
+        bool any = false;
+        for (unsigned c = 0; c < 16u; ++c) any = any || e[1 + c] != 0u;
+        if (any) memcpy(g_gpu_tl_prev[gi], e + 1, sizeof(g_gpu_tl_prev[gi]));
+        else memcpy(e + 1, g_gpu_tl_prev[gi], sizeof(g_gpu_tl_prev[gi]));
+    }
     g_gpu_tl_gi[*n] = (uint16_t)gi;
     (*n)++;
 }
@@ -1483,6 +1511,7 @@ static void gpu_hd_fill_slots(void) {
     for (unsigned gi = 0; gi < 2u * NATIVE_TILES; ++gi) {
         gpu_slots_for(gi, gpu_start_tile(gi), s);
         for (unsigned c = 0; c < 16u; ++c) g_gpu.hd_slot[c][gi] = s[c];
+        memcpy(g_gpu_tl_prev[gi], s, sizeof(g_gpu_tl_prev[gi]));   /* [tile-meio-escrito] */
     }
     /* linha do tempo dos tiles escritos no meio do quadro */
     memset(g_gpu.hd_tl_dir, 0, sizeof(g_gpu.hd_tl_dir));
