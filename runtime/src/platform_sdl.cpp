@@ -816,11 +816,23 @@ static int effective_internal_scale(void) {
     if (ppu_native_hd_get_tiles_enabled() && ppu_native_hd_tile_count() > 0) {
         return g_internal_res_scale < 1 ? 1 : g_internal_res_scale; /* passo 5b */
     }
-    if (g_post_filter_mode == GB_POST_FILTER_NONE &&
-        g_render_filter_mode == GB_RENDER_FILTER_NEAREST) {
+    if (g_post_filter_mode != GB_POST_FILTER_NONE) {   /* [filtros-v2] filtros usam a grade do pixel: 2x ou mais */
+        return g_internal_res_scale < 2 ? 2 : g_internal_res_scale;
+    }
+    if (g_render_filter_mode == GB_RENDER_FILTER_NEAREST) {
         return 1;
     }
     return g_internal_res_scale < 1 ? 1 : g_internal_res_scale;
+}
+
+/* [filtros-v2] Scale2x e xBR precisam da imagem em 1x (pixel art): com
+ * texturas HD ou cores Original eles ficam desligados. */
+static GBPostFilterMode effective_post_filter(void) {
+    if (post_processing_is_scaler(g_post_filter_mode) &&
+        ppu_native_hd_get_tiles_enabled() && ppu_native_hd_tile_count() > 0) {
+        return GB_POST_FILTER_NONE;
+    }
+    return g_post_filter_mode;
 }
 
 static GBPPU* active_ppu(void) {
@@ -2258,6 +2270,8 @@ if (strcmp(key, "display.widescreen_fill_mode") == 0) {   /* passo 8a */
                 }
                 if (strcmp(key, "display.post_filter") == 0) {
                     long parsed = strtol(value, NULL, 10);
+                    if (parsed == 5 || parsed == 6) parsed = GB_POST_FILTER_XBR;   /* [filtros-v2] xBRZ antigo */
+                    if (parsed == 7) parsed = GB_POST_FILTER_NONE;                 /* Pixel-Perfect Sharp antigo */
                     if (parsed >= 0 && parsed < GB_POST_FILTER_COUNT) {
                         g_post_filter_mode = (GBPostFilterMode)parsed;
                     }
@@ -4237,7 +4251,7 @@ static void gpu_compare_screen(const void* cpu_pixels, int cpu_pitch, int w, int
  * valendo (a comparação da tela inteira já cobre). */
 static std::vector<uint32_t> g_gpu_read_f;
 static void gpu_compare_filter(const void* cpu_pixels, int cpu_pitch, int w, int h) {
-    const int mode = (int)g_post_filter_mode;
+    const int mode = (int)effective_post_filter();   /* [filtros-v2] */
     if (!gpu_ppu_apply_filter(mode)) {
         g_gpu_error = "a GPU nao conseguiu aplicar o filtro";
         g_gpu_last_screen_ok = false;
@@ -4608,7 +4622,7 @@ static bool gpu_present_frame(const uint32_t* framebuffer, bool count_guest_fram
         g_3d_valid = false;
     }
     vgl_prof_mark("Tela 2D: montagem + filtro");   /* passo 21a */
-    if (!gpu_ppu_compose_screen(&in) || !gpu_ppu_apply_filter((int)g_post_filter_mode)) {   /* passo 14e-1: filtro */
+    if (!gpu_ppu_compose_screen(&in) || !gpu_ppu_apply_filter((int)effective_post_filter())) {   /* passo 14e-1: filtro */
         g_gpu_screen_valid = false;
         return false;
     }
@@ -5056,7 +5070,8 @@ static void render_frame_internal(const uint32_t* framebuffer,
     }
 
     // Aplica o filtro de pós-processamento ativo diretamente no buffer escalado
-    post_processing_apply(g_post_filter_mode, (uint32_t*)pixels, texture_width, texture_height, pitch);
+    post_processing_apply(effective_post_filter(), (uint32_t*)pixels, texture_width, texture_height, pitch,
+                          texture_height / GB_SCREEN_HEIGHT);   /* [filtros-v2] escala da resolução interna */
     if (g_gpu_compare && g_use_gl && count_guest_frame && g_gpu_last_screen_ok) {
         gpu_compare_filter(pixels, pitch, texture_width, texture_height);   /* passo 14e-1 */
     }
@@ -5459,6 +5474,15 @@ static void render_frame_internal(const uint32_t* framebuffer,
             if (ImGui::Combo(TR("Post-processing filter", "Filtro de pos-processamento"), &current_post_filter, post_processing_get_names(), GB_POST_FILTER_COUNT)) {
                 g_post_filter_mode = (GBPostFilterMode)current_post_filter;
                 save_runtime_preferences();
+            }
+            if (post_processing_is_scaler(g_post_filter_mode) &&   /* [filtros-v2] */
+                effective_post_filter() == GB_POST_FILTER_NONE) {
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", TR("Scale2x and xBR need the plain 1x pixel art: they are off with HD textures "
+                                               "or the Original colors. LCD and Scanlines still work.",
+                                               "Scale2x e xBR precisam da imagem original em 1x: ficam desligados com "
+                                               "texturas HD ou nas cores Original. LCD e Scanlines continuam valendo."));
+                ImGui::PopTextWrapPos();
             }
 
             /* Cores do DX ou o visual original do Game Boy (BGP/OBP0/OBP1) */
